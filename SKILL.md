@@ -1,47 +1,81 @@
 ---
 name: openresearch-cli
-description: Use the `orx` CLI to inspect OpenResearch projects from a terminal — list projects, walk an experiment tree, list runs, and run read-only SQL against a project's evidence. Read this before driving `orx` programmatically.
+description: Use the `orx` CLI to drive OpenResearch projects from a terminal — browse the experiment tree, runs, logs, artifacts, code diffs, and the evidence DB; create experiments; launch, wait on, and cancel runs on GPU compute; edit a node's files in a dev session; and chart W&B metrics. Read this before driving `orx` programmatically.
 ---
 
 # OpenResearch CLI (`orx`)
 
-`orx` is a thin command-line client over the OpenResearch API. It authenticates
-with a personal access token and exposes read-only views of a project's
-experiment tree, runs, and evidence database. Use it when you need to inspect
-project state from a shell instead of the web UI.
+`orx` is a command-line client over the OpenResearch API. It authenticates with a
+personal access token and exposes both **read views** of a project (experiment
+tree, runs, logs, artifacts, code diffs, evidence database) and **write actions**
+(create experiments, launch/cancel runs on GPU compute, edit a node's files). Use
+it when you need to inspect or drive project state from a shell instead of the
+web UI.
 
 ## Setup
 
 ```sh
 orx login          # opens a browser, stores a token at ~/.config/openresearch/credentials.json
+orx logout         # remove the stored token
 ```
 
 - The API base URL resolves from `--api-url` → `OPENRESEARCH_API_URL` → a built-in
   default. Set `OPENRESEARCH_API_URL` for non-local use.
-- Every other command needs a token; if you see `Not logged in`, run `orx login`.
+- Every command except `login` needs a token; if you see `Not logged in`, run `orx login`.
 
 ## Commands
 
+### Auth
 | Command | What it does |
 |---|---|
-| `orx projects [--all]` | List your projects (id + name), grouped by org. `--all` includes archived. **Project ids come from here** — copy one into the commands below. |
-| `orx experiments <projectId>` | Print the project's experiments as an indented tree (nested by parent). |
-| `orx runs <projectId> [--experiment <id>]` | List runs as a table (status, experiment, commit, updated). `--experiment` filters to one experiment. |
+| `orx login [--api-url <url>]` | Open a browser, do loopback OAuth, store a token. |
+| `orx logout` | Remove the stored token. |
+
+### Discover (project- and experiment-scoped)
+| Command | What it does |
+|---|---|
+| `orx projects [--all]` | List your projects (id + name), grouped by org. `--all` includes archived. **Project ids come from here.** |
+| `orx experiments <projectId>` | Print the project's experiments as an indented tree (nested by parent). **Experiment ids come from here.** |
+| `orx runs <projectId> [--experiment <id>]` | List runs as a table (status, experiment, commit, updated), newest first. `--experiment` filters to one experiment. **Run ids come from here.** |
+
+### Run evidence (run-scoped)
+| Command | What it does |
+|---|---|
 | `orx logs <runId> [--head] [--bytes <n>] [--range <s>:<e>]` | Read a run's terminal log. See below. |
-| `orx search-logs <projectId> "<pattern>" (--run <id> \| --experiment <id>)` | Grep run logs for a literal pattern. See below. |
-| `orx query <projectId> "<sql>"` | Run **one read-only DuckDB SQL statement** against the project's evidence schema. |
+| `orx search-logs <projectId> "<pattern>" (--run <id> \| --experiment <id>) [--max <n>]` | Grep run logs for a literal pattern. See below. |
+| `orx artifacts <runId>` | List the text artifacts a run produced (key + size). |
+| `orx artifact <runId> <key> [--head] [--bytes <n>]` | Read a run's text artifact (tail by default). Also caches it for `orx query` SQL search. |
+| `orx wandb <runId>` | List the W&B runs linked to a run (with dashboard URLs). |
+| `orx diff <runId>` | Print a run's cumulative code diff vs. its parent experiment's branch. |
 | `orx chart wandb <projectId> --metric "<key>" --run <runId>[:label] ...` | Render a W&B metric across runs to a PNG line chart. See below. |
-| `orx create-experiment <projectId> --title "<t>" [...]` | Add an experiment node (write). See below. |
+| `orx query <projectId> "<sql>"` | Run **one read-only DuckDB SQL statement** against the project's evidence schema. See below. |
+
+### Committed code — no dev node needed (experiment-scoped)
+| Command | What it does |
+|---|---|
+| `orx tree <expId> [path]` | List committed files in the experiment's branch under an optional path. |
+| `orx cat <expId> <path>` | Print a committed file from the experiment's branch to stdout. |
+| `orx search <expId> "<query>"` | Grep the committed branch for a case-insensitive substring. |
+
+### Create, run, and edit experiments (write)
+| Command | What it does |
+|---|---|
+| `orx create-experiment <projectId> --title "<t>" [...]` | Add an experiment node (the one project-level write command). See below. |
 | `orx compute [--gpu <id>] [--count <n>]` | List the GPU compute catalog (price-sorted). See below. |
-| `orx exp status/cmd/run/cancel <expId>` | Inspect and run a single experiment node. See below. |
+| `orx exp status/cmd/run/cancel/wait <expId>` | Inspect, run, cancel, and wait on a single experiment node. See below. |
 | `orx exp desc <expId> [--set "<text>" \| --stdin]` | Read or overwrite the experiment's description (free-form notes). See below. |
 | `orx dev open/close/status <expId>` + `orx read/write/str-replace/ls/grep/rm <expId>` | Edit a node's files in a dev session. See below. |
+
+### Meta
+| Command | What it does |
+|---|---|
 | `orx skill [path]` | Print this overview (no args), or fetch a deeper skill/reference doc by path. |
 
-Every data command takes a **project id** (never an experiment id) as its scope.
-Get ids from `orx projects`.
+Project-scoped commands take a **project id**; experiment-scoped commands take an
+**experiment id**; run-scoped commands take a **run id**. Don't mix them — get
+ids from `orx projects`, `orx experiments`, and `orx runs` respectively.
 
-## `orx create-experiment` — the one write command
+## `orx create-experiment` — the one project-level write command
 
 Adds a node to the experiment tree. `--title` is always required. The node shape
 is chosen by flags:
@@ -89,7 +123,26 @@ Rules and notes:
   **RunPod-only** — the server picks the cheapest matching RunPod offer for the
   chosen (gpu, count); browse valid gpu ids and prices with `orx compute`.
 - `orx exp run` **queues** the run and returns immediately — it does not wait.
-  Follow progress with `orx runs <projectId>` and `orx logs <runId>`.
+  Follow progress with `orx runs <projectId>` and `orx logs <runId>`, or block
+  with `orx exp wait` (below).
+
+## Waiting on runs — `orx exp wait`
+
+Block until a run changes state — useful when driving a research loop and you want
+to act as soon as a run finishes. Two modes, picked by argument:
+
+```sh
+orx exp wait <expId>                    # level trigger: poll this experiment's latest run
+                                        #   until it reaches a terminal state (done/failed/cancelled)
+orx exp wait --project <projectId>      # edge trigger: return on the FIRST change to ANY run
+                                        #   in the project (new run, or a status transition)
+orx exp wait <expId> --interval 10 --timeout 3600   # tune polling
+```
+
+- Pass **exactly one** of `<expId>` or `--project` (not both, not neither).
+- `--interval` is seconds between polls (default `5`); `--timeout` gives up after
+  N seconds (default `1800`) and exits **non-zero** so callers can branch on it.
+- Progress lines go to **stderr**; the final state line(s) go to **stdout**.
 
 ## Experiment description / notes — `orx exp desc`
 
@@ -112,19 +165,37 @@ cat notes.md | orx exp desc <expId> --stdin   # overwrite from stdin (long markd
 - `<expId>` comes from `orx experiments <projectId>` (the experiment id, not a run
   or project id).
 
+## Reading committed code — `orx tree` / `orx cat` / `orx search`
+
+These read an experiment's **committed branch** directly (via Forgejo) and need
+**no open dev session** — use them to inspect a node's code without provisioning
+compute. (They are distinct from the `orx ls`/`grep`/`read` dev-session verbs
+below, which read the *live working tree* of an open dev node.)
+
+```sh
+orx tree <expId>                 # list every committed file
+orx tree <expId> src             # list files under a path
+orx cat  <expId> src/train.py    # print a committed file to stdout
+orx search <expId> "batch_size"  # case-insensitive substring grep over the branch
+```
+
+- All read against the latest commit on the experiment's branch.
+- `orx cat` writes content to **stdout** (pipe/redirect-friendly).
+
 ## Editing a node's files — `orx dev` sessions
 
-To change files in an experiment, open a short-lived **dev session**: a CPU node
-with the branch checked out. You edit the *live working tree* (no commits per
+To **change** files in an experiment, open a short-lived **dev session**: a CPU
+node with the branch checked out. You edit the *live working tree* (no commits per
 edit), then `dev close` makes **one commit** and tears the node down.
 
 ```sh
 orx dev open <expId>                         # provisions a node (~30s), checks out the branch
-orx ls   <expId> src                         # explore
+orx ls   <expId> src                         # explore the working tree
 orx read <expId> src/train.py
 orx str-replace <expId> src/train.py "lr=1e-3" "lr=3e-4"
 cat new_config.yaml | orx write <expId> config.yaml   # write content from stdin
 orx grep <expId> "batch_size"
+orx rm   <expId> stale_file.py
 orx dev status <expId>                        # state + uncommitted changes
 orx dev close <expId> -m "tune lr"            # ONE commit + push, then teardown
 #   orx dev close <expId> --discard           # tear down without committing
@@ -132,7 +203,8 @@ orx dev close <expId> -m "tune lr"            # ONE commit + push, then teardown
 
 Rules and notes:
 - **Always `orx dev open` first.** The edit verbs (`read`/`write`/`str-replace`/`ls`/`grep`/`rm`)
-  fail with a clear error if no dev node is open.
+  fail with a clear error if no dev node is open. (To read code *without* a dev
+  node, use `orx tree`/`cat`/`search` above.)
 - Edits do **not** commit individually — they accumulate in the working tree.
   Only `dev close` commits (one commit for the whole session).
 - `write` reads the file content from **stdin**. `str-replace` needs the
@@ -171,6 +243,26 @@ orx search-logs <projectId> "loss=nan" --experiment <id> --max 5000
   byte offsets straight into `orx logs <runId> --range <start>:<end>` to pull the
   surrounding context. Results are capped (raise with `--max`).
 
+## Run artifacts & code diffs — `orx artifacts` / `orx artifact` / `orx diff`
+
+Beyond the terminal log, a run uploads **text artifacts** (eval outputs, reports,
+generated files) and carries a **code diff** vs. its parent branch.
+
+```sh
+orx artifacts <runId>               # discover what a run uploaded (KEY + SIZE table)
+orx artifact <runId> <key>          # read one artifact (tail by default)
+orx artifact <runId> <key> --head --bytes 200000   # from the start, raise the cap
+orx diff <runId>                    # unified diff of what this run's commit changed
+```
+
+- Start with `orx artifacts` to list keys, then `orx artifact <runId> <key>` to
+  read one. Reading an artifact also **caches it for `orx query`** so you can grep
+  artifact text via SQL.
+- `orx artifact` content / `orx diff` diff go to **stdout**; byte-range and
+  truncation metadata go to **stderr**.
+- `orx diff` prints nothing (with a note on stderr) when the run's commit matches
+  its parent branch.
+
 ## Charting W&B metrics — `orx chart wandb`
 
 Renders a single W&B history metric across one or more linked runs as a PNG line
@@ -188,8 +280,10 @@ orx chart wandb <projectId> --metric "train/reward" --run <runId> --smoothing 0.
 orx chart wandb <projectId> --metric "val/acc" --run <runId> --out ./charts
 ```
 
+- `wandb` is a required first positional (the chart kind; only `wandb` is supported today).
 - **`--metric`** is one W&B history key (e.g. `train/loss`). List available keys
-  first via `orx query <projectId> "select distinct key from wandb_history_keys"`.
+  first via `orx query <projectId> "select distinct key from wandb_history_keys"`,
+  or find linked W&B runs with `orx wandb <runId>`.
 - **`--run`** is repeatable — pass every run you want on the chart in one call
   (up to 6). Append `:label` to set the legend label (defaults to the W&B run id).
   The run id comes from `orx runs <projectId>` (the run id, not the experiment id).
@@ -234,7 +328,9 @@ is also shown there when the API is reachable.
 
 ```sh
 orx projects                     # find the project id
-orx experiments <projectId>      # see the tree
+orx experiments <projectId>      # see the tree, pick an experiment id
 orx skill project-query          # learn the evidence schema
 orx query <projectId> "select title from experiments limit 10"
+orx runs <projectId>             # find a run id
+orx logs <runId>                 # read its output
 ```
