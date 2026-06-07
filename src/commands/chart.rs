@@ -250,7 +250,7 @@ mod tests {
         assert_eq!(fmt(99999.0), "1.000e+5");
         assert_eq!(fmt(0.0001234), "1.234e-4");
         // ordinary values
-        assert_eq!(fmt(3.14159), "3.142");
+        assert_eq!(fmt(3.21459), "3.215");
         assert_eq!(fmt(-42.0), "-42.00");
     }
 }
