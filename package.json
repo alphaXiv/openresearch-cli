@@ -1,0 +1,25 @@
+{
+  "name": "openresearch-cli",
+  "version": "0.1.0",
+  "description": "Command-line interface for OpenResearch",
+  "type": "module",
+  "bin": {
+    "orx": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "SKILL.md"
+  ],
+  "scripts": {
+    "orx": "node src/index.ts",
+    "check": "tsgo --noEmit"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "@typescript/native-preview": "latest",
+    "typescript": "^5.7.0"
+  }
+}
