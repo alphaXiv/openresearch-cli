@@ -1,6 +1,6 @@
 [package]
 name = "openresearch-cli"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "OpenResearch CLI (orx) — Rust port"
 repository = "https://github.com/alphaXiv/openresearch-cli"
@@ -12,7 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "time", "fs"] }
-reqwest = { version = "0.12", features = ["json"] }
+# rustls instead of the default native-tls: avoids an OpenSSL dependency so the
+# static musl Linux builds link cleanly (native-tls/openssl won't build for musl).
+reqwest = { version = "0.12", default-features = false, features = ["json", "charset", "http2", "rustls-tls"] }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
