@@ -11,11 +11,13 @@ use tokio::fs;
 
 use crate::error::Result;
 
-/// Base URL of the API. Override per-invocation with `--api-url` (handled in the
-/// `login` command) or persist via the `OPENRESEARCH_API_URL` env var. Defaults
-/// to local dev.
+/// Base URL of the API. Defaults to prod (`https://api.openresearch.sh`), so a
+/// plain `orx login` just works. Override per-invocation with `--api-url` (handled
+/// in the `login` command) or set the `OPENRESEARCH_API_URL` env var to point at
+/// local dev, e.g. `OPENRESEARCH_API_URL=http://localhost:4000 orx login`.
 pub fn default_api_url() -> String {
-    std::env::var("OPENRESEARCH_API_URL").unwrap_or_else(|_| "http://localhost:4000".to_string())
+    std::env::var("OPENRESEARCH_API_URL")
+        .unwrap_or_else(|_| "https://api.openresearch.sh".to_string())
 }
 
 /// Stored credentials: the API base URL and the bearer token.
