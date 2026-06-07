@@ -3,6 +3,8 @@ name = "openresearch-cli"
 version = "0.1.0"
 edition = "2021"
 description = "OpenResearch CLI (orx) — Rust port"
+repository = "https://github.com/alphaXiv/openresearch-cli"
+license = "MIT"
 
 [[bin]]
 name = "orx"
@@ -18,3 +20,8 @@ anyhow = "1"
 dirs = "5"
 urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
