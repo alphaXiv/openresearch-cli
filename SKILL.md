@@ -32,6 +32,9 @@ orx login          # opens a browser, stores a token at ~/.config/openresearch/c
 | `orx query <projectId> "<sql>"` | Run **one read-only DuckDB SQL statement** against the project's evidence schema. |
 | `orx chart wandb <projectId> --metric "<key>" --run <runId>[:label] ...` | Render a W&B metric across runs to a PNG line chart. See below. |
 | `orx create-experiment <projectId> --title "<t>" [...]` | Add an experiment node (write). See below. |
+| `orx compute [--gpu <id>] [--count <n>]` | List the GPU compute catalog (price-sorted). See below. |
+| `orx exp status/cmd/run/cancel <expId>` | Inspect and run a single experiment node. See below. |
+| `orx exp desc <expId> [--set "<text>" \| --stdin]` | Read or overwrite the experiment's description (free-form notes). See below. |
 | `orx dev open/close/status <expId>` + `orx read/write/str-replace/ls/grep/rm <expId>` | Edit a node's files in a dev session. See below. |
 | `orx skill [path]` | Print this overview (no args), or fetch a deeper skill/reference doc by path. |
 
@@ -60,6 +63,54 @@ orx create-experiment <projectId> --title "Scratch baseline"
   App installation — it is imported as a tarball, **not** an arbitrary
   `git clone` URL. `--ref` (branch/tag/commit) only applies with `--repo`.
 - `--description` is optional in all three shapes.
+
+## Running an experiment — `orx exp` + `orx compute`
+
+Each experiment node has a **run command** (the shell command that trains/evaluates
+it) and is launched on **compute** you choose at run time. Compute is *not* stored
+on the node — you pick a GPU (or an existing sandbox) each time you launch.
+
+```sh
+orx exp status <expId>                 # status, run command, sandbox link, latest run
+orx exp cmd <expId>                    # print the current run command
+orx exp cmd <expId> --set "python train.py --epochs 10"   # set it
+orx compute                            # browse GPU offers (price-sorted)
+orx compute --gpu H100 --count 1       # filter the catalog
+orx exp run <expId> --gpu H100 --count 1 [--disk 100]     # launch on a NEW instance
+orx exp run <expId> --sandbox <sandboxId>                 # launch on an EXISTING node
+orx exp cancel <expId>                 # cancel the in-flight run
+```
+
+Rules and notes:
+- **Set a run command before launching.** `orx exp run` fails with a pointer to
+  `orx exp cmd --set` if the node has none.
+- **Pick compute with exactly one of `--gpu` or `--sandbox`.** With `--gpu`,
+  `--count` defaults to `1` and `--disk` to `100` (GB). New instances are
+  **RunPod-only** — the server picks the cheapest matching RunPod offer for the
+  chosen (gpu, count); browse valid gpu ids and prices with `orx compute`.
+- `orx exp run` **queues** the run and returns immediately — it does not wait.
+  Follow progress with `orx runs <projectId>` and `orx logs <runId>`.
+
+## Experiment description / notes — `orx exp desc`
+
+Each experiment node carries a free-form **description** (markdown) — the same
+field set by `create-experiment --description`. Use it for notes: observations,
+hypotheses, or a running summary. It is a whole-document field: writing
+overwrites whatever was there.
+
+```sh
+orx exp desc <expId>                          # print the description to stdout (empty → hint on stderr)
+orx exp desc <expId> --set "tried lr=3e-4, diverged at step 4k"   # overwrite with a short note
+cat notes.md | orx exp desc <expId> --stdin   # overwrite from stdin (long markdown)
+```
+
+- **Read** prints the text to **stdout** (pipe/redirect-friendly); when empty, a
+  hint is printed to **stderr** and stdout stays empty.
+- **Write** with exactly one of `--set` (inline) or `--stdin` (whole of stdin).
+  Passing both is an error. Writing **replaces** the entire description — to
+  append, read first, edit, and write back.
+- `<expId>` comes from `orx experiments <projectId>` (the experiment id, not a run
+  or project id).
 
 ## Editing a node's files — `orx dev` sessions
 

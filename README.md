@@ -5,21 +5,33 @@ query your projects from the terminal.
 
 ## Requirements
 
-- Node.js ≥ 24 (the CLI runs TypeScript directly via Node's native type
-  stripping — no build step).
+- Rust (stable) with Cargo. Install via [rustup](https://rustup.rs):
 
-## Usage
+  ```sh
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  ```
+
+## Build & run
 
 ```sh
-# Run locally without installing:
-node src/index.ts login
-node src/index.ts projects
+# Build (debug):
+cargo build
 
-# Or link it so `orx` is on your PATH:
-npm link
+# Run during development:
+cargo run -- login
+cargo run -- projects
+
+# Build an optimized release binary at target/release/orx:
+cargo build --release
+./target/release/orx login
+
+# Or install `orx` onto your PATH (~/.cargo/bin):
+cargo install --path .
 orx login
 orx projects
 ```
+
+Run the tests with `cargo test`.
 
 ### Commands
 
@@ -28,6 +40,11 @@ orx projects
 | `orx login [--api-url <url>]` | Opens your browser, authenticates, and stores a personal access token. |
 | `orx logout` | Removes the stored token. |
 | `orx projects [--all]` | Lists your projects, grouped by organization. `--all` includes archived. |
+| `orx compute [--gpu <id>] [--count <n>]` | Lists the GPU compute catalog, sorted by price. |
+| `orx exp status <expId>` | Shows an experiment's status, run command, and latest run. |
+| `orx exp cmd <expId> [--set <command>]` | Views or sets the experiment's run command. |
+| `orx exp run <expId> (--gpu <id> [--count <n>] [--disk <gb>] \| --sandbox <id>)` | Launches a run on new or existing compute. |
+| `orx exp cancel <expId>` | Cancels the in-flight run. |
 
 ### Configuration
 
