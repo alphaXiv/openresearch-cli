@@ -377,7 +377,12 @@ pub struct FsWriteArgs {
 pub struct FsStrReplaceArgs {
     pub exp_id: String,
     pub path: String,
+    // old/new are arbitrary code strings that routinely begin with `-`/`--`
+    // (flags, diff markers, CLI snippets). Without this, clap parses them as
+    // unknown flags and the edit silently never happens.
+    #[arg(allow_hyphen_values = true)]
     pub old_string: String,
+    #[arg(allow_hyphen_values = true)]
     pub new_string: String,
 }
 
@@ -390,6 +395,8 @@ pub struct FsLsArgs {
 #[derive(Args, Debug)]
 pub struct FsGrepArgs {
     pub exp_id: String,
+    // Search patterns can begin with `-` (e.g. `-inf`, `--flag`); take them literally.
+    #[arg(allow_hyphen_values = true)]
     pub pattern: String,
 }
 

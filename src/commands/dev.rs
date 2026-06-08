@@ -54,6 +54,11 @@ pub async fn run(args: crate::DevArgs) -> Result<()> {
             println!("No dev node was open.");
             return Ok(());
         }
+        // A non-discard close that commits nothing means the session's edits
+        // never landed (e.g. a str-replace that no-op'd). The node is still torn
+        // down, but we surface this loudly and exit non-zero so callers chaining
+        // open/edit/close don't mistake an empty edit for success.
+        let mut empty_edit = false;
         if res.committed {
             let sha = match &res.commit_sha {
                 Some(sha) => {
@@ -66,9 +71,17 @@ pub async fn run(args: crate::DevArgs) -> Result<()> {
         } else if args.discard {
             println!("Discarded changes.");
         } else {
-            println!("Nothing to commit.");
+            empty_edit = true;
         }
         println!("\u{2713} Dev node torn down.");
+        if empty_edit {
+            eprintln!(
+                "\u{26a0} Nothing to commit \u{2014} the working tree was clean. \
+                 No edits landed this session (did a str-replace/write no-op?). \
+                 Use `--discard` if an empty close was intended."
+            );
+            std::process::exit(1);
+        }
         return Ok(());
     }
 
