@@ -75,6 +75,69 @@ Project-scoped commands take a **project id**; experiment-scoped commands take a
 **experiment id**; run-scoped commands take a **run id**. Don't mix them — get
 ids from `orx projects`, `orx experiments`, and `orx runs` respectively.
 
+## The experiment-tree model — read this before driving a project
+
+A project is a **tree of experiment nodes**. The root (**baseline**) holds the
+starting code and a **run command** — the single shell command that trains or
+evaluates the node and writes an `EVAL.md` with its results. Every other node is a
+**child** branched off a parent, inheriting its code and its run command.
+
+Two rules drive everything you do here:
+
+1. **The run command is a fixed contract, not a knob.** A child **inherits its
+   parent's run command** (`create-experiment --parent` copies it verbatim). You
+   compare nodes by running *the same command* over *different code*, then diffing
+   their `EVAL.md` outputs. Change the command per node and the results stop being
+   comparable. So: set the run command **once on the baseline**, then leave it
+   alone — vary the **code/config**, never the command. Do **not** encode
+   hyperparameters as CLI args in the run command and sweep them by editing the
+   command; encode them in the code/config files and branch a child per variant.
+
+2. **Never edit the baseline.** The root is your control — the anchor every variant
+   is measured against. To try an idea, **branch a child** off it and edit the
+   child. Editing the root moves the goalposts and destroys the comparison.
+
+### The auto-research loop
+
+To drive a project toward a goal (e.g. "best convergence for d=8") under a fixed
+GPU budget, this is the intended flow — do **not** edit the baseline or rewrite the
+run command:
+
+1. **Read the baseline's code.** `orx tree <baseId>`, `orx cat <baseId> <path>`,
+   `orx search <baseId> "<sym>"`. See its run command with `orx exp cmd <baseId>`
+   and find where the knobs live (config files, hyperparameters, model defs).
+2. **Form hypotheses** — concrete, independent ideas (an LR schedule, a width
+   change, an init scheme, …), each a single change you can make and measure.
+3. **Create one child per idea** — the **title** is the idea, the **description**
+   is the concrete change the dev session will make:
+   ```sh
+   orx create-experiment <projectId> --parent <baseId> \
+     --title "Cosine LR + warmup" \
+     --description "Switch the constant LR in config.yaml to cosine decay with 500-step warmup; leave everything else."
+   ```
+   The child inherits the baseline's run command automatically — you don't set it.
+4. **Implement each child's change in a dev session** — edit only the files that
+   idea touches, and **leave the run command alone**:
+   ```sh
+   orx dev open <childId>
+   orx str-replace <childId> config.yaml "schedule: constant" "schedule: cosine"
+   orx dev close <childId> -m "cosine LR + warmup"
+   ```
+5. **Launch up to your GPU budget** — one run per ready child, in parallel:
+   ```sh
+   orx exp run <childId> --gpu H100 --count 1
+   ```
+6. **Keep the budget saturated.** With a cap of N concurrent runs, never leave a
+   slot idle while there's useful parallel work. Block on the next finish with
+   `orx exp wait --project <projectId>` (returns on the first change to any run),
+   then immediately launch the next queued child to refill the freed slot.
+7. **Analyze, then iterate.** When a run finishes, **actually read its results**
+   before deciding — `orx artifact <runId> EVAL.md`, `orx chart wandb …`,
+   `orx query …`. Don't infer from status alone. Promising children become parents
+   for the next round of variations; the baseline stays untouched throughout.
+
+Stop when the goal is met, or after ~3 consecutive failed or regressed runs.
+
 ## `orx create-experiment` — the one project-level write command
 
 Adds a node to the experiment tree. `--title` is always required. The node shape
@@ -93,10 +156,16 @@ orx create-experiment <projectId> --title "Scratch baseline"
 
 - `--parent` and `--repo` are mutually exclusive (`--parent` ⇒ child, `--repo` ⇒
   root-from-repo, neither ⇒ empty root).
+- **A `--parent` child inherits the parent's run command** (and branches off its
+  code). You do **not** set a run command on the child — keep it and vary the code
+  via a dev session (see "the experiment-tree model" above).
 - `--repo` takes a GitHub `owner/repo` that is reachable through the org's GitHub
   App installation — it is imported as a tarball, **not** an arbitrary
   `git clone` URL. `--ref` (branch/tag/commit) only applies with `--repo`.
-- `--description` is optional in all three shapes.
+- `--description` is optional but **strongly recommended for children**: use it to
+  record the hypothesis / the concrete change this node makes. It's the node's
+  free-form notes field (the same one `orx exp desc` reads/writes), and it's how
+  you and the analysis tools tell sibling variants apart.
 
 ## Running an experiment — `orx exp` + `orx compute`
 
@@ -107,7 +176,7 @@ on the node — you pick a GPU (or an existing sandbox) each time you launch.
 ```sh
 orx exp status <expId>                 # status, run command, sandbox link, latest run
 orx exp cmd <expId>                    # print the current run command
-orx exp cmd <expId> --set "python train.py --epochs 10"   # set it
+orx exp cmd <baseId> --set "bash run.sh"   # set it ONCE on the baseline; children inherit it
 orx compute                            # browse GPU offers (price-sorted)
 orx compute --gpu H100 --count 1       # filter the catalog
 orx exp run <expId> --gpu H100 --count 1 [--disk 100]     # launch on a NEW instance
@@ -116,6 +185,12 @@ orx exp cancel <expId>                 # cancel the in-flight run
 ```
 
 Rules and notes:
+- **The run command is a fixed contract — set it once on the baseline, then leave
+  it alone.** Children inherit it (see "the experiment-tree model" above). Don't
+  `--set` a different command per child, and don't bake swept hyperparameters into
+  it — vary the **code/config** in a child's dev session instead, so every variant
+  runs the same command and their `EVAL.md`s stay comparable. The normal reason to
+  touch a command is the baseline having none yet.
 - **Set a run command before launching.** `orx exp run` fails with a pointer to
   `orx exp cmd --set` if the node has none.
 - **Pick compute with exactly one of `--gpu` or `--sandbox`.** With `--gpu`,
@@ -187,6 +262,12 @@ orx search <expId> "batch_size"  # case-insensitive substring grep over the bran
 To **change** files in an experiment, open a short-lived **dev session**: a CPU
 node with the branch checked out. You edit the *live working tree* (no commits per
 edit), then `dev close` makes **one commit** and tears the node down.
+
+This is how you **realize a child's hypothesis**: after `create-experiment
+--parent`, open a dev session on the child and make the specific code/config edits
+its description calls for — then close and run. Edit only the files that idea
+touches, and **don't touch the run command** (it's inherited; see "the
+experiment-tree model" above). Edit children, never the baseline.
 
 ```sh
 orx dev open <expId>                         # provisions a node (~30s), checks out the branch
@@ -326,6 +407,8 @@ is also shown there when the API is reachable.
 
 ## Typical workflow
 
+Orienting in a project (read-only discovery):
+
 ```sh
 orx projects                     # find the project id
 orx experiments <projectId>      # see the tree, pick an experiment id
@@ -334,3 +417,7 @@ orx query <projectId> "select title from experiments limit 10"
 orx runs <projectId>             # find a run id
 orx logs <runId>                 # read its output
 ```
+
+To actually **drive** a project toward a goal — branch children off the baseline,
+edit each child's code in a dev session, and keep the GPU budget saturated — follow
+the auto-research loop in "the experiment-tree model" above.
