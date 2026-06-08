@@ -111,8 +111,16 @@ async fn wait_experiment(
 ///
 /// Note: runs already terminal at entry don't count (they're in the snapshot as
 /// terminal). If *every* run is already terminal when this is called, there's
-/// nothing left to complete and it blocks until `--timeout`. Call it right after
-/// launching, while runs are in flight.
+/// nothing left to complete — it returns immediately printing
+/// `drained: no runs in flight` (exit 0), the termination signal for a budget
+/// loop. Otherwise it returns on the first completion.
+///
+/// This fires only on completions observed *within a single invocation*. A run
+/// that finishes between two calls (while the caller is deciding/analyzing) is
+/// already terminal in the next call's entry snapshot and won't fire. So the
+/// caller must treat `exp wait --project` as a sleep-until-change signal and
+/// re-list `orx runs` on every wake to find *all* newly-finished runs — don't
+/// trust the printed line as the complete set.
 async fn wait_project(
     creds: &crate::config::Credentials,
     project_id: &str,
@@ -126,6 +134,21 @@ async fn wait_project(
         .map(|r| (r.id, r.status))
         .collect();
     let in_flight = snapshot.values().filter(|s| !is_terminal(s)).count();
+
+    // Fast path: nothing is in flight, so no run can *complete* while we watch —
+    // there's nothing to wait for. Rather than block until `--timeout` (the old
+    // behavior), return immediately with a distinct, machine-readable line so a
+    // budget loop can recognize "the batch is drained" and stop looping. This is
+    // the clean termination signal for `orx exp wait --project` in a loop.
+    if in_flight == 0 {
+        eprintln!(
+            "No runs in flight in this project ({} run(s), all terminal).",
+            snapshot.len()
+        );
+        println!("drained: no runs in flight");
+        return Ok(());
+    }
+
     eprintln!(
         "Watching {} run(s) in project ({} in flight) — returning on the first completion…",
         snapshot.len(),

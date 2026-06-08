@@ -97,6 +97,21 @@ Two rules drive everything you do here:
    is measured against. To try an idea, **branch a child** off it and edit the
    child. Editing the root moves the goalposts and destroys the comparison.
 
+**Climb the tree — don't fan out from the root.** There are two reasons to branch,
+and they want opposite shapes:
+
+- **Comparing orthogonal knobs head-to-head** (LR vs. width vs. init — each measured
+  against the *same* control): branch each off the **baseline**. Wide is correct here.
+- **Composing or refining** (cosine LR won → now test width *on top of* cosine LR so
+  the gains stack): branch off the **best confirmed node so far**, not the baseline.
+  Deep is correct here.
+
+A baseline with 10+ direct children and **no grandchildren** is the failure mode: you're
+sweeping, not climbing. Every result is being measured against the *start* instead of
+building on the last win, so improvements never accumulate. After each round produces a
+winner, the focal parent should move **down** the tree — the next round's children branch
+off that winner. A healthy tree gets *deeper* as the research progresses, not just wider.
+
 ### The auto-research loop
 
 To drive a project toward a goal (e.g. "best convergence for d=8") under a fixed
@@ -108,14 +123,25 @@ run command:
    and find where the knobs live (config files, hyperparameters, model defs).
 2. **Form hypotheses** — concrete, independent ideas (an LR schedule, a width
    change, an init scheme, …), each a single change you can make and measure.
-3. **Create one child per idea** — the **title** is the idea, the **description**
-   is the concrete change the dev session will make:
+3. **Create one child per idea — and pick its parent deliberately.** The **title**
+   is the idea, the **description** is the concrete change the dev session will make.
+   The parent is *not* always the baseline: branch off the baseline only when you're
+   isolating an orthogonal variable for a clean head-to-head against the control. Once
+   an earlier round has produced a **confirmed winner**, branch this round's children
+   off **that winner** instead, so the new change stacks on top of the gain rather than
+   resetting to the start (see "Climb the tree" above).
    ```sh
+   # Round 1: orthogonal knobs, each off the baseline (wide — fair head-to-head):
    orx create-experiment <projectId> --parent <baseId> \
      --title "Cosine LR + warmup" \
      --description "Switch the constant LR in config.yaml to cosine decay with 500-step warmup; leave everything else."
+
+   # Round 2: cosine LR won → stack the next idea ON it (deep — compose the gains):
+   orx create-experiment <projectId> --parent <cosineWinnerId> \
+     --title "Wider MLP on cosine LR" \
+     --description "On top of the cosine-LR winner, widen the MLP hidden dim 1024→2048 in model.py."
    ```
-   The child inherits the baseline's run command automatically — you don't set it.
+   The child inherits its parent's run command automatically — you don't set it.
 4. **Implement each child's change in a dev session** — edit only the files that
    idea touches, and **leave the run command alone**:
    ```sh
@@ -127,18 +153,55 @@ run command:
    ```sh
    orx exp run <childId> --gpu H100 --count 1
    ```
-6. **Keep the budget saturated.** With a cap of N concurrent runs, never leave a
-   slot idle while there's useful parallel work. Block on the next finish with
-   `orx exp wait --project <projectId>` — it returns the moment any run
-   *completes* (reaches a terminal state), which is exactly the "a slot freed"
-   signal. Then immediately launch the next queued child to refill the freed
-   slot. **Don't hand-roll a poll loop over `orx runs`** — `exp wait` already
-   does the polling, knows the real terminal states, and wakes only on
-   completions.
-7. **Analyze, then iterate.** When a run finishes, **actually read its results**
-   before deciding — `orx artifact <runId> EVAL.md`, `orx chart wandb …`,
-   `orx query …`. Don't infer from status alone. Promising children become parents
-   for the next round of variations; the baseline stays untouched throughout.
+6. **Keep the budget saturated — drive a per-completion loop, not a wait-for-all
+   barrier.** With a cap of N concurrent runs, you want control back the moment
+   *any one* run finishes so you can analyze the state of experiments and either refill its slot or stop if no experiment further is needed — not after the whole batch
+   drains. `orx exp wait --project <projectId>` is built for exactly this: it
+   returns on the **first** completion. Treat it as one **tick** of a loop, where
+   *you* are the loop body:
+
+   ```
+   # after launching your runs, loop until the project is drained:
+   loop:
+     orx exp wait --project <projectId>   # sleeps; returns on the first completion
+     orx runs <projectId>                 # SOURCE OF TRUTH: re-read all run states
+     # for each run now terminal that you haven't handled yet:
+     #   - read its results (step 7) and decide: launch a refill? promote it? stop?
+     #   - launch the next queued child to refill the freed slot (step 5)
+     # if `exp wait` printed "drained: no runs in flight"  → batch is done, break
+   ```
+
+   Three things make this robust — follow all of them:
+   - **`exp wait --project` is a sleep-until-change signal, not the source of
+     truth.** It only reports completions it observed *during that one call*. A
+     run that finishes while you're analyzing the previous one is already terminal
+     by the next call and **won't be reported**. So on every wake, re-read
+     `orx runs <projectId>` and reconcile against the set of runs you've already
+     handled — act on *every* newly-terminal run, not just the line `exp wait`
+     printed. (This is the one time you do look at `orx runs` in a loop — as the
+     reconcile after each wake, **not** as a tight poll in place of `exp wait`.)
+   - **Re-issue `exp wait` each tick.** One completion → one return → you decide →
+     you call it again. Don't expect a single `exp wait` to block until everything
+     is done; that's the failure mode this loop avoids.
+   - **Terminate on drained.** When no runs are in flight, `exp wait --project`
+     returns immediately printing `drained: no runs in flight`. That — or seeing
+     every run terminal in `orx runs` with no more children to launch — is your
+     exit condition. Don't keep calling it into a timeout.
+7. **Analyze each finish as it lands, then iterate.** Do the per-completion read
+   *inside the loop above*, not deferred to the end — when a run finishes,
+   **actually read its results** before deciding: `orx artifact <runId> EVAL.md`,
+   `orx chart wandb …`, `orx query …`. Don't infer from status alone. Each
+   completion is a decision point with three moves:
+   - **Refill** — result is mediocre or inconclusive: launch the next queued child to
+     keep the GPU budget saturated (step 5).
+   - **Promote** — result is a clear win: this node becomes the **parent for the next
+     round**. The next batch of children branch off *it*, not the baseline, so the win
+     carries forward and the next ideas stack on top of it. This is the move that makes
+     the tree grow deeper; skipping it is what produces a flat, sweep-only tree.
+   - **Stop** — goal met, or the branch is exhausted.
+
+   The baseline stays untouched throughout — promotion moves the *focal parent* down the
+   tree, it never edits the root.
 
 Stop when the goal is met, or after ~3 consecutive failed or regressed runs.
 
@@ -222,15 +285,27 @@ orx exp wait <expId> --interval 10 --timeout 3600   # tune polling
 - `--project` is the **budget-loop** primitive: it wakes only on a **completion**
   (a run reaching `done`/`failed`/`cancelled`) — i.e. a freed slot. Run *starts*,
   new queued runs, and `queued→running` transitions are intentionally ignored, so
-  it won't wake you on non-events. **Prefer this over a custom poll loop over
-  `orx runs`.**
-- Because it only fires on a *new* completion, call `--project` **while runs are
-  in flight** (right after launching). If every run is already terminal when you
-  call it, there's nothing left to complete and it blocks until `--timeout`.
+  it won't wake you on non-events. It returns on the **first** completion — call
+  it in a loop, one return per tick, and you (not the CLI) decide what to do with
+  each freed slot. See the per-completion loop under "the experiment-tree model".
+- **It's a sleep-until-change signal, not the source of truth.** It reports only
+  completions it saw *during that one call*; a run that finishes between calls is
+  already terminal next time and won't be reported. On every return, re-read
+  `orx runs <projectId>` and act on *all* newly-terminal runs — don't treat the
+  printed line as the complete set, and don't replace `exp wait` with a tight
+  `orx runs` poll either (use `exp wait` to sleep, `orx runs` to reconcile).
+- Call `--project` **while runs are in flight** (right after launching). If every
+  run is already terminal, there's nothing left to complete, so it returns
+  immediately printing `drained: no runs in flight` (exit 0) — your loop's
+  termination signal.
 - `--interval` is seconds between polls (default `5`); `--timeout` gives up after
   N seconds (default `1800`) and exits **non-zero** so callers can branch on it.
+  For long training runs, raise `--timeout` (or treat a timeout exit as "nothing
+  changed yet, loop again") so a wait that simply outlasts the interval isn't
+  mistaken for an error.
 - Progress lines go to **stderr**; the final completion line(s) go to **stdout**,
-  each as `<runId> <prev> -> <status>` (or `<runId> <status> (new)`).
+  each as `<runId> <prev> -> <status>` (or `<runId> <status> (new)`), or the
+  single line `drained: no runs in flight` when nothing was in flight.
 
 ## Experiment description / notes — `orx exp desc`
 

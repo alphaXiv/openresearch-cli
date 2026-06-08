@@ -313,13 +313,16 @@ pub enum ExpCommand {
     /// Cancel the in-flight run.
     Cancel { exp_id: String },
 
-    /// Block until a run finishes (`<expId>`) or any run in a project changes (`--project`).
+    /// Wait for a run to finish: one experiment (`<expId>`) or the next completion in a project (`--project`).
     Wait {
         /// Experiment to watch; its latest run is polled until it reaches a
         /// terminal state. Omit and pass `--project` to watch a whole project.
         exp_id: Option<String>,
-        /// Watch every run in this project and return on the first change of any
-        /// kind (new run, status transition). Mutually exclusive with `<expId>`.
+        /// Watch every run in this project and return on the FIRST one to
+        /// complete (reach done/failed/cancelled) — a "slot freed" signal. Call
+        /// it in a loop, re-listing `orx runs` on each return to catch all
+        /// finished runs. Returns immediately ("drained: no runs in flight") if
+        /// none are in flight. Mutually exclusive with `<expId>`.
         #[arg(long)]
         project: Option<String>,
         /// Give up and exit non-zero after this many seconds (default 1800).
