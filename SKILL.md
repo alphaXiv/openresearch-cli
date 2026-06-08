@@ -129,8 +129,12 @@ run command:
    ```
 6. **Keep the budget saturated.** With a cap of N concurrent runs, never leave a
    slot idle while there's useful parallel work. Block on the next finish with
-   `orx exp wait --project <projectId>` (returns on the first change to any run),
-   then immediately launch the next queued child to refill the freed slot.
+   `orx exp wait --project <projectId>` — it returns the moment any run
+   *completes* (reaches a terminal state), which is exactly the "a slot freed"
+   signal. Then immediately launch the next queued child to refill the freed
+   slot. **Don't hand-roll a poll loop over `orx runs`** — `exp wait` already
+   does the polling, knows the real terminal states, and wakes only on
+   completions.
 7. **Analyze, then iterate.** When a run finishes, **actually read its results**
    before deciding — `orx artifact <runId> EVAL.md`, `orx chart wandb …`,
    `orx query …`. Don't infer from status alone. Promising children become parents
@@ -209,15 +213,24 @@ to act as soon as a run finishes. Two modes, picked by argument:
 ```sh
 orx exp wait <expId>                    # level trigger: poll this experiment's latest run
                                         #   until it reaches a terminal state (done/failed/cancelled)
-orx exp wait --project <projectId>      # edge trigger: return on the FIRST change to ANY run
-                                        #   in the project (new run, or a status transition)
+orx exp wait --project <projectId>      # edge trigger: return when the FIRST run in the
+                                        #   project COMPLETES (transitions into done/failed/cancelled)
 orx exp wait <expId> --interval 10 --timeout 3600   # tune polling
 ```
 
 - Pass **exactly one** of `<expId>` or `--project` (not both, not neither).
+- `--project` is the **budget-loop** primitive: it wakes only on a **completion**
+  (a run reaching `done`/`failed`/`cancelled`) — i.e. a freed slot. Run *starts*,
+  new queued runs, and `queued→running` transitions are intentionally ignored, so
+  it won't wake you on non-events. **Prefer this over a custom poll loop over
+  `orx runs`.**
+- Because it only fires on a *new* completion, call `--project` **while runs are
+  in flight** (right after launching). If every run is already terminal when you
+  call it, there's nothing left to complete and it blocks until `--timeout`.
 - `--interval` is seconds between polls (default `5`); `--timeout` gives up after
   N seconds (default `1800`) and exits **non-zero** so callers can branch on it.
-- Progress lines go to **stderr**; the final state line(s) go to **stdout**.
+- Progress lines go to **stderr**; the final completion line(s) go to **stdout**,
+  each as `<runId> <prev> -> <status>` (or `<runId> <status> (new)`).
 
 ## Experiment description / notes — `orx exp desc`
 

@@ -46,7 +46,7 @@ fn is_terminal(status: &str) -> bool {
 ///
 /// Two modes, picked by argument:
 ///   - `<expId>` — level trigger: poll the experiment's latest run until it reaches a terminal state (done/failed/cancelled).
-///   - `--project` — edge trigger: snapshot every run in the project and return on the first change of any kind (new run or status change).
+///   - `--project` — edge trigger: snapshot every run in the project and return when the first run *completes* — i.e. transitions into a terminal state (done/failed/cancelled). This is the "a slot just freed" signal a budget-saturation loop wants; run starts and queued→running transitions are intentionally ignored.
 ///
 /// Polls every `--interval` seconds (default 5), gives up after `--timeout`
 /// seconds (default 1800) with a non-zero exit so callers can branch on it.
@@ -103,8 +103,16 @@ async fn wait_experiment(
     }
 }
 
-/// Edge trigger: return as soon as any run in the project changes vs. the
-/// snapshot taken on entry (new run id, or a status transition).
+/// Edge trigger: return as soon as any run in the project *completes* — i.e.
+/// transitions into a terminal state (done/failed/cancelled) vs. the snapshot
+/// taken on entry. Run starts, new queued runs, and queued→running transitions
+/// are ignored: the useful project-wide signal is "a slot just freed", so a
+/// budget-saturation loop can analyze the finished run and launch the next one.
+///
+/// Note: runs already terminal at entry don't count (they're in the snapshot as
+/// terminal). If *every* run is already terminal when this is called, there's
+/// nothing left to complete and it blocks until `--timeout`. Call it right after
+/// launching, while runs are in flight.
 async fn wait_project(
     creds: &crate::config::Credentials,
     project_id: &str,
@@ -117,27 +125,33 @@ async fn wait_project(
         .into_iter()
         .map(|r| (r.id, r.status))
         .collect();
+    let in_flight = snapshot.values().filter(|s| !is_terminal(s)).count();
     eprintln!(
-        "Watching {} run(s) in project — returning on the first change…",
-        snapshot.len()
+        "Watching {} run(s) in project ({} in flight) — returning on the first completion…",
+        snapshot.len(),
+        in_flight
     );
 
     loop {
         sleep_until_or_timeout(interval, deadline).await?;
 
         let current = list_runs(creds, project_id).await?.runs;
-        let mut changes: Vec<String> = Vec::new();
+        let mut completed: Vec<String> = Vec::new();
         for r in &current {
+            if !is_terminal(&r.status) {
+                continue;
+            }
+            // Fire only on a *new* terminal: a run that was non-terminal before,
+            // or a brand-new run that's already terminal. Skip runs that were
+            // already terminal in the entry snapshot.
             match snapshot.get(&r.id) {
-                None => changes.push(format!("{} {} (new)", r.id, r.status)),
-                Some(prev) if prev != &r.status => {
-                    changes.push(format!("{} {} -> {}", r.id, prev, r.status))
-                }
-                Some(_) => {}
+                Some(prev) if is_terminal(prev) => {}
+                Some(prev) => completed.push(format!("{} {} -> {}", r.id, prev, r.status)),
+                None => completed.push(format!("{} {} (new)", r.id, r.status)),
             }
         }
-        if !changes.is_empty() {
-            for c in &changes {
+        if !completed.is_empty() {
+            for c in &completed {
                 println!("{}", c);
             }
             return Ok(());
