@@ -417,23 +417,15 @@ pub struct CreateChildBody {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateEmptyBaselineBody {
-    pub title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ImportBaselineBody {
-    pub repo_full_name: String,
-    #[serde(rename = "ref")]
-    pub ref_: String,
-    /// Always `null` in the TS caller; serialized as JSON `null`.
-    pub patch: Option<Value>,
-    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Auto-generate suggested first experiments off the baseline. Defaults to
+    /// true server-side when omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generate_suggestions: Option<bool>,
 }
 
 // The TS field is literally `ref` (a Rust keyword), so the struct field is
@@ -665,27 +657,13 @@ pub async fn create_child_experiment(
     .await
 }
 
-pub async fn create_empty_baseline(
-    creds: &Credentials,
-    project_id: &str,
-    body: &CreateEmptyBaselineBody,
-) -> Result<ExperimentEnvelope> {
-    let body = serde_json::to_value(body)?;
-    api_post(
-        creds,
-        &format!("/projects/{}/create-empty-baseline", project_id),
-        body,
-    )
-    .await
-}
-
 pub async fn import_baseline(
     creds: &Credentials,
     project_id: &str,
     body: &ImportBaselineBody,
 ) -> Result<ExperimentEnvelope> {
-    // Plain serde: `ref_` renames to `ref`, and `description: None` is omitted
-    // (skip_serializing_if) to match the TS caller, which never sends the key.
+    // Repo is bound at project creation; this just materializes the baseline on
+    // it. `None` fields are omitted so the server applies its defaults.
     let json = serde_json::to_value(body)?;
     api_post(
         creds,

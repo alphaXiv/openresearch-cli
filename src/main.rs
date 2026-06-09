@@ -84,7 +84,7 @@ enum Command {
     /// Render a W&B metric across runs to a PNG.
     Chart(ChartArgs),
 
-    /// Add an experiment node (child, git-repo root, or empty root).
+    /// Add an experiment node (child of a parent, or a baseline root).
     #[command(name = "create-experiment")]
     CreateExperiment(CreateExperimentArgs),
 
@@ -262,15 +262,10 @@ pub struct CreateExperimentArgs {
     /// Experiment description.
     #[arg(long)]
     pub description: Option<String>,
-    /// Parent experiment id -> create a child.
+    /// Parent experiment id -> create a child. Omit to create a baseline on the
+    /// project's bound repo.
     #[arg(long)]
     pub parent: Option<String>,
-    /// GitHub repo `owner/repo` -> create a root from it.
-    #[arg(long)]
-    pub repo: Option<String>,
-    /// Branch/tag/commit for `--repo`.
-    #[arg(long)]
-    pub ref_: Option<String>,
 }
 
 #[derive(Args, Debug)]
