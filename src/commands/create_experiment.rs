@@ -60,8 +60,20 @@ pub async fn run(args: crate::CreateExperimentArgs) -> Result<()> {
     }
 
     println!("\u{2713} Created {} experiment", kind);
-    println!("  id:    {}", experiment.id);
-    println!("  title: {}", experiment.title);
-    println!("  slug:  {}", experiment.slug);
+    println!("  id:     {}", experiment.id);
+    println!("  title:  {}", experiment.title);
+    println!("  slug:   {}", experiment.slug);
+    println!("  branch: {}", experiment.branch_name);
+    println!();
+    println!("To edit it, check out the branch in your local clone of the project's repo:");
+    println!(
+        "  git fetch origin && git checkout {}",
+        experiment.branch_name
+    );
+    println!("  # …edit, then…");
+    println!(
+        "  git commit -am \"<msg>\" && git push -u origin {}",
+        experiment.branch_name
+    );
     Ok(())
 }

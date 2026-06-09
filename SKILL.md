@@ -1,6 +1,6 @@
 ---
 name: openresearch-cli
-description: Use the `orx` CLI to drive OpenResearch projects from a terminal — browse the experiment tree, runs, logs, artifacts, code diffs, and the evidence DB; create experiments; launch, wait on, and cancel runs on GPU compute; edit a node's files in a dev session; and chart W&B metrics. Read this before driving `orx` programmatically.
+description: Use the `orx` CLI to drive OpenResearch projects from a terminal — browse the experiment tree, runs, logs, artifacts, code diffs, and the evidence DB; create experiments; launch, wait on, and cancel runs on GPU compute; and chart W&B metrics. Each experiment is a git branch you edit locally with plain git. Read this before driving `orx` programmatically.
 ---
 
 # OpenResearch CLI (`orx`)
@@ -26,7 +26,7 @@ section expands on the why; these are the non-negotiables.
    alone. Do **not** give nodes different start commands, and do **not** vary
    behavior through environment variables or env-prefixed commands
    (`LR=3e-4 python …`). The *only* thing that may differ between nodes is the
-   **committed code/config**, edited in a dev session. `orx exp cmd --set` is
+   **committed code/config** on the node's git branch. `orx exp cmd --set` is
    legitimate exactly once: to set the baseline's command when it has none.
 3. **Vary code, not knobs-in-the-command.** Encode hyperparameters in the
    code/config files and branch a child per variant — never sweep them by editing
@@ -38,8 +38,8 @@ section expands on the why; these are the non-negotiables.
    the failure mode. See "Shape the tree" below.
 
 If you're ever tempted to change the command, pass an env var, or pile another
-node onto the root instead of opening a dev session and descending — stop. That's
-the anti-pattern, not a shortcut.
+node onto the root instead of branching a child, editing its branch, and
+descending — stop. That's the anti-pattern, not a shortcut.
 
 ## Setup
 
@@ -63,7 +63,7 @@ orx logout         # remove the stored token
 ### Discover (project- and experiment-scoped)
 | Command | What it does |
 |---|---|
-| `orx projects [--all]` | List your projects (id + name), grouped by org. `--all` includes archived. **Project ids come from here.** |
+| `orx projects [--all]` | List your projects (id + name + GitHub `owner/repo`), grouped by org. `--all` includes archived. **Project ids and the repo to clone come from here.** |
 | `orx experiments <projectId>` | Print the project's experiments as an indented tree (nested by parent). **Experiment ids come from here.** |
 | `orx runs <projectId> [--experiment <id>]` | List runs as a table (status, experiment, commit, updated), newest first. `--experiment` filters to one experiment. **Run ids come from here.** |
 
@@ -79,21 +79,23 @@ orx logout         # remove the stored token
 | `orx chart wandb <projectId> --metric "<key>" --run <runId>[:label] ...` | Render a W&B metric across runs to a PNG line chart. See below. |
 | `orx query <projectId> "<sql>"` | Run **one read-only DuckDB SQL statement** against the project's evidence schema. See below. |
 
-### Committed code — no dev node needed (experiment-scoped)
+### Read committed code — no clone needed (experiment-scoped)
 | Command | What it does |
 |---|---|
 | `orx tree <expId> [path]` | List committed files in the experiment's branch under an optional path. |
 | `orx cat <expId> <path>` | Print a committed file from the experiment's branch to stdout. |
 | `orx search <expId> "<query>"` | Grep the committed branch for a case-insensitive substring. |
 
-### Create, run, and edit experiments (write)
+### Create and run experiments (write)
 | Command | What it does |
 |---|---|
-| `orx create-experiment <projectId> --title "<t>" [...]` | Add an experiment node (the one project-level write command). See below. |
+| `orx create-experiment <projectId> --title "<t>" [...]` | Add an experiment node (the one project-level write command); prints its git branch. See below. |
 | `orx compute [--gpu <id>] [--count <n>]` | List the GPU compute catalog (price-sorted). See below. |
 | `orx exp status/cmd/run/cancel/wait <expId>` | Inspect, run, cancel, and wait on a single experiment node. See below. |
 | `orx exp desc <expId> [--set "<text>" \| --stdin]` | Read or overwrite the experiment's description (free-form notes). See below. |
-| `orx dev open/close/status <expId>` + `orx read/write/str-replace/ls/grep/rm <expId>` | Edit a node's files in a dev session. See below. |
+
+To **edit** a node's code, check its git branch out locally and use plain git —
+there is no `orx` edit command. See "Editing a node's files" below.
 
 ### Literature & papers — alphaXiv (no login required)
 | Command | What it does |
@@ -179,7 +181,7 @@ run command:
    different rounds into one batch — that's what produces the flat fan.
 3. **Create the round as a bush, and pick its parent deliberately.** All of this
    round's options are **siblings under one parent** — the title is the idea, the
-   description is the concrete change the dev session will make. The parent is:
+   description is the concrete change you'll make on that node's branch. The parent is:
    - the **baseline**, only for the very first round (nothing has been won yet); or
    - the **previous round's confirmed winner**, for every round after — so this
      round's changes build *on top of* the last gain instead of resetting to the
@@ -198,12 +200,14 @@ run command:
    ```
    The child inherits its parent's run command automatically — you don't set it,
    and you never give siblings different commands or env vars (cardinal rule 2).
-4. **Implement each child's change in a dev session** — edit only the files that
-   idea touches, and **leave the run command alone**:
+4. **Implement each child's change on its git branch** — `orx create-experiment`
+   prints the child's branch (`orx/<slug>`); check it out in your local clone of
+   the project's repo, edit only the files that idea touches with your normal
+   tools, commit, and push. **Leave the run command alone:**
    ```sh
-   orx dev open <childId>
-   orx str-replace <childId> config.yaml "schedule: constant" "schedule: cosine"
-   orx dev close <childId> -m "cosine LR + warmup"
+   git fetch origin && git checkout orx/<child-slug>
+   #   …edit config.yaml: schedule: constant → cosine …
+   git commit -am "cosine LR + warmup" && git push
    ```
 5. **Launch up to your GPU budget** — one run per ready child, in parallel:
    ```sh
@@ -280,7 +284,7 @@ orx create-experiment <projectId> --title "Baseline"
   flag here.
 - **A `--parent` child inherits the parent's run command** (and branches off its
   code). You do **not** set a run command on the child — keep it and vary the code
-  via a dev session (see "the experiment-tree model" above).
+  on the child's git branch (see "the experiment-tree model" above).
 - **Choose the parent to keep the tree descending, not the root.** Before you pass
   `--parent`, name what that parent established that this node builds on. The root
   is the right parent only for the *first* round; every later round's siblings hang
@@ -314,11 +318,16 @@ Rules and notes:
 - **The run command is a fixed contract — set it once on the baseline, then leave
   it alone.** Children inherit it (see "the experiment-tree model" above). Don't
   `--set` a different command per child, and don't bake swept hyperparameters into
-  it — vary the **code/config** in a child's dev session instead, so every variant
+  it — vary the **code/config** on a child's git branch instead, so every variant
   runs the same command and their `EVAL.md`s stay comparable. The normal reason to
   touch a command is the baseline having none yet.
 - **Set a run command before launching.** `orx exp run` fails with a pointer to
   `orx exp cmd --set` if the node has none.
+- **Push your edits before launching.** A run trains the branch's tip **as it is
+  on GitHub** — so commit and push first (see "Editing a node's files"). As a
+  safety net, `orx exp run` refuses a child whose branch has **no changes over its
+  parent** (the tell-tale of "queued before pushing") — push and retry, or pass
+  `--force` to run the unchanged code deliberately.
 - **Pick compute with exactly one of `--gpu` or `--sandbox`.** With `--gpu`,
   `--count` defaults to `1` and `--disk` to `100` (GB). New instances are
   **RunPod-only** — the server picks the cheapest matching RunPod offer for the
@@ -389,10 +398,10 @@ cat notes.md | orx exp desc <expId> --stdin   # overwrite from stdin (long markd
 
 ## Reading committed code — `orx tree` / `orx cat` / `orx search`
 
-These read an experiment's **committed branch** directly (via Forgejo) and need
-**no open dev session** — use them to inspect a node's code without provisioning
-compute. (They are distinct from the `orx ls`/`grep`/`read` dev-session verbs
-below, which read the *live working tree* of an open dev node.)
+These read an experiment's **committed branch** directly on GitHub and need **no
+local clone** — use them to inspect a node's code (e.g. survey the baseline before
+deciding what to branch) without checking anything out. To *edit* a node, check
+its branch out locally (see "Editing a node's files" below).
 
 ```sh
 orx tree <expId>                 # list every committed file
@@ -404,42 +413,44 @@ orx search <expId> "batch_size"  # case-insensitive substring grep over the bran
 - All read against the latest commit on the experiment's branch.
 - `orx cat` writes content to **stdout** (pipe/redirect-friendly).
 
-## Editing a node's files — `orx dev` sessions
+## Editing a node's files — plain git on its branch
 
-To **change** files in an experiment, open a short-lived **dev session**: a CPU
-node with the branch checked out. You edit the *live working tree* (no commits per
-edit), then `dev close` makes **one commit** and tears the node down.
+Every experiment node **is a git branch** (`orx/<slug>`) on the project's GitHub
+repo — `orx create-experiment` prints it. There is no dev box and no `orx` edit
+command: you edit the branch directly in a **local clone of the project's repo**,
+with your own tools, then push. `orx projects` shows the repo (`owner/repo`) —
+clone it once and reuse that one clone across all of the project's experiments,
+switching branches per node.
 
 This is how you **realize a child's hypothesis**: after `create-experiment
---parent`, open a dev session on the child and make the specific code/config edits
-its description calls for — then close and run. Edit only the files that idea
-touches, and **don't touch the run command** (it's inherited; see "the
+--parent`, check out the child's branch and make the specific code/config edits
+its description calls for — then commit, push, and run. Edit only the files that
+idea touches, and **don't touch the run command** (it's inherited; see "the
 experiment-tree model" above). Edit children, never the baseline.
 
 ```sh
-orx dev open <expId>                         # provisions a node (~30s), checks out the branch
-orx ls   <expId> src                         # explore the working tree
-orx read <expId> src/train.py
-orx str-replace <expId> src/train.py "lr=1e-3" "lr=3e-4"
-cat new_config.yaml | orx write <expId> config.yaml   # write content from stdin
-orx grep <expId> "batch_size"
-orx rm   <expId> stale_file.py
-orx dev status <expId>                        # state + uncommitted changes
-orx dev close <expId> -m "tune lr"            # ONE commit + push, then teardown
-#   orx dev close <expId> --discard           # tear down without committing
+# once per project — clone the repo `orx projects` shows for it:
+git clone https://github.com/<owner>/<repo>.git && cd <repo>
+
+# per experiment — check out its branch, edit, commit, push:
+git fetch origin
+git checkout orx/<slug>          # the branch orx create-experiment printed
+#   …edit files with your normal tools…
+git commit -am "tune lr"         # one or more commits — your call
+git push                         # push so runs and the tree see the change
 ```
 
 Rules and notes:
-- **Always `orx dev open` first.** The edit verbs (`read`/`write`/`str-replace`/`ls`/`grep`/`rm`)
-  fail with a clear error if no dev node is open. (To read code *without* a dev
-  node, use `orx tree`/`cat`/`search` above.)
-- Edits do **not** commit individually — they accumulate in the working tree.
-  Only `dev close` commits (one commit for the whole session).
-- `write` reads the file content from **stdin**. `str-replace` needs the
-  `old_string` to appear exactly once.
-- **Close when done.** If you forget, the node auto-tears-down after ~30 min idle
-  (hard cap ~4 h) — but `dev close` is the intended path and avoids wasted compute.
-- All paths are relative to the experiment workdir; `..` and `.git` are blocked.
+- **Auth is your own git.** Clone/push use whatever GitHub credentials your `git`
+  already has — the repo lives under your account or your org, so access is the
+  same as any of your repos. If a clone or push fails on auth, authenticate git
+  for github.com (e.g. `gh auth login` or an SSH key) and retry.
+- **Push before you run.** `orx exp run` launches from the branch's pushed tip on
+  GitHub — uncommitted or unpushed edits won't be in the run. Commit and push
+  first.
+- **One clone, many branches.** Reuse a single clone of the project's repo and
+  `git checkout` (or `git worktree add`) per node; don't re-clone per experiment.
+- To read a node's code **without** cloning, use `orx tree`/`cat`/`search` above.
 
 ## Reading & searching run logs — `orx logs` / `orx search-logs`
 
@@ -609,5 +620,5 @@ orx logs <runId>                 # read its output
 ```
 
 To actually **drive** a project toward a goal — branch children off the baseline,
-edit each child's code in a dev session, and keep the GPU budget saturated — follow
+edit each child's code on its git branch, and keep the GPU budget saturated — follow
 the auto-research loop in "the experiment-tree model" above.

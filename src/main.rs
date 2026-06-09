@@ -94,29 +94,6 @@ enum Command {
     /// Operate on one experiment node (status / run command / run / cancel).
     Exp(ExpArgs),
 
-    /// Provision / inspect / tear down a dev node.
-    Dev(DevArgs),
-
-    // ---- fs verbs: all dispatch to commands::fs ----
-    /// Read a file from the dev working tree.
-    Read(FsReadArgs),
-
-    /// Write a file (content on stdin).
-    Write(FsWriteArgs),
-
-    /// Replace an exact unique snippet.
-    #[command(name = "str-replace")]
-    StrReplace(FsStrReplaceArgs),
-
-    /// List files.
-    Ls(FsLsArgs),
-
-    /// Search files.
-    Grep(FsGrepArgs),
-
-    /// Delete a file.
-    Rm(FsRmArgs),
-
     /// Print CLI usage for agents, or fetch a skill doc.
     Skill(SkillArgs),
 
@@ -357,64 +334,10 @@ pub struct ExpRunArgs {
     /// Run on an existing sandbox instead of provisioning. Mutually exclusive with `--gpu`/`--cpu`.
     #[arg(long)]
     pub sandbox: Option<String>,
-}
-
-#[derive(Args, Debug)]
-pub struct DevArgs {
-    /// `open`, `close`, or `status`.
-    pub action: String,
-    pub exp_id: String,
-    /// Commit message (close).
-    #[arg(short = 'm', long = "message")]
-    pub message: Option<String>,
-    /// Discard the session without committing (close).
+    /// Launch even if the experiment's branch has no changes over its parent
+    /// (bypasses the "did you forget to push?" guard, for a deliberate re-run).
     #[arg(long)]
-    pub discard: bool,
-}
-
-#[derive(Args, Debug)]
-pub struct FsReadArgs {
-    pub exp_id: String,
-    pub path: String,
-}
-
-#[derive(Args, Debug)]
-pub struct FsWriteArgs {
-    pub exp_id: String,
-    pub path: String,
-}
-
-#[derive(Args, Debug)]
-pub struct FsStrReplaceArgs {
-    pub exp_id: String,
-    pub path: String,
-    // old/new are arbitrary code strings that routinely begin with `-`/`--`
-    // (flags, diff markers, CLI snippets). Without this, clap parses them as
-    // unknown flags and the edit silently never happens.
-    #[arg(allow_hyphen_values = true)]
-    pub old_string: String,
-    #[arg(allow_hyphen_values = true)]
-    pub new_string: String,
-}
-
-#[derive(Args, Debug)]
-pub struct FsLsArgs {
-    pub exp_id: String,
-    pub path: Option<String>,
-}
-
-#[derive(Args, Debug)]
-pub struct FsGrepArgs {
-    pub exp_id: String,
-    // Search patterns can begin with `-` (e.g. `-inf`, `--flag`); take them literally.
-    #[arg(allow_hyphen_values = true)]
-    pub pattern: String,
-}
-
-#[derive(Args, Debug)]
-pub struct FsRmArgs {
-    pub exp_id: String,
-    pub path: String,
+    pub force: bool,
 }
 
 #[derive(Args, Debug)]
@@ -441,27 +364,6 @@ pub struct PaperArgs {
     /// Fetch the full extracted paper text instead of the report.
     #[arg(long)]
     pub full: bool,
-}
-
-/// Which fs verb is being invoked. Passed to `commands::fs::run` so the single
-/// module can build the right `DevFsOp`, mirroring the TS `fsCommand(verb, ...)`.
-#[derive(Debug, Clone, Copy)]
-pub enum FsVerb {
-    Read,
-    Write,
-    StrReplace,
-    Ls,
-    Grep,
-    Rm,
-}
-
-/// Normalized fs invocation handed to `commands::fs::run`.
-#[derive(Debug)]
-pub struct FsInvocation {
-    pub verb: FsVerb,
-    pub exp_id: String,
-    /// Positional args after the experiment id (path, pattern, old/new, ...).
-    pub rest: Vec<String>,
 }
 
 #[tokio::main]
@@ -501,56 +403,6 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::CreateExperiment(args) => commands::create_experiment::run(args).await,
         Command::Compute(args) => commands::compute::run(args).await,
         Command::Exp(args) => commands::exp::run(args).await,
-        Command::Dev(args) => commands::dev::run(args).await,
-        Command::Read(a) => {
-            commands::fs::run(FsInvocation {
-                verb: FsVerb::Read,
-                exp_id: a.exp_id,
-                rest: vec![a.path],
-            })
-            .await
-        }
-        Command::Write(a) => {
-            commands::fs::run(FsInvocation {
-                verb: FsVerb::Write,
-                exp_id: a.exp_id,
-                rest: vec![a.path],
-            })
-            .await
-        }
-        Command::StrReplace(a) => {
-            commands::fs::run(FsInvocation {
-                verb: FsVerb::StrReplace,
-                exp_id: a.exp_id,
-                rest: vec![a.path, a.old_string, a.new_string],
-            })
-            .await
-        }
-        Command::Ls(a) => {
-            let rest = a.path.map(|p| vec![p]).unwrap_or_default();
-            commands::fs::run(FsInvocation {
-                verb: FsVerb::Ls,
-                exp_id: a.exp_id,
-                rest,
-            })
-            .await
-        }
-        Command::Grep(a) => {
-            commands::fs::run(FsInvocation {
-                verb: FsVerb::Grep,
-                exp_id: a.exp_id,
-                rest: vec![a.pattern],
-            })
-            .await
-        }
-        Command::Rm(a) => {
-            commands::fs::run(FsInvocation {
-                verb: FsVerb::Rm,
-                exp_id: a.exp_id,
-                rest: vec![a.path],
-            })
-            .await
-        }
         Command::Skill(args) => commands::skill::run(args).await,
         Command::Lit(args) => commands::lit::run(args).await,
         Command::Paper(args) => commands::paper::run(args).await,

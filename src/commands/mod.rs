@@ -15,9 +15,6 @@
 //! - For early-exit "usage" errors that the TS prints to stderr + exit(1),
 //!   return `Err(anyhow!(...))` (clap already enforces required positionals, so
 //!   most of those usage guards are unnecessary in the Rust port).
-//!
-//! The six fs verbs share one module (`fs`); `fs::run` takes a
-//! `crate::FsInvocation` carrying the verb + positionals.
 
 pub mod artifact;
 pub mod artifacts;
@@ -25,11 +22,9 @@ pub mod cat;
 pub mod chart;
 pub mod compute;
 pub mod create_experiment;
-pub mod dev;
 pub mod diff;
 pub mod exp;
 pub mod experiments;
-pub mod fs;
 pub mod lit;
 pub mod login;
 pub mod logout;

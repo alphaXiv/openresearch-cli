@@ -361,7 +361,7 @@ async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<
         ));
     }
 
-    start_experiment_run(creds, &args.exp_id, target).await?;
+    start_experiment_run(creds, &args.exp_id, target, args.force).await?;
 
     println!("\u{2713} Run queued.");
     println!(

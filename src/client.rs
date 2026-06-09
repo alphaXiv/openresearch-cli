@@ -38,6 +38,12 @@ pub struct Project {
     pub name: String,
     pub description: String,
     pub archived: bool,
+    /// GitHub repo the project's experiment branches live on. Clone this to edit
+    /// experiments locally: `git clone https://github.com/<owner>/<repo>.git`.
+    #[serde(default)]
+    pub github_owner: String,
+    #[serde(default)]
+    pub github_repo: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -48,6 +54,10 @@ pub struct Experiment {
     /// `null` for root experiments.
     pub parent_experiment_id: Option<String>,
     pub slug: String,
+    /// The experiment's git branch on the project's GitHub repo (`orx/<slug>`).
+    /// This is what you `git checkout` to edit the experiment's code.
+    #[serde(default)]
+    pub branch_name: String,
     pub title: String,
     /// Free-form notes / write-up for the experiment; empty string when unset.
     #[serde(default)]
@@ -155,71 +165,7 @@ pub struct WandbChartResult {
     pub failed: Vec<WandbFailed>,
 }
 
-/// Mirrors the TS `DevSession`: `state: "none" | "provisioning" | "online" | "offline"`.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum DevSessionState {
-    None,
-    Provisioning,
-    Online,
-    Offline,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DevSession {
-    pub state: DevSessionState,
-    pub sandbox_id: Option<String>,
-}
-
-/// `DevStatus extends DevSession` with a `dirty` list of changed paths.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DevStatus {
-    pub state: DevSessionState,
-    pub sandbox_id: Option<String>,
-    pub dirty: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DevCloseResult {
-    pub committed: bool,
-    pub commit_sha: Option<String>,
-    pub torn_down: bool,
-}
-
-/// Tagged union of dev filesystem operations. The discriminant is the JSON
-/// field `op`, and the variant payloads use snake_case field names exactly as
-/// the TS `DevFsOp` (e.g. `old_string`, `new_string`), so we override the
-/// container's camelCase for these.
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
-pub enum DevFsOp {
-    Read {
-        path: String,
-    },
-    Write {
-        path: String,
-        content: String,
-    },
-    StrReplace {
-        path: String,
-        old_string: String,
-        new_string: String,
-    },
-    List {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        path: Option<String>,
-    },
-    Search {
-        query: String,
-    },
-    Delete {
-        path: String,
-    },
-}
-
+/// Output of a read-only workdir query (`orx cat` / `tree` / `search`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FsOutput {
@@ -428,18 +374,6 @@ pub struct ImportBaselineBody {
     pub generate_suggestions: Option<bool>,
 }
 
-// The TS field is literally `ref` (a Rust keyword), so the struct field is
-// `ref_` with `#[serde(rename = "ref")]` to emit `ref` on the wire.
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DevCloseBody {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub discard: Option<bool>,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchLogsBody {
@@ -499,6 +433,9 @@ pub enum RunTarget {
 #[derive(Debug, Clone, Serialize)]
 struct RunBody {
     target: RunTarget,
+    /// Bypass the server's "branch unchanged vs parent" guard. Omitted when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    force: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -673,33 +610,6 @@ pub async fn import_baseline(
     .await
 }
 
-pub async fn dev_open(creds: &Credentials, exp_id: &str) -> Result<DevSession> {
-    api_post(
-        creds,
-        &format!("/experiments/{}/dev/open", exp_id),
-        serde_json::json!({}),
-    )
-    .await
-}
-
-pub async fn dev_status(creds: &Credentials, exp_id: &str) -> Result<DevStatus> {
-    api_get(creds, &format!("/experiments/{}/dev/status", exp_id)).await
-}
-
-pub async fn dev_close(
-    creds: &Credentials,
-    exp_id: &str,
-    body: &DevCloseBody,
-) -> Result<DevCloseResult> {
-    let body = serde_json::to_value(body)?;
-    api_post(creds, &format!("/experiments/{}/dev/close", exp_id), body).await
-}
-
-pub async fn dev_fs(creds: &Credentials, exp_id: &str, op: &DevFsOp) -> Result<FsOutput> {
-    let body = serde_json::to_value(op)?;
-    api_post(creds, &format!("/experiments/{}/dev/fs", exp_id), body).await
-}
-
 pub async fn read_run_log(
     creds: &Credentials,
     run_id: &str,
@@ -827,8 +737,9 @@ pub async fn start_experiment_run(
     creds: &Credentials,
     exp_id: &str,
     target: RunTarget,
+    force: bool,
 ) -> Result<ExperimentEnvelope> {
-    let body = serde_json::to_value(RunBody { target })?;
+    let body = serde_json::to_value(RunBody { target, force })?;
     api_post(creds, &format!("/experiments/{}/run", exp_id), body).await
 }
 

@@ -37,12 +37,18 @@ pub async fn run(args: crate::ProjectsArgs) -> Result<()> {
         for project in &visible {
             let tag = if project.archived { " (archived)" } else { "" };
             let pad = id_width.saturating_sub(project.id.chars().count());
+            let repo = if project.github_owner.is_empty() {
+                String::new()
+            } else {
+                format!("  ({}/{})", project.github_owner, project.github_repo)
+            };
             println!(
-                "  {}{}  {}{}",
+                "  {}{}  {}{}{}",
                 project.id,
                 " ".repeat(pad),
                 project.name,
-                tag
+                tag,
+                repo
             );
         }
     }
