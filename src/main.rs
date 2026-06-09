@@ -352,7 +352,14 @@ pub struct ExpRunArgs {
     /// Disk in GB (with `--gpu`; default 100).
     #[arg(long)]
     pub disk: Option<i64>,
-    /// Run on an existing sandbox instead of provisioning. Mutually exclusive with `--gpu`.
+    /// Provision a CPU-only instance with this flavor: cpu5c (compute), cpu5g
+    /// (general), or cpu5m (memory-optimized). Mutually exclusive with `--gpu`.
+    #[arg(long)]
+    pub cpu: Option<String>,
+    /// vCPUs for a CPU instance (with `--cpu`): 2, 8, or 32 (default 8).
+    #[arg(long)]
+    pub vcpus: Option<i64>,
+    /// Run on an existing sandbox instead of provisioning. Mutually exclusive with `--gpu`/`--cpu`.
     #[arg(long)]
     pub sandbox: Option<String>,
 }

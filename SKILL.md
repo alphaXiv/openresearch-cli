@@ -12,6 +12,35 @@ tree, runs, logs, artifacts, code diffs, evidence database) and **write actions*
 it when you need to inspect or drive project state from a shell instead of the
 web UI.
 
+## Cardinal rules — read before doing anything else
+
+These four govern everything below. Breaking any one silently invalidates your
+results — they are not style preferences. The detailed "experiment-tree model"
+section expands on the why; these are the non-negotiables.
+
+1. **Never edit the baseline (the root).** The root is the control every variant
+   is measured against. To try an idea, **branch a child** and edit the child.
+   Editing the root moves the goalposts and destroys every comparison.
+2. **The run command *and* the environment are a fixed contract — identical on
+   every node.** A child inherits its parent's run command verbatim; leave it
+   alone. Do **not** give nodes different start commands, and do **not** vary
+   behavior through environment variables or env-prefixed commands
+   (`LR=3e-4 python …`). The *only* thing that may differ between nodes is the
+   **committed code/config**, edited in a dev session. `orx exp cmd --set` is
+   legitimate exactly once: to set the baseline's command when it has none.
+3. **Vary code, not knobs-in-the-command.** Encode hyperparameters in the
+   code/config files and branch a child per variant — never sweep them by editing
+   the run command or passing env vars. Every node runs the *same* command over
+   *different code*, so their `EVAL.md` outputs stay comparable.
+4. **Grow the tree downward, not sideways.** Fan a little *within* a round (the
+   options of one decision), then **descend onto that round's winner** for the
+   next round. A root with a long row of direct children and no grandchildren is
+   the failure mode. See "Shape the tree" below.
+
+If you're ever tempted to change the command, pass an env var, or pile another
+node onto the root instead of opening a dev session and descending — stop. That's
+the anti-pattern, not a shortcut.
+
 ## Setup
 
 ```sh
@@ -87,37 +116,53 @@ ids from `orx projects`, `orx experiments`, and `orx runs` respectively.
 A project is a **tree of experiment nodes**. The root (**baseline**) holds the
 starting code and a **run command** — the single shell command that trains or
 evaluates the node and writes an `EVAL.md` with its results. Every other node is a
-**child** branched off a parent, inheriting its code and its run command.
+**child** branched off a parent, inheriting its code and its run command. The two
+rules this depends on — **never edit the baseline** and **the run command + env is
+a fixed contract** — are the cardinal rules at the top of this skill; everything
+below assumes them.
 
-Two rules drive everything you do here:
+### Shape the tree — stacked bushes, not a flat fan or a noodle
 
-1. **The run command is a fixed contract, not a knob.** A child **inherits its
-   parent's run command** (`create-experiment --parent` copies it verbatim). You
-   compare nodes by running *the same command* over *different code*, then diffing
-   their `EVAL.md` outputs. Change the command per node and the results stop being
-   comparable. So: set the run command **once on the baseline**, then leave it
-   alone — vary the **code/config**, never the command. Do **not** encode
-   hyperparameters as CLI args in the run command and sweep them by editing the
-   command; encode them in the code/config files and branch a child per variant.
+The single most common way to drive a project badly is to get the **shape** wrong.
+There are two opposite failures, and the right shape sits between them:
 
-2. **Never edit the baseline.** The root is your control — the anchor every variant
-   is measured against. To try an idea, **branch a child** off it and edit the
-   child. Editing the root moves the goalposts and destroys the comparison.
+```
+FLAT FAN (wrong)            NOODLE (wrong)            STACKED BUSHES (right)
+root                        root                      root
+├ a ├ b ├ c ... ├ n         └ a                       └ lr-head        ┐ round 1:
+                              └ b                        ├ lr 2e-5     │ a small fan of
+                                └ c                      └ lr 3e-5     ┘ co-equal options
+                                  └ d ...                   └ winner ── arch-head   ┐ round 2
+                                                               ├ arch-A             │ descends onto
+                                                               └ arch-B             ┘ round 1's winner
+```
 
-**Climb the tree — don't fan out from the root.** There are two reasons to branch,
-and they want opposite shapes:
+- **Flat fan** (your whole sweep hanging off the root): every result is measured
+  against the *start*, so wins never accumulate and the tree never makes progress.
+- **Noodle** (a long single-child chain): depth manufactured for its own sake —
+  each step doesn't actually build on the one above it.
+- **Stacked bushes** (correct): a *small fan within a round* (the options of one
+  decision), then **descend onto that round's winner** for the next round.
 
-- **Comparing orthogonal knobs head-to-head** (LR vs. width vs. init — each measured
-  against the *same* control): branch each off the **baseline**. Wide is correct here.
-- **Composing or refining** (cosine LR won → now test width *on top of* cosine LR so
-  the gains stack): branch off the **best confirmed node so far**, not the baseline.
-  Deep is correct here.
+**The one rule that produces this shape.** Before you make X a child of Y, name
+what Y established that X builds on:
 
-A baseline with 10+ direct children and **no grandchildren** is the failure mode: you're
-sweeping, not climbing. Every result is being measured against the *start* instead of
-building on the last win, so improvements never accumulate. After each round produces a
-winner, the focal parent should move **down** the tree — the next round's children branch
-off that winner. A healthy tree gets *deeper* as the research progresses, not just wider.
+- **You can name it** ("Y is the LR winner; X keeps that LR and changes the
+  architecture") → real depth. X is a **child** of Y. Descend.
+- **You can't — X and Y are co-equal options you're trying at the same time**
+  (lr 2e-5 vs lr 3e-5) → they don't build on each other. They're **siblings** in
+  the same bush. Fan, don't chain.
+
+So: **width = the open options of one decision** (fan freely — a 3-way LR sweep
+*should* be three siblings under a common head); **depth = decisions already
+resolved, stacked** (one level down per winner kept). A new *round* never hangs off
+the root — it hangs off the previous round's winner. That keeps the tree moving
+**downward** as research progresses, without stringing unrelated nodes into a line.
+
+Re-read `orx experiments` each round and check the shape: a wide row of direct
+children off the root with no grandchildren means you're fanning when you should be
+descending; a long depth-N chain with no branching means you're chaining co-equal
+variants that should have been siblings.
 
 ### The auto-research loop
 
@@ -128,27 +173,31 @@ run command:
 1. **Read the baseline's code.** `orx tree <baseId>`, `orx cat <baseId> <path>`,
    `orx search <baseId> "<sym>"`. See its run command with `orx exp cmd <baseId>`
    and find where the knobs live (config files, hyperparameters, model defs).
-2. **Form hypotheses** — concrete, independent ideas (an LR schedule, a width
-   change, an init scheme, …), each a single change you can make and measure.
-3. **Create one child per idea — and pick its parent deliberately.** The **title**
-   is the idea, the **description** is the concrete change the dev session will make.
-   The parent is *not* always the baseline: branch off the baseline only when you're
-   isolating an orthogonal variable for a clean head-to-head against the control. Once
-   an earlier round has produced a **confirmed winner**, branch this round's children
-   off **that winner** instead, so the new change stacks on top of the gain rather than
-   resetting to the start (see "Climb the tree" above).
-   ```sh
-   # Round 1: orthogonal knobs, each off the baseline (wide — fair head-to-head):
-   orx create-experiment <projectId> --parent <baseId> \
-     --title "Cosine LR + warmup" \
-     --description "Switch the constant LR in config.yaml to cosine decay with 500-step warmup; leave everything else."
+2. **Form one round's worth of hypotheses** — the co-equal options of a *single*
+   decision (which LR? which schedule? which init?), each a concrete change you can
+   make and measure against the others in this round. Don't mix decisions from
+   different rounds into one batch — that's what produces the flat fan.
+3. **Create the round as a bush, and pick its parent deliberately.** All of this
+   round's options are **siblings under one parent** — the title is the idea, the
+   description is the concrete change the dev session will make. The parent is:
+   - the **baseline**, only for the very first round (nothing has been won yet); or
+   - the **previous round's confirmed winner**, for every round after — so this
+     round's changes build *on top of* the last gain instead of resetting to the
+     start. This is what walks the tree downward (see "Shape the tree" above).
 
-   # Round 2: cosine LR won → stack the next idea ON it (deep — compose the gains):
-   orx create-experiment <projectId> --parent <cosineWinnerId> \
-     --title "Wider MLP on cosine LR" \
-     --description "On top of the cosine-LR winner, widen the MLP hidden dim 1024→2048 in model.py."
+   ```sh
+   # Round 1 — one decision (the LR), its options fanned off the baseline:
+   orx create-experiment <projectId> --parent <baseId> --title "LR 2e-5" \
+     --description "Set the LR in config.yaml to 2e-5; change nothing else."
+   orx create-experiment <projectId> --parent <baseId> --title "LR 3e-5" \
+     --description "Set the LR in config.yaml to 3e-5; change nothing else."
+
+   # Round 2 — LR 3e-5 won → the next decision (architecture) descends onto it:
+   orx create-experiment <projectId> --parent <lr3e5WinnerId> --title "Wider MLP" \
+     --description "On top of the LR-3e-5 winner, widen the MLP hidden dim 1024→2048 in model.py."
    ```
-   The child inherits its parent's run command automatically — you don't set it.
+   The child inherits its parent's run command automatically — you don't set it,
+   and you never give siblings different commands or env vars (cardinal rule 2).
 4. **Implement each child's change in a dev session** — edit only the files that
    idea touches, and **leave the run command alone**:
    ```sh
@@ -233,6 +282,13 @@ orx create-experiment <projectId> --title "Scratch baseline"
 - **A `--parent` child inherits the parent's run command** (and branches off its
   code). You do **not** set a run command on the child — keep it and vary the code
   via a dev session (see "the experiment-tree model" above).
+- **Choose the parent to keep the tree descending, not the root.** Before you pass
+  `--parent`, name what that parent established that this node builds on. The root
+  is the right parent only for the *first* round; every later round's siblings hang
+  off the **previous round's winner** (`orx experiments` shows the current shape).
+  Piling round after round of children onto the root is the flat-fan failure (see
+  "Shape the tree"). Co-equal options of the same decision are siblings under one
+  parent — don't chain them into a line either.
 - `--repo` takes a GitHub `owner/repo` that is reachable through the org's GitHub
   App installation — it is imported as a tarball, **not** an arbitrary
   `git clone` URL. `--ref` (branch/tag/commit) only applies with `--repo`.

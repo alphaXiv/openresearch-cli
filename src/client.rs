@@ -494,6 +494,14 @@ pub enum RunTarget {
         #[serde(rename = "diskGb")]
         disk_gb: i64,
     },
+    /// Provision a fresh CPU-only instance.
+    #[serde(rename = "new-cpu")]
+    NewCpu {
+        #[serde(rename = "cpuFlavor")]
+        cpu_flavor: String,
+        #[serde(rename = "vcpuCount")]
+        vcpu_count: i64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]

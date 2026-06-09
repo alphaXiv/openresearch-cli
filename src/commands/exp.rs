@@ -318,25 +318,33 @@ async fn desc(
 
 /// `orx exp run <expId> …` — launch a run on a new instance or existing sandbox.
 async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<()> {
-    // Resolve the target: exactly one of --sandbox or --gpu.
-    let target = match (&args.sandbox, &args.gpu) {
-        (Some(_), Some(_)) => {
-            return Err(anyhow!("Pass either --sandbox or --gpu, not both."));
-        }
-        (None, None) => {
-            return Err(anyhow!(
-                "Choose compute: --gpu <id> [--count N] [--disk GB], or --sandbox <id>. \
-                 See `orx compute` for available GPUs."
-            ));
-        }
-        (Some(sandbox_id), None) => RunTarget::Existing {
+    // Resolve the target: exactly one of --sandbox, --gpu, or --cpu.
+    let selectors = [args.sandbox.is_some(), args.gpu.is_some(), args.cpu.is_some()];
+    let chosen = selectors.iter().filter(|x| **x).count();
+    if chosen > 1 {
+        return Err(anyhow!("Pass exactly one of --sandbox, --gpu, or --cpu."));
+    }
+    let target = if let Some(sandbox_id) = &args.sandbox {
+        RunTarget::Existing {
             sandbox_id: sandbox_id.clone(),
-        },
-        (None, Some(gpu)) => RunTarget::New {
+        }
+    } else if let Some(gpu) = &args.gpu {
+        RunTarget::New {
             gpu: gpu.clone(),
             gpu_count: args.count.unwrap_or(1),
             disk_gb: args.disk.unwrap_or(100),
-        },
+        }
+    } else if let Some(cpu_flavor) = &args.cpu {
+        RunTarget::NewCpu {
+            cpu_flavor: cpu_flavor.clone(),
+            vcpu_count: args.vcpus.unwrap_or(8),
+        }
+    } else {
+        return Err(anyhow!(
+            "Choose compute: --gpu <id> [--count N] [--disk GB], \
+             --cpu <cpu5c|cpu5g|cpu5m> [--vcpus 2|8|32], or --sandbox <id>. \
+             See `orx compute` for available GPUs."
+        ));
     };
 
     // Friendlier than the raw API "No run command set": tell them how to fix it.
