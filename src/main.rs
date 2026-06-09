@@ -57,15 +57,6 @@ enum Command {
     #[command(name = "search-logs")]
     SearchLogs(SearchLogsArgs),
 
-    /// Grep an experiment's committed branch (no dev node).
-    Search(SearchArgs),
-
-    /// List committed files (no dev node).
-    Tree(TreeArgs),
-
-    /// Read a committed file (no dev node).
-    Cat(CatArgs),
-
     /// List the text artifacts a run produced (key + size).
     Artifacts(ArtifactsArgs),
 
@@ -158,24 +149,6 @@ pub struct SearchLogsArgs {
     /// Cap matching lines.
     #[arg(long)]
     pub max: Option<String>,
-}
-
-#[derive(Args, Debug)]
-pub struct SearchArgs {
-    pub exp_id: String,
-    pub query: String,
-}
-
-#[derive(Args, Debug)]
-pub struct TreeArgs {
-    pub exp_id: String,
-    pub path: Option<String>,
-}
-
-#[derive(Args, Debug)]
-pub struct CatArgs {
-    pub exp_id: String,
-    pub path: String,
 }
 
 #[derive(Args, Debug)]
@@ -391,9 +364,6 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Runs(args) => commands::runs::run(args).await,
         Command::Logs(args) => commands::logs::run(args).await,
         Command::SearchLogs(args) => commands::search_logs::run(args).await,
-        Command::Search(args) => commands::search::run(args).await,
-        Command::Tree(args) => commands::tree::run(args).await,
-        Command::Cat(args) => commands::cat::run(args).await,
         Command::Artifacts(args) => commands::artifacts::run(args).await,
         Command::Artifact(args) => commands::artifact::run(args).await,
         Command::Wandb(args) => commands::wandb::run(args).await,

@@ -18,7 +18,6 @@
 
 pub mod artifact;
 pub mod artifacts;
-pub mod cat;
 pub mod chart;
 pub mod compute;
 pub mod create_experiment;
@@ -33,8 +32,6 @@ pub mod paper;
 pub mod projects;
 pub mod query;
 pub mod runs;
-pub mod search;
 pub mod search_logs;
 pub mod skill;
-pub mod tree;
 pub mod wandb;

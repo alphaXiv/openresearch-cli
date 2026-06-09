@@ -165,13 +165,6 @@ pub struct WandbChartResult {
     pub failed: Vec<WandbFailed>,
 }
 
-/// Output of a read-only workdir query (`orx cat` / `tree` / `search`).
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FsOutput {
-    pub output: String,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunLogExcerpt {
@@ -209,25 +202,6 @@ pub struct LogSearchResult {
     pub capped: bool,
     pub pattern: String,
     pub results: Vec<LogSearchRunResult>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkdirFile {
-    pub path: String,
-    pub size: Option<i64>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkdirLs {
-    pub files: Vec<WorkdirFile>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkdirRead {
-    pub content: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -649,36 +623,6 @@ pub async fn search_logs(
         creds,
         &format!("/projects/{}/search-logs", project_id),
         body,
-    )
-    .await
-}
-
-pub async fn search_workdir(creds: &Credentials, exp_id: &str, query: &str) -> Result<FsOutput> {
-    let q = urlencoding::encode(query);
-    api_get(
-        creds,
-        &format!("/experiments/{}/workdir/search?q={}", exp_id, q),
-    )
-    .await
-}
-
-pub async fn ls_workdir(
-    creds: &Credentials,
-    exp_id: &str,
-    path: Option<&str>,
-) -> Result<WorkdirLs> {
-    let qs = match path {
-        Some(p) => format!("?path={}", urlencoding::encode(p)),
-        None => String::new(),
-    };
-    api_get(creds, &format!("/experiments/{}/workdir/ls{}", exp_id, qs)).await
-}
-
-pub async fn read_workdir(creds: &Credentials, exp_id: &str, path: &str) -> Result<WorkdirRead> {
-    let p = urlencoding::encode(path);
-    api_get(
-        creds,
-        &format!("/experiments/{}/workdir/read?path={}", exp_id, p),
     )
     .await
 }

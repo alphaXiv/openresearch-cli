@@ -79,13 +79,6 @@ orx logout         # remove the stored token
 | `orx chart wandb <projectId> --metric "<key>" --run <runId>[:label] ...` | Render a W&B metric across runs to a PNG line chart. See below. |
 | `orx query <projectId> "<sql>"` | Run **one read-only DuckDB SQL statement** against the project's evidence schema. See below. |
 
-### Read committed code — no clone needed (experiment-scoped)
-| Command | What it does |
-|---|---|
-| `orx tree <expId> [path]` | List committed files in the experiment's branch under an optional path. |
-| `orx cat <expId> <path>` | Print a committed file from the experiment's branch to stdout. |
-| `orx search <expId> "<query>"` | Grep the committed branch for a case-insensitive substring. |
-
 ### Create and run experiments (write)
 | Command | What it does |
 |---|---|
@@ -172,9 +165,10 @@ To drive a project toward a goal (e.g. "best convergence for d=8") under a fixed
 GPU budget, this is the intended flow — do **not** edit the baseline or rewrite the
 run command:
 
-1. **Read the baseline's code.** `orx tree <baseId>`, `orx cat <baseId> <path>`,
-   `orx search <baseId> "<sym>"`. See its run command with `orx exp cmd <baseId>`
-   and find where the knobs live (config files, hyperparameters, model defs).
+1. **Read the baseline's code.** Clone the project's repo into the cache dir and
+   read it with your normal tools (see "Editing a node's files" for the path).
+   See its run command with `orx exp cmd <baseId>` and find where the knobs live
+   (config files, hyperparameters, model defs).
 2. **Form one round's worth of hypotheses** — the co-equal options of a *single*
    decision (which LR? which schedule? which init?), each a concrete change you can
    make and measure against the others in this round. Don't mix decisions from
@@ -201,13 +195,16 @@ run command:
    The child inherits its parent's run command automatically — you don't set it,
    and you never give siblings different commands or env vars (cardinal rule 2).
 4. **Implement each child's change on its git branch** — `orx create-experiment`
-   prints the child's branch (`orx/<slug>`); check it out in your local clone of
-   the project's repo, edit only the files that idea touches with your normal
-   tools, commit, and push. **Leave the run command alone:**
+   prints the child's branch (`orx/<slug>`); sync the project's clone (in the
+   openresearch cache dir — see "Editing a node's files"), check the branch out,
+   edit only the files that idea touches, commit, and push. **Leave the run
+   command alone:**
    ```sh
-   git fetch origin && git checkout orx/<child-slug>
-   #   …edit config.yaml: schedule: constant → cosine …
-   git commit -am "cosine LR + warmup" && git push
+   DIR=~/.cache/openresearch/repos/<owner>/<repo>   # owner/repo from `orx projects`
+   [ -d "$DIR" ] || git clone https://github.com/<owner>/<repo> "$DIR"
+   git -C "$DIR" fetch origin && git -C "$DIR" checkout -B orx/<child-slug> origin/orx/<child-slug>
+   #   …edit config.yaml under "$DIR": schedule: constant → cosine …
+   git -C "$DIR" commit -am "cosine LR + warmup" && git -C "$DIR" push
    ```
 5. **Launch up to your GPU budget** — one run per ready child, in parallel:
    ```sh
@@ -396,31 +393,23 @@ cat notes.md | orx exp desc <expId> --stdin   # overwrite from stdin (long markd
 - `<expId>` comes from `orx experiments <projectId>` (the experiment id, not a run
   or project id).
 
-## Reading committed code — `orx tree` / `orx cat` / `orx search`
-
-These read an experiment's **committed branch** directly on GitHub and need **no
-local clone** — use them to inspect a node's code (e.g. survey the baseline before
-deciding what to branch) without checking anything out. To *edit* a node, check
-its branch out locally (see "Editing a node's files" below).
-
-```sh
-orx tree <expId>                 # list every committed file
-orx tree <expId> src             # list files under a path
-orx cat  <expId> src/train.py    # print a committed file to stdout
-orx search <expId> "batch_size"  # case-insensitive substring grep over the branch
-```
-
-- All read against the latest commit on the experiment's branch.
-- `orx cat` writes content to **stdout** (pipe/redirect-friendly).
-
 ## Editing a node's files — plain git on its branch
 
 Every experiment node **is a git branch** (`orx/<slug>`) on the project's GitHub
 repo — `orx create-experiment` prints it. There is no dev box and no `orx` edit
 command: you edit the branch directly in a **local clone of the project's repo**,
-with your own tools, then push. `orx projects` shows the repo (`owner/repo`) —
-clone it once and reuse that one clone across all of the project's experiments,
-switching branches per node.
+with your own tools, then push.
+
+**Clone into the openresearch cache dir, not your cwd.** The canonical location,
+keyed by repo so the same clone is reused across all of a project's experiments:
+
+```
+~/.cache/openresearch/repos/<owner>/<repo>
+```
+
+`<owner>/<repo>` comes from `orx projects`. **Never** clone into your current
+directory or the user's project folders — clones accreting in `~/projects` is the
+failure mode this avoids.
 
 This is how you **realize a child's hypothesis**: after `create-experiment
 --parent`, check out the child's branch and make the specific code/config edits
@@ -428,19 +417,31 @@ its description calls for — then commit, push, and run. Edit only the files th
 idea touches, and **don't touch the run command** (it's inherited; see "the
 experiment-tree model" above). Edit children, never the baseline.
 
-```sh
-# once per project — clone the repo `orx projects` shows for it:
-git clone https://github.com/<owner>/<repo>.git && cd <repo>
+The sync recipe is **idempotent** — run it verbatim whether or not the clone
+already exists from a previous session. Always fetch + reset before editing, so a
+reused clone is never stale (and the experiment's branch, created server-side, is
+fetched even when it's brand-new and not in your local clone yet):
 
-# per experiment — check out its branch, edit, commit, push:
-git fetch origin
-git checkout orx/<slug>          # the branch orx create-experiment printed
-#   …edit files with your normal tools…
-git commit -am "tune lr"         # one or more commits — your call
-git push                         # push so runs and the tree see the change
+```sh
+DIR=~/.cache/openresearch/repos/<owner>/<repo>
+
+# Clone once (skips if it already exists), then ALWAYS sync before touching a branch:
+[ -d "$DIR" ] || git clone https://github.com/<owner>/<repo> "$DIR"
+git -C "$DIR" fetch origin
+git -C "$DIR" checkout -B orx/<slug> origin/orx/<slug>   # create, or reset to origin if it exists
+
+#   …edit files under "$DIR" with your normal tools…
+git -C "$DIR" commit -am "tune lr"     # one or more commits — your call
+git -C "$DIR" push                     # push so runs and the tree see the change
 ```
 
 Rules and notes:
+- **Always sync first.** `git -C "$DIR" fetch origin && git -C "$DIR" checkout -B
+  orx/<slug> origin/orx/<slug>` is mandatory every time — `-B …origin` creates the
+  branch or resets an existing local one to the GitHub tip, so a persistent clone
+  never edits a stale base. It discards uncommitted/unpushed local work on that
+  branch, which is exactly what you don't want to carry across sessions (the
+  contract is commit + push before moving on).
 - **Auth is your own git.** Clone/push use whatever GitHub credentials your `git`
   already has — the repo lives under your account or your org, so access is the
   same as any of your repos. If a clone or push fails on auth, authenticate git
@@ -448,9 +449,8 @@ Rules and notes:
 - **Push before you run.** `orx exp run` launches from the branch's pushed tip on
   GitHub — uncommitted or unpushed edits won't be in the run. Commit and push
   first.
-- **One clone, many branches.** Reuse a single clone of the project's repo and
-  `git checkout` (or `git worktree add`) per node; don't re-clone per experiment.
-- To read a node's code **without** cloning, use `orx tree`/`cat`/`search` above.
+- **Reading another node's code** without disturbing your checkout: that branch is
+  already in the clone after a fetch — `git -C "$DIR" show origin/orx/<slug>:<path>`.
 
 ## Reading & searching run logs — `orx logs` / `orx search-logs`
 
