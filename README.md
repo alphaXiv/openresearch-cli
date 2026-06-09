@@ -45,6 +45,8 @@ Run the tests with `cargo test`.
 | `orx exp cmd <expId> [--set <command>]` | Views or sets the experiment's run command. |
 | `orx exp run <expId> (--gpu <id> [--count <n>] [--disk <gb>] \| --sandbox <id>)` | Launches a run on new or existing compute. |
 | `orx exp cancel <expId>` | Cancels the in-flight run. |
+| `orx lit "<query>" [--limit <n>] [--json]` | Full-text search alphaXiv's paper corpus (no login required). |
+| `orx paper <id\|url> [--full]` | Fetch a paper's machine-readable report, or its full text with `--full`. |
 
 ### Configuration
 

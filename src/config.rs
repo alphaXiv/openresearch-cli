@@ -20,6 +20,20 @@ pub fn default_api_url() -> String {
         .unwrap_or_else(|_| "https://api.openresearch.sh".to_string())
 }
 
+/// Base URL for the alphaXiv JSON API (full-text literature search). Unlike the
+/// OpenResearch API these endpoints are public — no token — and live on a
+/// different host. Override with `ALPHAXIV_API_URL`.
+pub fn alphaxiv_api_url() -> String {
+    std::env::var("ALPHAXIV_API_URL").unwrap_or_else(|_| "https://api.alphaxiv.org".to_string())
+}
+
+/// Base URL for the alphaXiv web app, which serves the per-paper `.md` routes
+/// (`/overview/<id>.md` report, `/abs/<id>.md` full text). Default is the `www.`
+/// host so we skip the apex→www 301. Override with `ALPHAXIV_WEB_URL`.
+pub fn alphaxiv_web_url() -> String {
+    std::env::var("ALPHAXIV_WEB_URL").unwrap_or_else(|_| "https://www.alphaxiv.org".to_string())
+}
+
 /// Stored credentials: the API base URL and the bearer token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Credentials {

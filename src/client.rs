@@ -864,3 +864,96 @@ pub async fn read_skill(creds: &Credentials, path: &str) -> Result<SkillContent>
     let p = urlencoding::encode(path);
     api_get(creds, &format!("/skills/read?path={}", p)).await
 }
+
+// ---------------------------------------------------------------------------
+// alphaXiv literature endpoints (public — no auth, different hosts).
+//
+// These do NOT go through `send_request`/`Credentials`: they hit alphaXiv's
+// public API/web hosts and require no token, so `orx lit` / `orx paper` work
+// even without `orx login`. They keep their own (simpler) error semantics and
+// translate a 404 into `Ok(None)` where "not generated yet" is a normal answer.
+// ---------------------------------------------------------------------------
+
+/// Sent on external requests — some CDNs reject the default (empty) UA.
+const ALPHAXIV_UA: &str = concat!("openresearch-cli/", env!("CARGO_PKG_VERSION"));
+
+/// One full-text search hit (`GET /search/v2/paper/full-text`). Serialize is
+/// derived so `orx lit --json` can re-emit hits verbatim.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaperHit {
+    pub paper_id: String,
+    pub title: String,
+    #[serde(rename = "abstract", default)]
+    pub abstract_: String,
+    #[serde(default)]
+    pub publication_date: Option<String>,
+    #[serde(default)]
+    pub votes: i64,
+    #[serde(default)]
+    pub snippets: Vec<PaperSnippet>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaperSnippet {
+    #[serde(default)]
+    pub page_number: i64,
+    pub snippet: String,
+}
+
+/// Full-text literature search across alphaXiv. Returns the hits in relevance
+/// order (most relevant first), capped at `limit`.
+pub async fn search_papers(query: &str, limit: u32) -> Result<Vec<PaperHit>> {
+    let base = crate::config::alphaxiv_api_url();
+    let url = format!(
+        "{}/search/v2/paper/full-text?q={}&limit={}",
+        base,
+        urlencoding::encode(query),
+        limit
+    );
+    let res = http()
+        .get(&url)
+        .header("user-agent", ALPHAXIV_UA)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Could not reach alphaXiv at {}: {}", base, e))?;
+    let status = res.status();
+    if !status.is_success() {
+        let reason = status.canonical_reason().unwrap_or("");
+        return Err(anyhow!(
+            "alphaXiv search failed ({} {})",
+            status.as_u16(),
+            reason
+        ));
+    }
+    Ok(res.json::<Vec<PaperHit>>().await?)
+}
+
+/// Fetch one of a paper's markdown documents from the alphaXiv web app.
+/// `kind` is `"overview"` (the machine-readable report) or `"abs"` (full text).
+/// Returns `Ok(None)` on 404 — i.e. that document hasn't been generated yet.
+pub async fn fetch_paper_markdown(kind: &str, paper_id: &str) -> Result<Option<String>> {
+    let base = crate::config::alphaxiv_web_url();
+    let url = format!("{}/{}/{}.md", base, kind, paper_id);
+    let res = http()
+        .get(&url)
+        .header("user-agent", ALPHAXIV_UA)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Could not reach alphaXiv at {}: {}", base, e))?;
+    let status = res.status();
+    if status.as_u16() == 404 {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        let reason = status.canonical_reason().unwrap_or("");
+        return Err(anyhow!(
+            "alphaXiv request for {} failed ({} {})",
+            url,
+            status.as_u16(),
+            reason
+        ));
+    }
+    Ok(Some(res.text().await?))
+}

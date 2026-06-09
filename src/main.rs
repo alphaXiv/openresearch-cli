@@ -119,6 +119,12 @@ enum Command {
 
     /// Print CLI usage for agents, or fetch a skill doc.
     Skill(SkillArgs),
+
+    /// Search alphaXiv literature by full-text query (no login required).
+    Lit(LitArgs),
+
+    /// Fetch a paper's machine-readable report (or `--full` text) from alphaXiv.
+    Paper(PaperArgs),
 }
 
 #[derive(Args, Debug)]
@@ -414,6 +420,27 @@ pub struct SkillArgs {
     pub path: Option<String>,
 }
 
+#[derive(Args, Debug)]
+pub struct LitArgs {
+    /// Full-text search query.
+    pub query: String,
+    /// Max results (default 5).
+    #[arg(long)]
+    pub limit: Option<u32>,
+    /// Emit raw JSON instead of the formatted list.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct PaperArgs {
+    /// arXiv id, versioned id (`2401.12345v2`), or an arXiv/alphaXiv URL.
+    pub id: String,
+    /// Fetch the full extracted paper text instead of the report.
+    #[arg(long)]
+    pub full: bool,
+}
+
 /// Which fs verb is being invoked. Passed to `commands::fs::run` so the single
 /// module can build the right `DevFsOp`, mirroring the TS `fsCommand(verb, ...)`.
 #[derive(Debug, Clone, Copy)]
@@ -523,5 +550,7 @@ async fn dispatch(command: Command) -> error::Result<()> {
             .await
         }
         Command::Skill(args) => commands::skill::run(args).await,
+        Command::Lit(args) => commands::lit::run(args).await,
+        Command::Paper(args) => commands::paper::run(args).await,
     }
 }

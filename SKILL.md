@@ -21,7 +21,7 @@ orx logout         # remove the stored token
 
 - The API base URL resolves from `--api-url` → `OPENRESEARCH_API_URL` → a built-in
   default. Set `OPENRESEARCH_API_URL` for non-local use.
-- Every command except `login` needs a token; if you see `Not logged in`, run `orx login`.
+- Every command except `login`, `lit`, and `paper` needs a token; if you see `Not logged in`, run `orx login`. (`lit` and `paper` hit alphaXiv's public hosts and work without one.)
 
 ## Commands
 
@@ -65,6 +65,13 @@ orx logout         # remove the stored token
 | `orx exp status/cmd/run/cancel/wait <expId>` | Inspect, run, cancel, and wait on a single experiment node. See below. |
 | `orx exp desc <expId> [--set "<text>" \| --stdin]` | Read or overwrite the experiment's description (free-form notes). See below. |
 | `orx dev open/close/status <expId>` + `orx read/write/str-replace/ls/grep/rm <expId>` | Edit a node's files in a dev session. See below. |
+
+### Literature & papers — alphaXiv (no login required)
+| Command | What it does |
+|---|---|
+| `orx lit "<query>" [--limit <n>] [--json]` | Full-text search alphaXiv's paper corpus; returns ranked hits (id, title, date, votes, abstract). See below. |
+| `orx paper <id\|url>` | Fetch a paper's **machine-readable report** (structured LLM-oriented analysis). See below. |
+| `orx paper <id\|url> --full` | Fetch the paper's **full extracted text** instead — fallback when the report lacks a specific detail. |
 
 ### Meta
 | Command | What it does |
@@ -464,6 +471,49 @@ orx chart wandb <projectId> --metric "val/acc" --run <runId> --out ./charts
   that produced no data are listed under `Skipped:`.
 - Requires `WANDB_API_KEY` set in the project or org env vars; otherwise the
   command reports that and exits non-zero.
+
+## Literature search & paper content — `orx lit` / `orx paper`
+
+These tap **alphaXiv's public corpus** (2.5M+ arXiv papers: CS, math, physics,
+stats, q-bio/fin, EE — not PubMed/biomed). They need **no `orx login`** and hit
+alphaXiv hosts, not the OpenResearch API. Use them to ground research in real
+literature: find related work, pull a paper's structured report, and only drop to
+its full text when you need a specific equation/table/section.
+
+```sh
+orx lit "speculative decoding for LLMs"            # ranked hits (id, title, date, votes, abstract)
+orx lit "rotary position embeddings" --limit 10    # widen the result set (default 5)
+orx lit "kv cache compression" --json              # raw JSON for programmatic use
+orx paper 2401.12345                               # machine-readable report (the default)
+orx paper https://arxiv.org/abs/2401.12345         # any arXiv/alphaXiv URL works too
+orx paper 2401.12345v2 --full                      # full extracted text (fallback)
+```
+
+- **`orx lit`** prints, per hit: `<paperId>  <title>`, then `<date> · <votes> votes`,
+  then a truncated abstract. The **`paperId`** is what you feed to `orx paper`.
+  Results are relevance-ranked, capped at `--limit` (default 5). `--json` emits the
+  raw hit objects (incl. matched `snippets`) for piping.
+- **`orx paper <id>`** writes the report markdown to **stdout** (pipe/redirect-friendly).
+  The id can be a bare id (`2401.12345`), a versioned id (`2401.12345v2`), or an
+  arXiv / alphaXiv URL — the CLI normalizes it.
+- **Report first, full text only when needed.** The default report is a compact
+  (~10 KB) structured analysis and is enough for most questions. Reach for `--full`
+  only when the report is missing a specific detail — it returns the entire paper.
+- **404s are normal answers, not errors of yours.** A paper whose report hasn't been
+  generated yet exits non-zero with a hint to try `--full`; one with no extracted
+  text yet points you at the arXiv PDF. Try `--full`, then the PDF, before giving up.
+- Override hosts with `ALPHAXIV_API_URL` (search) and `ALPHAXIV_WEB_URL` (paper docs)
+  if you ever need to point elsewhere.
+
+**Grounding a research loop in literature.** Before forming hypotheses for a project
+(step 2 of the auto-research loop), search the literature for prior art on the knob
+you're about to vary, pull the most relevant report, and let it inform the change you
+write into a child's description:
+
+```sh
+orx lit "learning rate warmup schedules transformers" --limit 5
+orx paper <bestPaperId>          # read its report; cite the idea in the child's --description
+```
 
 ## `orx query` — important
 
