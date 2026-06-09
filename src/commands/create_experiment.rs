@@ -1,17 +1,19 @@
 //!
-//! Creates an experiment node. Three shapes, picked by flags:
+//! Creates an experiment node. Two shapes, picked by flags:
 //!   --parent <id>   -> child experiment branched off that parent
-//!   --repo a/b      -> root experiment imported from a GitHub repo
-//!   (neither)       -> empty root experiment
+//!   (no parent)     -> baseline (root) experiment on the project's bound repo
 //! A title is always required.
+//!
+//! Note: the repo a project works on is chosen when the PROJECT is created (on
+//! the web), not here — so there is no longer a `--repo` flag. The baseline is
+//! materialized on whatever repo the project is already bound to.
 
 use crate::client::{
-    create_child_experiment, create_empty_baseline, import_baseline, CreateChildBody,
-    CreateEmptyBaselineBody, Experiment, ImportBaselineBody,
+    create_child_experiment, import_baseline, CreateChildBody, Experiment, ImportBaselineBody,
 };
 use crate::error::{require_credentials, Result};
 
-const USAGE: &str = "Usage: orx create-experiment <projectId> --title \"<title>\" [--parent <experimentId>] [--repo <owner/repo> [--ref <ref>]] [--description \"<text>\"]";
+const USAGE: &str = "Usage: orx create-experiment <projectId> --title \"<title>\" [--parent <experimentId>] [--description \"<text>\"]";
 
 pub async fn run(args: crate::CreateExperimentArgs) -> Result<()> {
     let title = match args.title {
@@ -21,16 +23,6 @@ pub async fn run(args: crate::CreateExperimentArgs) -> Result<()> {
             std::process::exit(1);
         }
     };
-
-    if args.parent.is_some() && args.repo.is_some() {
-        eprintln!("Choose one of --parent or --repo, not both.");
-        eprintln!("(--parent makes a child node; --repo makes a root node from a git repo.)");
-        std::process::exit(1);
-    }
-    if args.ref_.is_some() && args.repo.is_none() {
-        eprintln!("--ref only applies together with --repo.");
-        std::process::exit(1);
-    }
 
     let creds = require_credentials().await;
     let description = args.description;
@@ -50,34 +42,21 @@ pub async fn run(args: crate::CreateExperimentArgs) -> Result<()> {
         .await?;
         experiment = envelope.experiment;
         kind = "child".to_string();
-    } else if let Some(repo) = args.repo {
-        // The repo must be a GitHub repo ("owner/repo") reachable through the
-        // org's GitHub App installation -- it's imported via tarball, not an
-        // arbitrary `git clone` URL. `patch` is required by the endpoint; we
-        // send null.
+    } else {
+        // Baseline on the project's already-bound GitHub repo. The server
+        // branches `orx/<slug>` off the repo's default branch.
         let envelope = import_baseline(
             &creds,
             &args.project_id,
             &ImportBaselineBody {
-                repo_full_name: repo.clone(),
-                ref_: args.ref_.unwrap_or_default(),
-                patch: None,
-                title,
+                title: Some(title),
                 description,
+                generate_suggestions: None,
             },
         )
         .await?;
         experiment = envelope.experiment;
-        kind = format!("root (from {})", repo);
-    } else {
-        let envelope = create_empty_baseline(
-            &creds,
-            &args.project_id,
-            &CreateEmptyBaselineBody { title, description },
-        )
-        .await?;
-        experiment = envelope.experiment;
-        kind = "root (empty)".to_string();
+        kind = "baseline".to_string();
     }
 
     println!("\u{2713} Created {} experiment", kind);

@@ -270,15 +270,14 @@ is chosen by flags:
 # Child node, branched off an existing experiment:
 orx create-experiment <projectId> --title "Larger batch size" --parent <experimentId>
 
-# Root node imported from a GitHub repo (owner/repo, via the org's GitHub App):
-orx create-experiment <projectId> --title "Baseline" --repo lino-levan/sortbench --ref main
-
-# Empty root node:
-orx create-experiment <projectId> --title "Scratch baseline"
+# Baseline (root) node on the project's bound repo:
+orx create-experiment <projectId> --title "Baseline"
 ```
 
-- `--parent` and `--repo` are mutually exclusive (`--parent` ⇒ child, `--repo` ⇒
-  root-from-repo, neither ⇒ empty root).
+- `--parent` selects the shape: with `--parent` ⇒ child; without it ⇒ baseline
+  (root) on the repo the project is already bound to. The repo a project works on
+  is chosen when the **project** is created (on the web), so there is no `--repo`
+  flag here.
 - **A `--parent` child inherits the parent's run command** (and branches off its
   code). You do **not** set a run command on the child — keep it and vary the code
   via a dev session (see "the experiment-tree model" above).
@@ -289,9 +288,6 @@ orx create-experiment <projectId> --title "Scratch baseline"
   Piling round after round of children onto the root is the flat-fan failure (see
   "Shape the tree"). Co-equal options of the same decision are siblings under one
   parent — don't chain them into a line either.
-- `--repo` takes a GitHub `owner/repo` that is reachable through the org's GitHub
-  App installation — it is imported as a tarball, **not** an arbitrary
-  `git clone` URL. `--ref` (branch/tag/commit) only applies with `--repo`.
 - `--description` is optional but **strongly recommended for children**: use it to
   record the hypothesis / the concrete change this node makes. It's the node's
   free-form notes field (the same one `orx exp desc` reads/writes), and it's how
