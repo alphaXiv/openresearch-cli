@@ -319,7 +319,11 @@ async fn desc(
 /// `orx exp run <expId> …` — launch a run on a new instance or existing sandbox.
 async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<()> {
     // Resolve the target: exactly one of --sandbox, --gpu, or --cpu.
-    let selectors = [args.sandbox.is_some(), args.gpu.is_some(), args.cpu.is_some()];
+    let selectors = [
+        args.sandbox.is_some(),
+        args.gpu.is_some(),
+        args.cpu.is_some(),
+    ];
     let chosen = selectors.iter().filter(|x| **x).count();
     if chosen > 1 {
         return Err(anyhow!("Pass exactly one of --sandbox, --gpu, or --cpu."));
