@@ -261,6 +261,8 @@ run command:
    tree, it never edits the root.
 
 Stop when the goal is met, or after ~3 consecutive failed or regressed runs.
+When you stop, consider writing up the tree as a local markdown report —
+fetch `orx skill report` for the folder layout and section structure.
 
 ## `orx create-experiment` — the one project-level write command
 
@@ -643,6 +645,7 @@ orx skill project-query/references/runs-and-results  # runs, metrics, results
 orx skill project-query/references/run-diffs          # code diffs per run
 orx skill project-query/references/text-evidence      # logs, artifacts, files
 orx skill project-query/references/project-overview    # high-level project shape
+orx skill report             # write a local markdown research report (with charts)
 ```
 
 These are the same skill docs the OpenResearch assistant reads. Run
