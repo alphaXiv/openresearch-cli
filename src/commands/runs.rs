@@ -42,6 +42,7 @@ pub async fn run(args: crate::RunsArgs) -> Result<()> {
         .into_iter()
         .map(|r| {
             vec![
+                r.id,
                 r.status,
                 title_of
                     .get(&r.experiment_id)
@@ -56,7 +57,7 @@ pub async fn run(args: crate::RunsArgs) -> Result<()> {
         })
         .collect();
 
-    print_table(&["STATUS", "EXPERIMENT", "COMMIT", "UPDATED"], &rows);
+    print_table(&["ID", "STATUS", "EXPERIMENT", "COMMIT", "UPDATED"], &rows);
 
     Ok(())
 }

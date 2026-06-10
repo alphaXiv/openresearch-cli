@@ -208,7 +208,7 @@ run command:
    ```
 5. **Launch up to your GPU budget** — one run per ready child, in parallel:
    ```sh
-   orx exp run <childId> --gpu H100 --count 1
+   orx exp run <childId> --gpu H100_SXM --count 1
    ```
 6. **Keep the budget saturated — drive a per-completion loop, not a wait-for-all
    barrier.** With a cap of N concurrent runs, you want control back the moment
@@ -305,8 +305,8 @@ orx exp status <expId>                 # status, run command, sandbox link, late
 orx exp cmd <expId>                    # print the current run command
 orx exp cmd <baseId> --set "bash run.sh"   # set it ONCE on the baseline; children inherit it
 orx compute                            # browse GPU offers (price-sorted)
-orx compute --gpu H100 --count 1       # filter the catalog
-orx exp run <expId> --gpu H100 --count 1 [--disk 100]     # launch on a NEW instance
+orx compute --gpu H100_SXM --count 1   # filter the catalog
+orx exp run <expId> --gpu H100_SXM --count 1 [--disk 100]     # launch on a NEW instance
 orx exp run <expId> --sandbox <sandboxId>                 # launch on an EXISTING node
 orx exp cancel <expId>                 # cancel the in-flight run
 ```
@@ -329,6 +329,10 @@ Rules and notes:
   `--count` defaults to `1` and `--disk` to `100` (GB). New instances are
   **RunPod-only** — the server picks the cheapest matching RunPod offer for the
   chosen (gpu, count); browse valid gpu ids and prices with `orx compute`.
+- **GPU ids are exact enum strings, not family names.** `--gpu H100` is invalid —
+  the variant suffix is part of the id (`H100_SXM`, `H100_PCIE`, `A100_SXM_80GB`,
+  `RTX_4090`, …). Use the exact `GPU` column value from `orx compute`; run it
+  first if unsure.
 - `orx exp run` **queues** the run and returns immediately — it does not wait.
   Follow progress with `orx runs <projectId>` and `orx logs <runId>`, or block
   with `orx exp wait` (below).
@@ -481,6 +485,11 @@ orx search-logs <projectId> "loss=nan" --experiment <id> --max 5000
 - Each hit prints as `<run8>:<line>: <text>  ← <startByte>:<endByte>`. Feed those
   byte offsets straight into `orx logs <runId> --range <start>:<end>` to pull the
   surrounding context. Results are capped (raise with `--max`).
+- **For training metrics, check W&B first.** If the run has a linked W&B run
+  (`orx wandb <runId>`), `orx chart wandb` is usually a better metrics read than
+  grepping the log (complete history, exact stats, visible trajectory). Logs
+  remain the right tool for debugging — tracebacks, OOMs, setup failures — and a
+  fine metrics fallback when W&B isn't linked or doesn't have the key you need.
 
 ## Run artifacts & code diffs — `orx artifacts` / `orx artifact` / `orx diff`
 
@@ -581,11 +590,45 @@ orx paper <bestPaperId>          # read its report; cite the idea in the child's
 ## `orx query` — important
 
 The query runs against a **DuckDB "evidence" schema**, which is NOT the same
-shape as the REST objects returned by `orx experiments` / `orx runs`. For
-example, the evidence `experiments` table has `title`, `slug`, `description`,
-`analysis`, `sandbox_id` — but **no `status` column**. Don't assume column names.
+shape as the REST objects returned by `orx experiments` / `orx runs`. Don't
+guess column names from what the other commands display — write queries against
+the exact columns below.
 
-Discover the real schema before writing queries:
+The two tables you'll hit first, with their **full** column lists:
+
+```
+experiments(id, project_id, parent_experiment_id, slug, title, description,
+            analysis, run_command, sandbox_id, updated_at)
+runs(id, experiment_id, command, status, commit_sha, log_key, sandbox_id,
+     result_markdown, updated_at)
+```
+
+The guesses that look right but aren't:
+
+- **Experiments have no `status` — anywhere.** Status is a *run* property
+  (`runs.status`). To get "the experiment's status", join its runs:
+  ```sh
+  orx query <projectId> "select e.title, r.status, r.updated_at from experiments e left join runs r on r.experiment_id = e.id order by e.title, r.updated_at desc"
+  ```
+- The parent column is **`parent_experiment_id`**, not `parent_id`.
+- There is **no `branch` column** — the git branch is derived from the slug
+  (`orx/<slug>`).
+
+There is also a unified **`entities` view** (projects, experiments, runs, and
+sandboxes as one table) — handy for tree/graph questions:
+
+```
+entities(id, type, entity_id, entity_type, project_id, parent_id, parent_type,
+         parent_entity_id, parent_entity_type, title, name, slug, status,
+         description, analysis, run_command, updated_at)
+```
+
+Caveat: its `status` column is populated **only for run and sandbox rows** —
+it's NULL for experiments (see above), so don't read it off experiment rows.
+For an experiment row, `parent_id` is the parent experiment (or the project,
+for the baseline).
+
+For any table not listed here, discover the real schema before writing queries:
 
 ```sh
 orx query <projectId> "select table_name, column_name from information_schema.columns order by 1, 2"

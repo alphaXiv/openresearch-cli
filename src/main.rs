@@ -220,7 +220,7 @@ pub struct CreateExperimentArgs {
 
 #[derive(Args, Debug)]
 pub struct ComputeArgs {
-    /// Filter to one GPU id (e.g. `H100`). Case-insensitive.
+    /// Filter to one GPU id (e.g. `H100_SXM`). Case-insensitive.
     #[arg(long)]
     pub gpu: Option<String>,
     /// Filter to a specific GPU count per instance.
@@ -288,7 +288,8 @@ pub enum ExpCommand {
 #[derive(Args, Debug)]
 pub struct ExpRunArgs {
     pub exp_id: String,
-    /// Provision a new instance with this GPU id (see `orx compute`).
+    /// Provision a new instance with this GPU id, e.g. `H100_SXM` — the exact
+    /// id from `orx compute`, not a family name like `H100`.
     #[arg(long)]
     pub gpu: Option<String>,
     /// GPUs per instance (with `--gpu`; default 1).
