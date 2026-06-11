@@ -17,6 +17,7 @@ mod commands;
 mod config;
 mod error;
 mod output;
+mod updates;
 
 use clap::{Args, Parser, Subcommand};
 
@@ -24,6 +25,7 @@ use clap::{Args, Parser, Subcommand};
 #[command(
     name = "orx",
     about = "OpenResearch CLI",
+    version,
     disable_help_subcommand = true
 )]
 struct Cli {
@@ -93,6 +95,12 @@ enum Command {
 
     /// Fetch a paper's machine-readable report (or `--full` text) from alphaXiv.
     Paper(PaperArgs),
+
+    /// Show the CLI version; `--check` compares it to the latest release.
+    Version(VersionArgs),
+
+    /// Update orx to the latest release (installer-script installs only).
+    Update(UpdateArgs),
 }
 
 #[derive(Args, Debug)]
@@ -332,6 +340,27 @@ pub struct LitArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct VersionArgs {
+    /// Also check the latest released version on GitHub.
+    #[arg(long)]
+    pub check: bool,
+    /// Emit a JSON object instead of text (implies --check).
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct UpdateArgs {
+    /// Report whether an update is available without installing anything.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Update even when the binary doesn't match the install receipt
+    /// (multiple copies, or a `cargo install` overwrote it).
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Args, Debug)]
 pub struct PaperArgs {
     /// arXiv id, versioned id (`2401.12345v2`), or an arXiv/alphaXiv URL.
     pub id: String,
@@ -349,7 +378,18 @@ async fn main() {
         Cli::command().print_help().ok();
         return;
     };
-    if let Err(err) = dispatch(command).await {
+    // Passive update nudge (skipped for the commands that manage updates
+    // themselves). Interactive terminals only; never delays or fails the
+    // command, never touches stdout or the exit code.
+    let nudge =
+        (!matches!(command, Command::Version(_) | Command::Update(_))).then(updates::Nudge::start);
+
+    let result = dispatch(command).await;
+    if let Some(nudge) = nudge {
+        nudge.finish().await;
+    }
+
+    if let Err(err) = result {
         // Match the TS: print only the message, exit 1.
         eprintln!("{}", err);
         std::process::exit(1);
@@ -377,5 +417,7 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Skill(args) => commands::skill::run(args).await,
         Command::Lit(args) => commands::lit::run(args).await,
         Command::Paper(args) => commands::paper::run(args).await,
+        Command::Version(args) => commands::version::run(args).await,
+        Command::Update(args) => commands::update::run(args).await,
     }
 }

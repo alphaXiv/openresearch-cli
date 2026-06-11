@@ -34,4 +34,6 @@ pub mod query;
 pub mod runs;
 pub mod search_logs;
 pub mod skill;
+pub mod update;
+pub mod version;
 pub mod wandb;
