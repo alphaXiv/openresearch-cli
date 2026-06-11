@@ -63,7 +63,7 @@ orx logout         # remove the stored token
 ### Discover (project- and experiment-scoped)
 | Command | What it does |
 |---|---|
-| `orx projects [--all]` | List your projects (id + name + GitHub `owner/repo`), grouped by org. `--all` includes archived. **Project ids and the repo to clone come from here.** |
+| `orx projects [--all]` | List your projects (id + name + GitHub `owner/repo`), grouped by org (name + org id). `--all` includes archived. **Project ids, org ids, and the repo to clone come from here.** |
 | `orx experiments <projectId>` | Print the project's experiments as an indented tree (nested by parent). **Experiment ids come from here.** |
 | `orx runs <projectId> [--experiment <id>]` | List runs as a table (status, experiment, commit, updated), newest first. `--experiment` filters to one experiment. **Run ids come from here.** |
 
@@ -82,7 +82,7 @@ orx logout         # remove the stored token
 ### Create and run experiments (write)
 | Command | What it does |
 |---|---|
-| `orx create-project <orgId> --name "<n>" [--repo <owner/repo>]` | Create a project: bound to a GitHub repo, or on a fresh blank repo when `--repo` is omitted. See below. |
+| `orx create-project <orgId> --name "<n>" [--repo <owner/repo>]` | Create a project **and its baseline (root node)**: bound to a GitHub repo, or on a fresh blank repo when `--repo` is omitted. See below. |
 | `orx create-experiment <projectId> --title "<t>" [...]` | Add an experiment node; prints its git branch. See below. |
 | `orx compute [--gpu <id>] [--count <n>]` | List the GPU compute catalog (price-sorted). See below. |
 | `orx exp status/cmd/run/cancel/wait <expId>` | Inspect, run, cancel, and wait on a single experiment node. See below. |
@@ -267,9 +267,10 @@ fetch `orx skill report` for the folder layout and section structure.
 
 ## `orx create-project` — start a new project
 
-Creates a project in an organization (org ids come from `orx projects`). Every
-project is backed by exactly one git repo; `--repo` picks where that repo comes
-from:
+Creates a project in an organization (org ids are printed next to the org names
+in `orx projects`), then its **baseline (root node)** on the project's repo —
+one command yields a project ready to hang child experiments off. Every project
+is backed by exactly one git repo; `--repo` picks where that repo comes from:
 
 ```sh
 # From an existing repo — yours (bound directly) or any readable repo
@@ -282,13 +283,15 @@ orx create-project <orgId> --name "My new idea"
 
 - `--repo` takes `owner/repo` or a github.com URL. `--branch` (only with
   `--repo`) imports from a non-default branch. `--description` is optional.
-- The new project has **no experiments yet** — it is an empty tree. Create the
-  baseline (root node) next:
-  ```sh
-  orx create-experiment <projectId> --title "Baseline"
-  ```
-  For a blank project, check out the baseline's branch and push your starting
-  code to it (see "Editing a node's files" below) before launching runs.
+- The command prints the project id, repo, and the baseline's id + git branch.
+  Next steps: hang children off the baseline with
+  `orx create-experiment <projectId> --title "<t>" --parent <baselineId>`.
+- For a **blank** project the baseline starts empty (a stub README): check out
+  the baseline's branch and push your starting code to it (see "Editing a
+  node's files" below) before launching runs.
+- If the baseline step fails after the project was created, the command prints
+  the `orx create-experiment <projectId> --title "<t>"` recovery — run that
+  rather than re-running `create-project` (which would mint a second project).
 
 ## `orx create-experiment` — add a node to the tree
 
