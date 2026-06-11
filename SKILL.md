@@ -94,7 +94,7 @@ there is no `orx` edit command. See "Editing a node's files" below.
 | Command | What it does |
 |---|---|
 | `orx lit "<query>" [--limit <n>] [--json]` | Full-text search alphaXiv's paper corpus; returns ranked hits (id, title, date, votes, abstract). See below. |
-| `orx paper <id\|url>` | Fetch a paper's **machine-readable report** (structured LLM-oriented analysis). See below. |
+| `orx paper <id\|url>` | Fetch a paper's **machine-readable report** (structured LLM-oriented analysis). Prints the paper's linked **GitHub repo** at the top when one exists. See below. |
 | `orx paper <id\|url> --full` | Fetch the paper's **full extracted text** instead — fallback when the report lacks a specific detail. |
 
 ### Meta
@@ -570,6 +570,21 @@ orx paper 2401.12345v2 --full                      # full extracted text (fallba
 - **`orx paper <id>`** writes the report markdown to **stdout** (pipe/redirect-friendly).
   The id can be a bare id (`2401.12345`), a versioned id (`2401.12345v2`), or an
   arXiv / alphaXiv URL — the CLI normalizes it.
+- **The paper's code: `GitHub: <url>` line.** When alphaXiv has a GitHub repo linked
+  to the paper, `orx paper` prints it as the first line (with `--full` too). If the
+  report leaves you with questions about *how* something was actually implemented —
+  exact hyperparameters, training loop details, a trick the paper glosses over —
+  clone the repo into a temp dir and read the code:
+
+  ```sh
+  dir=$(mktemp -d) && git clone --depth 1 <githubUrl> "$dir"
+  ```
+
+  Inspect it there (grep for the model/optimizer setup, read the configs), and rely
+  on it as the ground truth for reproducing the paper. No line means no repo is
+  linked. Note the linked repo is the most-starred one associated with the paper —
+  occasionally a big framework rather than the paper's own code; sanity-check the
+  repo name before leaning on it.
 - **Report first, full text only when needed.** The default report is a compact
   (~10 KB) structured analysis and is enough for most questions. Reach for `--full`
   only when the report is missing a specific detail — it returns the entire paper.

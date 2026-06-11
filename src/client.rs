@@ -771,6 +771,51 @@ pub async fn search_papers(query: &str, limit: u32) -> Result<Vec<PaperHit>> {
     Ok(res.json::<Vec<PaperHit>>().await?)
 }
 
+/// Look up a paper's linked GitHub repository (the most-starred repo associated
+/// with it on alphaXiv). Returns `Ok(None)` when the paper has no linked repo or
+/// isn't known to alphaXiv. Best-effort metadata — callers shouldn't fail on it.
+pub async fn fetch_paper_github(paper_id: &str) -> Result<Option<String>> {
+    // The feed lookup wants a versionless universal id (`2401.12345`, not `2401.12345v2`).
+    let versionless = paper_id
+        .rfind('v')
+        .filter(|&i| i > 0 && !paper_id[i + 1..].is_empty())
+        .filter(|&i| paper_id[i + 1..].chars().all(|c| c.is_ascii_digit()))
+        .map_or(paper_id, |i| &paper_id[..i]);
+    let base = crate::config::alphaxiv_api_url();
+    let url = format!(
+        "{}/papers/v3/feed?universalId={}&pageNum=0&pageSize=1&sort=Hot&interval=All%20time",
+        base,
+        urlencoding::encode(versionless)
+    );
+    let res = http()
+        .get(&url)
+        .header("user-agent", ALPHAXIV_UA)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Could not reach alphaXiv at {}: {}", base, e))?;
+    let status = res.status();
+    if !status.is_success() {
+        let reason = status.canonical_reason().unwrap_or("");
+        return Err(anyhow!(
+            "alphaXiv paper lookup failed ({} {})",
+            status.as_u16(),
+            reason
+        ));
+    }
+
+    #[derive(Deserialize)]
+    struct FeedResponse {
+        papers: Vec<FeedPaper>,
+    }
+    #[derive(Deserialize)]
+    struct FeedPaper {
+        github_url: Option<String>,
+    }
+
+    let body = res.json::<FeedResponse>().await?;
+    Ok(body.papers.into_iter().next().and_then(|p| p.github_url))
+}
+
 /// Fetch one of a paper's markdown documents from the alphaXiv web app.
 /// `kind` is `"overview"` (the machine-readable report) or `"abs"` (full text).
 /// Returns `Ok(None)` on 404 — i.e. that document hasn't been generated yet.

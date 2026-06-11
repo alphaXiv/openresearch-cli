@@ -4,16 +4,25 @@
 //! Public endpoint, no token required. The report is the structured, LLM-oriented
 //! analysis (≈10 KB, usually enough); `--full` is the raw extracted text and is a
 //! fallback when the report lacks a specific equation/table/section. Markdown goes
-//! to stdout (pipe/redirect-friendly).
+//! to stdout (pipe/redirect-friendly). If alphaXiv has a GitHub repo linked to the
+//! paper, a `GitHub: <url>` line is printed first regardless of flags.
 
-use crate::client::fetch_paper_markdown;
+use crate::client::{fetch_paper_github, fetch_paper_markdown};
 use crate::error::{anyhow, Result};
 
 pub async fn run(args: crate::PaperArgs) -> Result<()> {
     let id = parse_paper_id(&args.id);
     let kind = if args.full { "abs" } else { "overview" };
 
-    match fetch_paper_markdown(kind, &id).await? {
+    let (md, github) = tokio::join!(fetch_paper_markdown(kind, &id), fetch_paper_github(&id));
+
+    // Best-effort: the GitHub link is useful context, never a reason to fail.
+    if let Ok(Some(url)) = github {
+        println!("GitHub: {}", url);
+        println!();
+    }
+
+    match md? {
         Some(md) => {
             println!("{}", md);
             Ok(())
