@@ -47,6 +47,19 @@ Run the tests with `cargo test`.
 | `orx exp cancel <expId>` | Cancels the in-flight run. |
 | `orx lit "<query>" [--limit <n>] [--json]` | Full-text search alphaXiv's paper corpus (no login required). |
 | `orx paper <id\|url> [--full]` | Fetch a paper's machine-readable report, or its full text with `--full`. |
+| `orx version [--check] [--json]` | Prints the CLI version; `--check` compares it to the latest release. |
+| `orx update [--dry-run] [--force]` | Updates orx by re-running the release installer (installer installs only). |
+
+### Updating
+
+`orx update` only manages binaries installed by the release installer script
+(it checks the cargo-dist install receipt at
+`${XDG_CONFIG_HOME:-~/.config}/openresearch-cli/`). If you installed with
+`cargo install`, update the same way instead. In interactive terminals orx
+also checks for new releases in the background at most once a day and prints
+a one-line notice to stderr; set `ORX_NO_UPDATE_CHECK=1` (or
+`OPENRESEARCH_CLI_DISABLE_UPDATE=1`) to turn that off. Agents, scripts, pipes,
+and CI never see the notice.
 
 ### Configuration
 
