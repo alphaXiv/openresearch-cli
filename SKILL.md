@@ -1,16 +1,19 @@
 ---
 name: openresearch-cli
-description: Use the `orx` CLI to drive OpenResearch projects from a terminal — browse the experiment tree, runs, logs, artifacts, code diffs, and the evidence DB; create experiments; launch, wait on, and cancel runs on GPU compute; and chart W&B metrics. Each experiment is a git branch you edit locally with plain git. Read this before driving `orx` programmatically.
+description: Use the `orx` CLI to drive OpenResearch projects from a terminal — browse the experiment tree, runs, logs, artifacts, and the evidence DB; create experiments; launch, wait on, and cancel runs on GPU compute; and chart W&B metrics. Each experiment is a git branch in a local cache-dir clone — reading, diffing, and editing code all happen there with plain git. Read this before driving `orx` programmatically.
 ---
 
 # OpenResearch CLI (`orx`)
 
 `orx` is a command-line client over the OpenResearch API. It authenticates with a
 personal access token and exposes both **read views** of a project (experiment
-tree, runs, logs, artifacts, code diffs, evidence database) and **write actions**
-(create experiments, launch/cancel runs on GPU compute, edit a node's files). Use
-it when you need to inspect or drive project state from a shell instead of the
-web UI.
+tree, runs, logs, artifacts, evidence database) and **write actions**
+(create experiments, launch/cancel runs on GPU compute). Code is the one thing
+`orx` does not serve: every experiment is a git branch on the project's GitHub
+repo, and the **local clone in `~/.cache/openresearch/repos/<owner>/<repo>` is
+the standard way to read, diff, and edit it** (see "Reading & editing a node's
+code"). Use `orx` when you need to inspect or drive project state from a shell
+instead of the web UI.
 
 ## Cardinal rules — read before doing anything else
 
@@ -75,7 +78,6 @@ orx logout         # remove the stored token
 | `orx artifacts <runId>` | List the text artifacts a run produced (key + size). |
 | `orx artifact <runId> <key> [--head] [--bytes <n>]` | Read a run's text artifact (tail by default). Also caches it for `orx query` SQL search. |
 | `orx wandb <runId>` | List the W&B runs linked to a run (with dashboard URLs). |
-| `orx diff <runId>` | Print a run's cumulative code diff vs. its parent experiment's branch. |
 | `orx chart wandb <projectId> --metric "<key>" --run <runId>[:label] ...` | Render a W&B metric across runs to a PNG line chart. See below. |
 | `orx query <projectId> "<sql>"` | Run **one read-only DuckDB SQL statement** against the project's evidence schema. See below. |
 
@@ -85,11 +87,12 @@ orx logout         # remove the stored token
 | `orx create-project <orgId> --name "<n>" [--repo <owner/repo>]` | Create a project **and its baseline (root node)**: bound to a GitHub repo, or on a fresh blank repo when `--repo` is omitted. See below. |
 | `orx create-experiment <projectId> --title "<t>" [...]` | Add an experiment node; prints its git branch. See below. |
 | `orx compute [--gpu <id>] [--count <n>]` | List the GPU compute catalog (price-sorted). See below. |
-| `orx exp status/cmd/run/cancel/wait <expId>` | Inspect, run, cancel, and wait on a single experiment node. See below. |
+| `orx exp status/cmd/run/cancel/wait <expId>` | Inspect, run, cancel, and wait on a single experiment node. `status` prints the node's branch, its parent's branch, the latest run's full commit SHA, and a ready-to-paste local `git diff` recipe. See below. |
 | `orx exp desc <expId> [--set "<text>" \| --stdin]` | Read or overwrite the experiment's description (free-form notes). See below. |
 
-To **edit** a node's code, check its git branch out locally and use plain git —
-there is no `orx` edit command. See "Editing a node's files" below.
+To **read or edit** a node's code — including diffing what a run changed — use
+plain git in the cache-dir clone; there is no `orx` code command. See "Reading &
+editing a node's code" below.
 
 ### Literature & papers — alphaXiv (no login required)
 | Command | What it does |
@@ -167,7 +170,7 @@ GPU budget, this is the intended flow — do **not** edit the baseline or rewrit
 run command:
 
 1. **Read the baseline's code.** Clone the project's repo into the cache dir and
-   read it with your normal tools (see "Editing a node's files" for the path).
+   read it with your normal tools (see "Reading & editing a node's code" for the path).
    See its run command with `orx exp cmd <baseId>` and find where the knobs live
    (config files, hyperparameters, model defs).
 2. **Form one round's worth of hypotheses** — the co-equal options of a *single*
@@ -197,7 +200,7 @@ run command:
    and you never give siblings different commands or env vars (cardinal rule 2).
 4. **Implement each child's change on its git branch** — `orx create-experiment`
    prints the child's branch (`orx/<slug>`); sync the project's clone (in the
-   openresearch cache dir — see "Editing a node's files"), check the branch out,
+   openresearch cache dir — see "Reading & editing a node's code"), check the branch out,
    edit only the files that idea touches, commit, and push. **Leave the run
    command alone:**
    ```sh
@@ -248,7 +251,9 @@ run command:
 7. **Analyze each finish as it lands, then iterate.** Do the per-completion read
    *inside the loop above*, not deferred to the end — when a run finishes,
    **actually read its results** before deciding: `orx artifact <runId> EVAL.md`,
-   `orx chart wandb …`, `orx query …`. Don't infer from status alone. Each
+   `orx chart wandb …`, `orx query …`. To see exactly what a finished node
+   changed, use the local git diff recipe `orx exp status <expId>` prints (see
+   "Code diffs — local git"). Don't infer from status alone. Each
    completion is a decision point with three moves:
    - **Refill** — result is mediocre or inconclusive: launch the next queued child to
      keep the GPU budget saturated (step 5).
@@ -287,8 +292,8 @@ orx create-project <orgId> --name "My new idea"
   Next steps: hang children off the baseline with
   `orx create-experiment <projectId> --title "<t>" --parent <baselineId>`.
 - For a **blank** project the baseline starts empty (a stub README): check out
-  the baseline's branch and push your starting code to it (see "Editing a
-  node's files" below) before launching runs.
+  the baseline's branch and push your starting code to it (see "Reading &
+  editing a node's code" below) before launching runs.
 - If the baseline step fails after the project was created, the command prints
   the `orx create-experiment <projectId> --title "<t>"` recovery — run that
   rather than re-running `create-project` (which would mint a second project).
@@ -332,7 +337,7 @@ it) and is launched on **compute** you choose at run time. Compute is *not* stor
 on the node — you pick a GPU (or an existing sandbox) each time you launch.
 
 ```sh
-orx exp status <expId>                 # status, run command, sandbox link, latest run
+orx exp status <expId>                 # status, branch, parent, run command, latest run + commit, local diff recipe
 orx exp cmd <expId>                    # print the current run command
 orx exp cmd <baseId> --set "bash run.sh"   # set it ONCE on the baseline; children inherit it
 orx compute                            # browse GPU offers (price-sorted)
@@ -352,7 +357,7 @@ Rules and notes:
 - **Set a run command before launching.** `orx exp run` fails with a pointer to
   `orx exp cmd --set` if the node has none.
 - **Push your edits before launching.** A run trains the branch's tip **as it is
-  on GitHub** — so commit and push first (see "Editing a node's files"). As a
+  on GitHub** — so commit and push first (see "Reading & editing a node's code"). As a
   safety net, `orx exp run` refuses a child whose branch has **no changes over its
   parent** (the tell-tale of "queued before pushing") — push and retry, or pass
   `--force` to run the unchanged code deliberately.
@@ -428,12 +433,13 @@ cat notes.md | orx exp desc <expId> --stdin   # overwrite from stdin (long markd
 - `<expId>` comes from `orx experiments <projectId>` (the experiment id, not a run
   or project id).
 
-## Editing a node's files — plain git on its branch
+## Reading & editing a node's code — plain git in the cache-dir clone
 
 Every experiment node **is a git branch** (`orx/<slug>`) on the project's GitHub
-repo — `orx create-experiment` prints it. There is no dev box and no `orx` edit
-command: you edit the branch directly in a **local clone of the project's repo**,
-with your own tools, then push.
+repo — `orx create-experiment` prints it. There is no dev box and no `orx` code
+command: the **local clone in the cache dir is the standard way to interface
+with code** — reading a node's files, diffing what a run changed, and editing —
+all with plain git and your own tools.
 
 **Clone into the openresearch cache dir, not your cwd.** The canonical location,
 keyed by repo so the same clone is reused across all of a project's experiments:
@@ -487,6 +493,26 @@ Rules and notes:
 - **Reading another node's code** without disturbing your checkout: that branch is
   already in the clone after a fetch — `git -C "$DIR" show origin/orx/<slug>:<path>`.
 
+### Code diffs — local git
+
+What did a run change vs. its parent experiment? `orx exp status <expId>` prints
+the parent's branch, the latest run's full commit SHA, and this exact recipe —
+compute the diff locally in the same clone:
+
+```sh
+DIR=~/.cache/openresearch/repos/<owner>/<repo>   # owner/repo from `orx projects`
+[ -d "$DIR" ] || git clone https://github.com/<owner>/<repo> "$DIR"   # cold cache → clone first
+git -C "$DIR" fetch origin                        # ALWAYS fetch first — the commit and parent tip live on GitHub
+git -C "$DIR" diff origin/<parent-branch>...<full-commit-sha>
+```
+
+- The **three-dot** form diffs from the merge-base — what the run's branch
+  changed, not what the parent gained since the fork. That's the cumulative
+  "what this experiment did to the code" view.
+- Fetch first is mandatory: the run's commit and the parent's tip exist on
+  GitHub and may not be in your clone yet.
+- Root experiments have no parent — there is no diff base, by definition.
+
 ## Reading & searching run logs — `orx logs` / `orx search-logs`
 
 A run's terminal output (the PTY stream) is captured live while it runs and
@@ -522,25 +548,23 @@ orx search-logs <projectId> "loss=nan" --experiment <id> --max 5000
   remain the right tool for debugging — tracebacks, OOMs, setup failures — and a
   fine metrics fallback when W&B isn't linked or doesn't have the key you need.
 
-## Run artifacts & code diffs — `orx artifacts` / `orx artifact` / `orx diff`
+## Run artifacts — `orx artifacts` / `orx artifact`
 
 Beyond the terminal log, a run uploads **text artifacts** (eval outputs, reports,
-generated files) and carries a **code diff** vs. its parent branch.
+generated files).
 
 ```sh
 orx artifacts <runId>               # discover what a run uploaded (KEY + SIZE table)
 orx artifact <runId> <key>          # read one artifact (tail by default)
 orx artifact <runId> <key> --head --bytes 200000   # from the start, raise the cap
-orx diff <runId>                    # unified diff of what this run's commit changed
 ```
 
 - Start with `orx artifacts` to list keys, then `orx artifact <runId> <key>` to
   read one. Reading an artifact also **caches it for `orx query`** so you can grep
   artifact text via SQL.
-- `orx artifact` content / `orx diff` diff go to **stdout**; byte-range and
-  truncation metadata go to **stderr**.
-- `orx diff` prints nothing (with a note on stderr) when the run's commit matches
-  its parent branch.
+- `orx artifact` content goes to **stdout**; byte-range and truncation metadata
+  go to **stderr**.
+- For the run's **code diff**, use local git — see "Code diffs — local git" above.
 
 ## Charting W&B metrics — `orx chart wandb`
 

@@ -248,16 +248,6 @@ pub struct ListWandbRuns {
     pub wandb_runs: Vec<WandbRunLink>,
 }
 
-/// Cumulative unified diff for a run (`GET /runs/{id}/diff`).
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunDiff {
-    pub diff: String,
-    pub truncated: bool,
-    pub bytes_read: i64,
-    pub byte_limit: i64,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillRef {
@@ -548,6 +538,22 @@ pub async fn list_projects(creds: &Credentials, org_id: &str) -> Result<ListProj
     api_get(creds, &format!("/orgs/{}/projects", org_id)).await
 }
 
+/// Find a project by id by scanning the caller's orgs (there is no
+/// `GET /projects/{id}` endpoint).
+pub async fn find_project(creds: &Credentials, project_id: &str) -> Result<Option<Project>> {
+    for org in list_orgs(creds).await?.orgs {
+        let found = list_projects(creds, &org.id)
+            .await?
+            .projects
+            .into_iter()
+            .find(|p| p.id == project_id);
+        if found.is_some() {
+            return Ok(found);
+        }
+    }
+    Ok(None)
+}
+
 pub async fn create_project(
     creds: &Credentials,
     org_id: &str,
@@ -688,10 +694,6 @@ pub async fn list_artifacts(creds: &Credentials, run_id: &str) -> Result<ListArt
 
 pub async fn list_wandb_runs(creds: &Credentials, run_id: &str) -> Result<ListWandbRuns> {
     api_get(creds, &format!("/runs/{}/wandb-runs", run_id)).await
-}
-
-pub async fn get_run_diff(creds: &Credentials, run_id: &str) -> Result<RunDiff> {
-    api_get(creds, &format!("/runs/{}/diff", run_id)).await
 }
 
 pub async fn list_catalog(creds: &Credentials) -> Result<ListCatalog> {

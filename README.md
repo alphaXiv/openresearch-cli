@@ -41,7 +41,7 @@ Run the tests with `cargo test`.
 | `orx logout` | Removes the stored token. |
 | `orx projects [--all]` | Lists your projects, grouped by organization. `--all` includes archived. |
 | `orx compute [--gpu <id>] [--count <n>]` | Lists the GPU compute catalog, sorted by price. |
-| `orx exp status <expId>` | Shows an experiment's status, run command, and latest run. |
+| `orx exp status <expId>` | Shows an experiment's status, branch, parent, run command, and latest run, plus a local `git diff` recipe for what the run changed. |
 | `orx exp cmd <expId> [--set <command>]` | Views or sets the experiment's run command. |
 | `orx exp run <expId> (--gpu <id> [--count <n>] [--disk <gb>] \| --sandbox <id>)` | Launches a run on new or existing compute. |
 | `orx exp cancel <expId>` | Cancels the in-flight run. |

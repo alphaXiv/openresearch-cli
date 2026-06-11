@@ -68,9 +68,6 @@ enum Command {
     /// List the W&B runs linked to a run.
     Wandb(WandbArgs),
 
-    /// Show a run's cumulative code diff vs. its parent branch.
-    Diff(DiffArgs),
-
     /// Run read-only SQL against the project's evidence.
     Query(QueryArgs),
 
@@ -170,11 +167,6 @@ pub struct ArtifactsArgs {
 
 #[derive(Args, Debug)]
 pub struct WandbArgs {
-    pub run_id: String,
-}
-
-#[derive(Args, Debug)]
-pub struct DiffArgs {
     pub run_id: String,
 }
 
@@ -432,7 +424,6 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Artifacts(args) => commands::artifacts::run(args).await,
         Command::Artifact(args) => commands::artifact::run(args).await,
         Command::Wandb(args) => commands::wandb::run(args).await,
-        Command::Diff(args) => commands::diff::run(args).await,
         Command::Query(args) => commands::query::run(args).await,
         Command::Chart(args) => commands::chart::run(args).await,
         Command::CreateProject(args) => commands::create_project::run(args).await,
