@@ -1,8 +1,9 @@
 //! The `compute` command. Lists the GPU offer catalog as a price-sorted table.
 //!
-//! The catalog spans every provider, but experiment runs launched on a *new*
-//! instance (`orx exp run --gpu ...`) are RunPod-only — the server resolves the
-//! cheapest matching RunPod offer for the chosen (gpu, count).
+//! The catalog endpoint spans every provider, but experiment runs launched on a
+//! *new* instance (`orx exp run --gpu ...`) are RunPod-only — the server
+//! resolves the cheapest matching RunPod offer for the chosen (gpu, count). So
+//! this command filters to RunPod offers: everything it lists is launchable.
 
 use crate::client::list_catalog;
 use crate::error::{require_credentials, Result};
@@ -16,6 +17,8 @@ pub async fn run(args: crate::ComputeArgs) -> Result<()> {
     // The API already returns offers sorted by price ascending; keep that order.
     let filtered: Vec<_> = offers
         .into_iter()
+        // Runs only launch on RunPod (see module docs); hide unlaunchable offers.
+        .filter(|o| o.provider == "runpod")
         .filter(|o| {
             args.gpu
                 .as_ref()
