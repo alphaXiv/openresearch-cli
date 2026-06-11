@@ -1,0 +1,61 @@
+# Dispatches a release when Cargo.toml's version is bumped on main.
+#
+# On every push to main: read the package version; if it has already been
+# released (tag exists), do nothing. Otherwise dispatch release.yml with
+# tag=v<version>. release.yml runs in cargo-dist's dispatch-releases mode
+# (see dist-workspace.toml): it builds, publishes the GitHub Release, and the
+# release itself creates the tag — no workflow ever pushes a tag.
+#
+# Why dispatch instead of pushing a tag: events caused by the default
+# GITHUB_TOKEN don't trigger other workflows (GitHub's anti-recursion rule),
+# so a GITHUB_TOKEN-pushed tag would never start release.yml. workflow_dispatch
+# is the documented exception ("workflow_dispatch and repository_dispatch
+# events always create workflow runs"), so the default token is sufficient and
+# no PAT/secret is needed.
+#
+# This never increments a version: the version is always a human decision made
+# in a reviewed PR, and "merge a PR that bumps Cargo.toml" is the release act.
+
+name: Release on version bump
+
+on:
+  push:
+    branches: [main]
+
+# Serialize runs so two quick merges can't double-dispatch.
+concurrency:
+  group: release-on-bump
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write # to dispatch release.yml
+
+jobs:
+  dispatch:
+    name: dispatch release if Cargo.toml version is unreleased
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dispatch the release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # The package version line ([package] comes first; dependency
+          # `version` keys never start a line with `version = `).
+          version=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          tag="v${version}"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} already exists — nothing to release."
+            echo "(If you meant to cut a release, bump the version in Cargo.toml.)"
+            exit 0
+          fi
+
+          echo "Dispatching release.yml with tag=${tag} (version is unreleased)."
+          gh workflow run release.yml --ref main -f tag="${tag}"
+          echo "Dispatched. The release will appear at:"
+          echo "  https://github.com/${GITHUB_REPOSITORY}/actions/workflows/release.yml"

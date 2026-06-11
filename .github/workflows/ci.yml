@@ -38,3 +38,54 @@ jobs:
 
       - name: Test
         run: cargo test --locked
+
+  # Guards the tag-on-bump release flow (tag-release.yml): the version in
+  # Cargo.toml may only move forward, may not reuse an already-released tag,
+  # and a bump must come with a regenerated Cargo.lock. Catching these here
+  # means a malformed bump can't reach main, where merging it would be the
+  # release trigger.
+  version-guard:
+    name: version sanity
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Version must move forward (with a fresh lockfile)
+        run: |
+          set -euo pipefail
+
+          pkg_version() { grep -m1 '^version = ' "$1" | sed -E 's/version = "(.*)"/\1/'; }
+
+          git fetch --quiet origin "${{ github.base_ref }}"
+          git show "origin/${{ github.base_ref }}:Cargo.toml" > /tmp/base-Cargo.toml
+          base=$(pkg_version /tmp/base-Cargo.toml)
+          head=$(pkg_version Cargo.toml)
+          echo "base: ${base}  pr: ${head}"
+
+          if [ "${head}" = "${base}" ]; then
+            echo "No version change — OK (merging this PR will not release)."
+            exit 0
+          fi
+
+          # Reject a version that sorts at or below the base (semver-aware sort).
+          if [ "$(printf '%s\n%s\n' "${base}" "${head}" | sort -V | head -1)" = "${head}" ]; then
+            echo "::error::Version went backwards: ${base} -> ${head}."
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/v${head}" >/dev/null 2>&1; then
+            echo "::error::v${head} is already a released tag; bump past it."
+            exit 1
+          fi
+
+          # A bump must carry a regenerated lockfile, or release builds
+          # (--locked) would fail.
+          if ! grep -A1 '^name = "openresearch-cli"$' Cargo.lock | grep -q "version = \"${head}\""; then
+            echo "::error::Cargo.toml says ${head} but Cargo.lock was not regenerated (run cargo build and commit the lockfile)."
+            exit 1
+          fi
+
+          echo "Version bump ${base} -> ${head} looks good. Merging this PR WILL cut release v${head}."
