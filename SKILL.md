@@ -501,6 +501,7 @@ compute the diff locally in the same clone:
 
 ```sh
 DIR=~/.cache/openresearch/repos/<owner>/<repo>   # owner/repo from `orx projects`
+[ -d "$DIR" ] || git clone https://github.com/<owner>/<repo> "$DIR"   # cold cache → clone first
 git -C "$DIR" fetch origin                        # ALWAYS fetch first — the commit and parent tip live on GitHub
 git -C "$DIR" diff origin/<parent-branch>...<full-commit-sha>
 ```

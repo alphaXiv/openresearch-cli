@@ -265,10 +265,14 @@ async fn status(creds: &crate::config::Credentials, exp_id: &str) -> Result<()> 
         };
         let dir = format!("~/.cache/openresearch/repos/{}", repo_path);
         println!();
-        println!("To see what this run changed vs. its parent, in your local clone:");
+        println!("To see what this run changed vs. its parent, using your local clone (cloned on first use):");
         if repo_path == "<owner>/<repo>" {
             println!("  # owner/repo from `orx projects`");
         }
+        println!(
+            "  [ -d {} ] || git clone https://github.com/{} {}",
+            dir, repo_path, dir
+        );
         println!("  git -C {} fetch origin", dir);
         println!("  git -C {} diff origin/{}...{}", dir, branch, sha);
     }
