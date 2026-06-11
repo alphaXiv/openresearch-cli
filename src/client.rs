@@ -305,6 +305,14 @@ pub struct ExperimentEnvelope {
     pub experiment: Experiment,
 }
 
+/// Response of `POST /orgs/{orgId}/projects`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateProjectResult {
+    pub is_first_project: bool,
+    pub project: Project,
+}
+
 // ---------------------------------------------------------------------------
 // Request bodies (mirroring the inline TS body shapes)
 // ---------------------------------------------------------------------------
@@ -346,6 +354,23 @@ pub struct ImportBaselineBody {
     /// true server-side when omitted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generate_suggestions: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateProjectBody {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// `owner/repo` (or github.com URL) to bind the project to — the user's own
+    /// repo, or a readable source it gets copied from. Omit to start the
+    /// project on a fresh blank repo (a stub root commit on `main`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_full_name: Option<String>,
+    /// Branch the baseline imports from (only with `repo_full_name`). Omit for
+    /// the repo's default branch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -521,6 +546,15 @@ pub async fn list_orgs(creds: &Credentials) -> Result<ListOrgs> {
 
 pub async fn list_projects(creds: &Credentials, org_id: &str) -> Result<ListProjects> {
     api_get(creds, &format!("/orgs/{}/projects", org_id)).await
+}
+
+pub async fn create_project(
+    creds: &Credentials,
+    org_id: &str,
+    body: &CreateProjectBody,
+) -> Result<CreateProjectResult> {
+    let body = serde_json::to_value(body)?;
+    api_post(creds, &format!("/orgs/{}/projects", org_id), body).await
 }
 
 pub async fn list_experiments(creds: &Credentials, project_id: &str) -> Result<ListExperiments> {

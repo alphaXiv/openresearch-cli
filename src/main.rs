@@ -75,6 +75,10 @@ enum Command {
     /// Render a W&B metric across runs to a PNG.
     Chart(ChartArgs),
 
+    /// Create a project (from a GitHub repo, or a fresh blank repo).
+    #[command(name = "create-project")]
+    CreateProject(CreateProjectArgs),
+
     /// Add an experiment node (child of a parent, or a baseline root).
     #[command(name = "create-experiment")]
     CreateExperiment(CreateExperimentArgs),
@@ -201,6 +205,26 @@ pub struct ChartArgs {
     /// Directory to save the rendered PNG.
     #[arg(long)]
     pub out: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct CreateProjectArgs {
+    /// Organization id (from `orx projects`).
+    pub org_id: String,
+    /// Project name (required).
+    #[arg(long)]
+    pub name: Option<String>,
+    /// GitHub repo `owner/repo` (or github.com URL) to bind the project to.
+    /// Omit to start the project on a fresh blank repo.
+    #[arg(long)]
+    pub repo: Option<String>,
+    /// Branch the baseline imports from (with `--repo`; defaults to the repo's
+    /// default branch).
+    #[arg(long)]
+    pub branch: Option<String>,
+    /// Project description.
+    #[arg(long)]
+    pub description: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -371,6 +395,7 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Diff(args) => commands::diff::run(args).await,
         Command::Query(args) => commands::query::run(args).await,
         Command::Chart(args) => commands::chart::run(args).await,
+        Command::CreateProject(args) => commands::create_project::run(args).await,
         Command::CreateExperiment(args) => commands::create_experiment::run(args).await,
         Command::Compute(args) => commands::compute::run(args).await,
         Command::Exp(args) => commands::exp::run(args).await,

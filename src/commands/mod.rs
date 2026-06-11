@@ -21,6 +21,7 @@ pub mod artifacts;
 pub mod chart;
 pub mod compute;
 pub mod create_experiment;
+pub mod create_project;
 pub mod diff;
 pub mod exp;
 pub mod experiments;

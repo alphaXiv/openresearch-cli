@@ -4,9 +4,9 @@
 //!   (no parent)     -> baseline (root) experiment on the project's bound repo
 //! A title is always required.
 //!
-//! Note: the repo a project works on is chosen when the PROJECT is created (on
-//! the web), not here — so there is no longer a `--repo` flag. The baseline is
-//! materialized on whatever repo the project is already bound to.
+//! Note: the repo a project works on is chosen when the PROJECT is created
+//! (`orx create-project` or the web), not here — so there is no `--repo` flag.
+//! The baseline is materialized on whatever repo the project is already bound to.
 
 use crate::client::{
     create_child_experiment, import_baseline, CreateChildBody, Experiment, ImportBaselineBody,

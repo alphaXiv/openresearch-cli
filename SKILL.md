@@ -82,7 +82,8 @@ orx logout         # remove the stored token
 ### Create and run experiments (write)
 | Command | What it does |
 |---|---|
-| `orx create-experiment <projectId> --title "<t>" [...]` | Add an experiment node (the one project-level write command); prints its git branch. See below. |
+| `orx create-project <orgId> --name "<n>" [--repo <owner/repo>]` | Create a project: bound to a GitHub repo, or on a fresh blank repo when `--repo` is omitted. See below. |
+| `orx create-experiment <projectId> --title "<t>" [...]` | Add an experiment node; prints its git branch. See below. |
 | `orx compute [--gpu <id>] [--count <n>]` | List the GPU compute catalog (price-sorted). See below. |
 | `orx exp status/cmd/run/cancel/wait <expId>` | Inspect, run, cancel, and wait on a single experiment node. See below. |
 | `orx exp desc <expId> [--set "<text>" \| --stdin]` | Read or overwrite the experiment's description (free-form notes). See below. |
@@ -264,7 +265,32 @@ Stop when the goal is met, or after ~3 consecutive failed or regressed runs.
 When you stop, consider writing up the tree as a local markdown report —
 fetch `orx skill report` for the folder layout and section structure.
 
-## `orx create-experiment` — the one project-level write command
+## `orx create-project` — start a new project
+
+Creates a project in an organization (org ids come from `orx projects`). Every
+project is backed by exactly one git repo; `--repo` picks where that repo comes
+from:
+
+```sh
+# From an existing repo — yours (bound directly) or any readable repo
+# (copied into a fresh repo the platform can write to):
+orx create-project <orgId> --name "NanoGPT speedrun" --repo karpathy/nanoGPT
+
+# From scratch — a fresh blank repo (just a stub root commit on main):
+orx create-project <orgId> --name "My new idea"
+```
+
+- `--repo` takes `owner/repo` or a github.com URL. `--branch` (only with
+  `--repo`) imports from a non-default branch. `--description` is optional.
+- The new project has **no experiments yet** — it is an empty tree. Create the
+  baseline (root node) next:
+  ```sh
+  orx create-experiment <projectId> --title "Baseline"
+  ```
+  For a blank project, check out the baseline's branch and push your starting
+  code to it (see "Editing a node's files" below) before launching runs.
+
+## `orx create-experiment` — add a node to the tree
 
 Adds a node to the experiment tree. `--title` is always required. The node shape
 is chosen by flags:
@@ -279,8 +305,8 @@ orx create-experiment <projectId> --title "Baseline"
 
 - `--parent` selects the shape: with `--parent` ⇒ child; without it ⇒ baseline
   (root) on the repo the project is already bound to. The repo a project works on
-  is chosen when the **project** is created (on the web), so there is no `--repo`
-  flag here.
+  is chosen when the **project** is created (`orx create-project` or the web), so
+  there is no `--repo` flag here.
 - **A `--parent` child inherits the parent's run command** (and branches off its
   code). You do **not** set a run command on the child — keep it and vary the code
   on the child's git branch (see "the experiment-tree model" above).
