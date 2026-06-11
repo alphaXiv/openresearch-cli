@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 
 use crate::client::{
-    cancel_experiment_run, get_experiment, list_runs, start_experiment_run, update_experiment,
-    RunTarget, UpdateExperimentBody,
+    cancel_experiment_run, find_project, get_experiment, list_runs, start_experiment_run,
+    update_experiment, RunTarget, UpdateExperimentBody,
 };
 use crate::error::{anyhow, require_credentials, Result};
 use crate::{ExpCommand, ExpRunArgs};
@@ -195,13 +195,31 @@ async fn sleep_until_or_timeout(interval: Duration, deadline: Instant) -> Result
     Ok(())
 }
 
-/// `orx exp status <expId>` — the experiment row joined with its latest run.
+/// `orx exp status <expId>` — the experiment row joined with its latest run,
+/// plus everything needed to diff the run locally: the node's branch, the
+/// parent's branch, the full commit SHA, and a ready-to-paste git recipe.
 async fn status(creds: &crate::config::Credentials, exp_id: &str) -> Result<()> {
     let res = get_experiment(creds, exp_id).await?;
     let exp = res.experiment;
 
+    // Parent branch (the diff base). Best-effort: a failed parent fetch
+    // degrades to printing the id alone, never fails the status command.
+    let parent_branch: Option<String> = match &exp.parent_experiment_id {
+        Some(parent_id) => get_experiment(creds, parent_id)
+            .await
+            .ok()
+            .map(|p| p.experiment.branch_name),
+        None => None,
+    };
+
     println!("{}  ({})", exp.title, exp.status);
     println!("  id:       {}", exp.id);
+    println!("  branch:   {}", exp.branch_name);
+    match (&exp.parent_experiment_id, &parent_branch) {
+        (Some(id), Some(branch)) => println!("  parent:   {} (branch {})", id, branch),
+        (Some(id), None) => println!("  parent:   {}", id),
+        (None, _) => println!("  parent:   — (root experiment)"),
+    }
     match &exp.sandbox_id {
         Some(sb) => println!("  sandbox:  {}", sb),
         None => println!("  sandbox:  — (none linked)"),
@@ -215,6 +233,7 @@ async fn status(creds: &crate::config::Credentials, exp_id: &str) -> Result<()> 
         println!("  command:  {}", exp.run_command);
     }
 
+    let mut full_sha: Option<String> = None;
     match res.latest_run {
         Some(r) => {
             let commit = r
@@ -226,8 +245,32 @@ async fn status(creds: &crate::config::Credentials, exp_id: &str) -> Result<()> 
                 "  last run: {} ({}, commit {}, updated {})",
                 r.id, r.status, commit, r.updated_at
             );
+            if let Some(sha) = r.commit_sha {
+                println!("  commit:   {}", sha);
+                full_sha = Some(sha);
+            }
         }
         None => println!("  last run: — (never run)"),
+    }
+
+    // Local diff recipe — only when there's both a base (parent branch) and a
+    // head (run commit) to compare. Owner/repo lookup is best-effort too: on
+    // failure print placeholders the caller can fill from `orx projects`.
+    if let (Some(branch), Some(sha)) = (parent_branch, full_sha) {
+        let repo_path = match find_project(creds, &exp.project_id).await {
+            Ok(Some(p)) if !p.github_owner.is_empty() && !p.github_repo.is_empty() => {
+                format!("{}/{}", p.github_owner, p.github_repo)
+            }
+            _ => "<owner>/<repo>".to_string(),
+        };
+        let dir = format!("~/.cache/openresearch/repos/{}", repo_path);
+        println!();
+        println!("To see what this run changed vs. its parent, in your local clone:");
+        if repo_path == "<owner>/<repo>" {
+            println!("  # owner/repo from `orx projects`");
+        }
+        println!("  git -C {} fetch origin", dir);
+        println!("  git -C {} diff origin/{}...{}", dir, branch, sha);
     }
 
     Ok(())
