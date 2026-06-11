@@ -15,3 +15,10 @@ targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
+# Trigger releases via workflow_dispatch instead of tag push. The tag is
+# created implicitly when the GitHub Release is published at the end, so no
+# workflow ever pushes a tag — which lets release-on-bump.yml dispatch
+# releases with the default GITHUB_TOKEN (workflow_dispatch is exempt from
+# GitHub's "GITHUB_TOKEN events don't trigger workflows" rule; tag pushes are
+# not). No PAT or extra secret required.
+dispatch-releases = true
