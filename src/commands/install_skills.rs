@@ -8,9 +8,9 @@
 //! as that guide changes — which it does, often.
 //!
 //! Detection is by config-home presence: `~/.claude` means Claude Code is set up,
-//! `~/.codex` means Codex is, `~/.config/opencode` means OpenCode is. This command
-//! also runs best-effort after `orx login` (see `install_present_quietly`) so the
-//! typical user never invokes it by hand.
+//! `~/.codex` means Codex is, `~/.config/opencode` means OpenCode is, `~/.cursor`
+//! means Cursor is. This command also runs best-effort after `orx login` (see
+//! `install_present_quietly`) so the typical user never invokes it by hand.
 
 use std::path::PathBuf;
 
@@ -40,9 +40,10 @@ pub enum Agent {
     Claude,
     Codex,
     OpenCode,
+    Cursor,
 }
 
-const ALL: [Agent; 3] = [Agent::Claude, Agent::Codex, Agent::OpenCode];
+const ALL: [Agent; 4] = [Agent::Claude, Agent::Codex, Agent::OpenCode, Agent::Cursor];
 
 impl Agent {
     fn label(self) -> &'static str {
@@ -50,37 +51,43 @@ impl Agent {
             Agent::Claude => "Claude Code",
             Agent::Codex => "Codex",
             Agent::OpenCode => "OpenCode",
+            Agent::Cursor => "Cursor",
         }
     }
 
-    /// The agent's config home (`~/.claude`, `~/.codex`, `~/.config/opencode`).
-    /// `None` only if we can't resolve the user's home directory at all.
+    /// The agent's config home (`~/.claude`, `~/.codex`, `~/.config/opencode`,
+    /// `~/.cursor`). `None` only if we can't resolve the user's home directory
+    /// at all.
     fn home(self) -> Option<PathBuf> {
         Some(match self {
             Agent::Claude => dirs::home_dir()?.join(".claude"),
             Agent::Codex => dirs::home_dir()?.join(".codex"),
             Agent::OpenCode => xdg_config_home().join("opencode"),
+            Agent::Cursor => dirs::home_dir()?.join(".cursor"),
         })
     }
 
-    /// Where the shim file lands. Claude and OpenCode discover skills under
-    /// `skills/<name>/SKILL.md` (OpenCode also scans `~/.claude/skills`, but we
-    /// write its native path so OpenCode-only users are covered); Codex exposes
-    /// `prompts/<name>.md` as `/<name>`. Claude and Codex resolve to `/orx`;
-    /// OpenCode auto-loads the skill via its `skill` tool (no slash command).
+    /// Where the shim file lands. Claude, OpenCode, and Cursor discover skills
+    /// under `skills/<name>/SKILL.md` (OpenCode and Cursor also scan
+    /// `~/.claude/skills`, but we write their native paths so users without
+    /// Claude are covered); Codex exposes `prompts/<name>.md` as `/<name>`.
+    /// Claude and Codex resolve to `/orx`; OpenCode auto-loads the skill via its
+    /// `skill` tool (no slash command).
     fn target(self) -> Option<PathBuf> {
         let home = self.home()?;
         Some(match self {
-            Agent::Claude | Agent::OpenCode => home.join("skills").join("orx").join("SKILL.md"),
+            Agent::Claude | Agent::OpenCode | Agent::Cursor => {
+                home.join("skills").join("orx").join("SKILL.md")
+            }
             Agent::Codex => home.join("prompts").join("orx.md"),
         })
     }
 
     fn shim(self) -> &'static str {
         match self {
-            // OpenCode reads the same SKILL.md format as Claude Code (name +
-            // description frontmatter), so it shares the shim.
-            Agent::Claude | Agent::OpenCode => CLAUDE_SKILL,
+            // OpenCode and Cursor read the same SKILL.md format as Claude Code
+            // (name + description frontmatter), so they share the shim.
+            Agent::Claude | Agent::OpenCode | Agent::Cursor => CLAUDE_SKILL,
             Agent::Codex => CODEX_PROMPT,
         }
     }
@@ -109,10 +116,11 @@ pub async fn run(args: crate::InstallSkillsArgs) -> Result<()> {
         Some("claude") => vec![Agent::Claude],
         Some("codex") => vec![Agent::Codex],
         Some("opencode") => vec![Agent::OpenCode],
+        Some("cursor") => vec![Agent::Cursor],
         Some("all") | Some("both") => ALL.to_vec(),
         Some(other) => {
             return Err(anyhow!(
-                "unknown agent '{other}' (expected: claude, codex, opencode, or all)"
+                "unknown agent '{other}' (expected: claude, codex, opencode, cursor, or all)"
             ))
         }
         None => {
