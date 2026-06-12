@@ -176,5 +176,16 @@ pub async fn run(args: crate::UpdateArgs) -> Result<()> {
     // Keep the nudge cache in sync so it doesn't fire on a stale answer.
     updates::write_check_cache(&latest.version.to_string());
     println!("✓ Updated orx {} → {}.", current, latest.version);
+
+    // The refreshed SKILL.md ships inside the *new* binary, which this (old)
+    // process can't read — so nudge instead of silently leaving stale copies.
+    if let Some(home) = dirs::home_dir() {
+        if [".claude/skills", ".agents/skills"]
+            .iter()
+            .any(|rel| home.join(rel).join("openresearch-cli").exists())
+        {
+            println!("Installed orx skills may be stale — run: orx skill install --all");
+        }
+    }
     Ok(())
 }

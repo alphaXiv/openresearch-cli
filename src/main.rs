@@ -88,7 +88,7 @@ enum Command {
     /// Operate on one experiment node (status / run command / run / cancel).
     Exp(ExpArgs),
 
-    /// Print CLI usage for agents, or fetch a skill doc.
+    /// Print CLI usage for agents, fetch a skill doc, or install the skill.
     Skill(SkillArgs),
 
     /// Search alphaXiv literature by full-text query (no login required).
@@ -338,9 +338,41 @@ pub struct ExpRunArgs {
     pub force: bool,
 }
 
+// `install` resolves as a subcommand before the positional, so `orx skill
+// <path>` keeps working for any doc path except one literally named "install".
 #[derive(Args, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct SkillArgs {
+    #[command(subcommand)]
+    pub command: Option<SkillCommand>,
+    /// Skill doc path to fetch from the API (omit for the bundled overview).
     pub path: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SkillCommand {
+    /// Install the bundled skill into your agent's global skills directory.
+    Install(SkillInstallArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct SkillInstallArgs {
+    /// Which agent to install for (desktop variants are aliases).
+    #[arg(long, value_enum, default_value_t = SkillAgent::Claude)]
+    pub agent: SkillAgent,
+    /// Install for every supported agent.
+    #[arg(long, conflicts_with = "agent")]
+    pub all: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum)]
+pub enum SkillAgent {
+    #[value(alias = "claude-desktop")]
+    Claude,
+    #[value(alias = "codex-desktop")]
+    Codex,
+    Cursor,
+    Opencode,
 }
 
 #[derive(Args, Debug)]

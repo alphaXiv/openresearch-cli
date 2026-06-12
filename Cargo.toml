@@ -29,3 +29,6 @@ fd-lock = "4"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+[dev-dependencies]
+tempfile = "3"
