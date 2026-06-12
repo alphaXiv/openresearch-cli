@@ -91,6 +91,10 @@ enum Command {
     /// Print CLI usage for agents, or fetch a skill doc.
     Skill(SkillArgs),
 
+    /// Install the OpenResearch skill into local coding agents (Claude Code, Codex, OpenCode).
+    #[command(name = "install-skills")]
+    InstallSkills(InstallSkillsArgs),
+
     /// Search alphaXiv literature by full-text query (no login required).
     Lit(LitArgs),
 
@@ -344,6 +348,14 @@ pub struct SkillArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct InstallSkillsArgs {
+    /// Which agent(s) to install into: `claude`, `codex`, `opencode`, or `all`.
+    /// Defaults to every agent already set up on this machine.
+    #[arg(long)]
+    pub agent: Option<String>,
+}
+
+#[derive(Args, Debug)]
 pub struct LitArgs {
     /// Full-text search query.
     pub query: String,
@@ -431,6 +443,7 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Compute(args) => commands::compute::run(args).await,
         Command::Exp(args) => commands::exp::run(args).await,
         Command::Skill(args) => commands::skill::run(args).await,
+        Command::InstallSkills(args) => commands::install_skills::run(args).await,
         Command::Lit(args) => commands::lit::run(args).await,
         Command::Paper(args) => commands::paper::run(args).await,
         Command::Version(args) => commands::version::run(args).await,

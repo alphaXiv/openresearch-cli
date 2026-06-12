@@ -210,6 +210,15 @@ run command:
    #   …edit config.yaml under "$DIR": schedule: constant → cosine …
    git -C "$DIR" commit -am "cosine LR + warmup" && git -C "$DIR" push
    ```
+   While you're in the code, **make the run emit the evidence you'll need to judge
+   it.** Have it write rollout transcripts, per-sample eval breakdowns, generated
+   text, or summary tables to `.openresearch/artifacts/` (as text — JSONL/CSV/md) —
+   a directory at the **repo root**, where the run command's working dir points, so
+   `.openresearch/artifacts/foo.jsonl` is a plain relative path (if your code `cd`s
+   into a subdir or writes to `/tmp` first, resolve it from the repo root instead).
+   Those files sync to storage and become readable in step 7 via `orx artifacts` /
+   `orx artifact`. A run you can only read the tail-log of is far weaker evidence
+   than one that dumped its rollouts. See "Run artifacts" below.
 5. **Launch up to your GPU budget** — one run per ready child, in parallel:
    ```sh
    orx exp run <childId> --gpu H100_SXM --count 1
@@ -552,6 +561,27 @@ orx search-logs <projectId> "loss=nan" --experiment <id> --max 5000
 
 Beyond the terminal log, a run uploads **text artifacts** (eval outputs, reports,
 generated files).
+
+**Where artifacts come from — you control this.** Every run has a
+`.openresearch/artifacts/` directory **at the root of the repo** (the run command
+executes with its working dir set to the repo root, so `.openresearch/artifacts/`
+is a plain relative path from there — the same tree you cloned and edited in step
+4; don't hardcode an absolute `$HOME`-based path). **Anything the run writes there
+is synced to cloud storage (~every 10s, plus a final flush when the run ends) and
+becomes readable later via `orx artifacts` / `orx artifact`.** Artifacts aren't
+magic — they're whatever your experiment code chose to drop in that directory.
+`EVAL.md` is just the conventional one (the run command writes it there); the same
+mechanism is yours to use for anything you'll want to examine after the fact:
+rollout transcripts, per-sample eval breakdowns, generated text, prompt/response
+dumps, plots' underlying data, summary tables. When you implement a node's change
+(step 4 of the loop), have the code save these to `.openresearch/artifacts/` —
+that's how you turn a run into inspectable evidence instead of a one-shot log.
+
+- **Keep things you'll re-read as text.** The CLI read commands surface **text
+  artifacts** (JSON, JSONL, CSV, logs, markdown). Binary blobs — checkpoints, model
+  weights, `.npy`, images — still persist to storage, but you won't be able to read
+  them back through `orx artifact`, so dump a text-readable companion (e.g. a JSONL
+  of rollouts alongside the checkpoint) for anything you intend to analyze via CLI.
 
 ```sh
 orx artifacts <runId>               # discover what a run uploaded (KEY + SIZE table)
