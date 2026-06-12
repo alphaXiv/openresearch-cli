@@ -39,6 +39,7 @@ Run the tests with `cargo test`.
 |---|---|
 | `orx login [--api-url <url>]` | Opens your browser, authenticates, and stores a personal access token. |
 | `orx logout` | Removes the stored token. |
+| `orx install-skills [--agent claude\|codex\|opencode\|all]` | Installs the `orx` skill shim into local coding agents (Claude Code, Codex, OpenCode) so they auto-discover the CLI (also runs after `orx login`). |
 | `orx projects [--all]` | Lists your projects, grouped by organization. `--all` includes archived. |
 | `orx compute [--gpu <id>] [--count <n>]` | Lists the GPU compute catalog, sorted by price. |
 | `orx exp status <expId>` | Shows an experiment's status, run command, and latest run. |

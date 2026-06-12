@@ -34,6 +34,12 @@ pub async fn run(args: crate::LoginArgs) -> Result<()> {
 
     save_credentials(&Credentials { api_url, token }).await?;
     println!("\u{2713} Logged in. Credentials saved.");
+
+    // Install the `orx` skill shim into any coding agent already set up here, so
+    // it auto-discovers how to drive the CLI. Best-effort: never fail login over
+    // it.
+    crate::commands::install_skills::install_present_quietly().await;
+
     Ok(())
 }
 
