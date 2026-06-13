@@ -9,8 +9,9 @@
 //!
 //! Detection is by config-home presence: `~/.claude` means Claude Code is set up,
 //! `~/.codex` means Codex is, `~/.config/opencode` means OpenCode is, `~/.cursor`
-//! means Cursor is. This command also runs best-effort after `orx login` (see
-//! `install_present_quietly`) so the typical user never invokes it by hand.
+//! means Cursor is. After `orx login`, the install is *offered* interactively
+//! (see `offer_install_after_login`) — what gets written where is listed up
+//! front, and nothing is written without a yes.
 
 use std::path::PathBuf;
 
@@ -147,22 +148,76 @@ pub async fn run(args: crate::InstallSkillsArgs) -> Result<()> {
     Ok(())
 }
 
-/// Best-effort install into every agent already present on the machine. Never
-/// fails or panics — meant to run after `orx login` as a convenience. Stays
-/// silent when an agent isn't set up (so we don't create `~/.codex` for someone
-/// who only uses Claude, and vice versa).
-pub async fn install_present_quietly() {
-    for agent in ALL {
-        if !agent.is_present() {
-            continue;
+/// A path with the home directory shortened to `~`, for prompt readability.
+fn tilde(path: &std::path::Path) -> String {
+    let s = path.to_string_lossy();
+    match dirs::home_dir() {
+        Some(home) => match path.strip_prefix(&home) {
+            Ok(rel) => format!("~/{}", rel.display()),
+            Err(_) => s.into_owned(),
+        },
+        None => s.into_owned(),
+    }
+}
+
+/// The consent prompt's body: one line per detected agent, name → target file.
+fn describe_targets(agents: &[Agent]) -> String {
+    let width = agents.iter().map(|a| a.label().len()).max().unwrap_or(0);
+    agents
+        .iter()
+        .filter_map(|a| {
+            let target = a.target()?;
+            Some(format!(
+                "  {:<width$} \u{2192} {}",
+                a.label(),
+                tilde(&target)
+            ))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Offer (never force) the skill install after `orx login`. Transparent and
+/// consensual: lists exactly what would be written where before asking, writes
+/// nothing without a yes, and never fails the login over it. Skips entirely
+/// when stdin/stderr isn't a terminal (CI, agents, pipes) or no agent is set up
+/// on this machine.
+pub async fn offer_install_after_login() {
+    use std::io::IsTerminal;
+
+    let present: Vec<Agent> = ALL.into_iter().filter(|a| a.is_present()).collect();
+    if present.is_empty() || !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return;
+    }
+
+    println!(
+        "\norx ships one agent skill: a small file teaching your coding agent to run\n\
+         `orx skill` for the live guide. It can be installed now ({} file{}) for the\n\
+         agent{} detected on this machine:",
+        present.len(),
+        if present.len() == 1 { "" } else { "s" },
+        if present.len() == 1 { "" } else { "s" },
+    );
+    println!("{}", describe_targets(&present));
+    print!("Install? [Y/n] ");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return;
+    }
+    if matches!(answer.trim().to_lowercase().as_str(), "" | "y" | "yes") {
+        for agent in present {
+            if let Ok(path) = write_shim(agent).await {
+                println!(
+                    "\u{2713} Installed {} skill \u{2192} {}",
+                    agent.label(),
+                    tilde(&path)
+                );
+            }
         }
-        if let Ok(path) = write_shim(agent).await {
-            println!(
-                "\u{2713} Installed {} skill \u{2192} {}",
-                agent.label(),
-                path.display()
-            );
-        }
+    } else {
+        println!("Skipped. You can install any time with: orx install-skills");
     }
 }
 
@@ -223,3 +278,26 @@ If any command reports `Not logged in`, ask the user to run `orx login` first.
 Research goal:
 $ARGUMENTS
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn describe_targets_lists_name_and_path_per_agent() {
+        let body = describe_targets(&[Agent::Claude, Agent::Cursor]);
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("Claude Code"));
+        assert!(lines[0].contains(".claude/skills/orx/SKILL.md"));
+        assert!(lines[1].contains("Cursor"));
+        assert!(lines[1].contains(".cursor/skills/orx/SKILL.md"));
+    }
+
+    #[test]
+    fn tilde_shortens_home() {
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(tilde(&home.join(".claude")), "~/.claude");
+        assert_eq!(tilde(std::path::Path::new("/etc/hosts")), "/etc/hosts");
+    }
+}
