@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::client::{list_experiments, list_runs};
 use crate::error::{require_credentials, Result};
-use crate::output::print_table;
+use crate::output::{format_duration, print_table};
 
 /// Lists a project's runs as a table, newest first.
 pub async fn run(args: crate::RunsArgs) -> Result<()> {
@@ -52,12 +52,23 @@ pub async fn run(args: crate::RunsArgs) -> Result<()> {
                     Some(sha) => sha.chars().take(7).collect::<String>(),
                     None => "—".to_string(),
                 },
+                format_duration(r.duration_seconds),
                 r.updated_at,
             ]
         })
         .collect();
 
-    print_table(&["ID", "STATUS", "EXPERIMENT", "COMMIT", "UPDATED"], &rows);
+    print_table(
+        &[
+            "ID",
+            "STATUS",
+            "EXPERIMENT",
+            "COMMIT",
+            "DURATION",
+            "UPDATED",
+        ],
+        &rows,
+    );
 
     Ok(())
 }

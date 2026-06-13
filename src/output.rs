@@ -2,6 +2,22 @@
 
 use serde_json::Value;
 
+/// Formats a duration in seconds as a compact human string: `1h42m`, `3m12s`,
+/// `45s`. Negative inputs render as an em dash.
+pub fn format_duration(secs: i64) -> String {
+    if secs < 0 {
+        return "—".to_string();
+    }
+    let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    if h > 0 {
+        format!("{h}h{m:02}m")
+    } else if m > 0 {
+        format!("{m}m{s:02}s")
+    } else {
+        format!("{s}s")
+    }
+}
+
 /// Renders rows as a left-aligned, space-padded table with a header row and a
 /// box-drawing separator line,.
 ///
