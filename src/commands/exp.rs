@@ -18,6 +18,7 @@ use crate::client::{
     update_experiment, RunTarget, UpdateExperimentBody,
 };
 use crate::error::{anyhow, require_credentials, Result};
+use crate::output::format_duration;
 use crate::{ExpCommand, ExpRunArgs};
 
 pub async fn run(args: crate::ExpArgs) -> Result<()> {
@@ -242,8 +243,12 @@ async fn status(creds: &crate::config::Credentials, exp_id: &str) -> Result<()> 
                 .map(|s| s.chars().take(7).collect::<String>())
                 .unwrap_or_else(|| "—".to_string());
             println!(
-                "  last run: {} ({}, commit {}, updated {})",
-                r.id, r.status, commit, r.updated_at
+                "  last run: {} ({}, commit {}, ran {}, updated {})",
+                r.id,
+                r.status,
+                commit,
+                format_duration(r.duration_seconds),
+                r.updated_at
             );
             if let Some(sha) = r.commit_sha {
                 println!("  commit:   {}", sha);
