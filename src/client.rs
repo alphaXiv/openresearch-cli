@@ -104,6 +104,30 @@ pub struct ListCatalog {
     pub offers: Vec<GpuOffer>,
 }
 
+/// A single CPU-only offer from the CPU catalog (`GET /compute/catalog/cpu`).
+/// Sibling to [`GpuOffer`]; CPU instances live in their own RunPod-only catalog.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CpuOffer {
+    pub provider: String,
+    pub offer_id: String,
+    /// Flavor id: cpu5c (compute), cpu5g (general), or cpu5m (memory-optimized).
+    pub cpu_flavor: String,
+    /// Virtual CPUs allocated to the instance.
+    pub vcpus: f64,
+    /// System RAM in GB.
+    pub ram_gb: f64,
+    pub price_per_hour: f64,
+    /// Disk storage rate while running, USD per GB per hour.
+    pub disk_per_gb_hour: f64,
+    pub region: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListCpuCatalog {
+    pub offers: Vec<CpuOffer>,
+}
+
 /// Response of `GET /experiments/{id}`: the experiment plus its most recent run.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -698,6 +722,10 @@ pub async fn list_wandb_runs(creds: &Credentials, run_id: &str) -> Result<ListWa
 
 pub async fn list_catalog(creds: &Credentials) -> Result<ListCatalog> {
     api_get(creds, "/compute/catalog").await
+}
+
+pub async fn list_cpu_catalog(creds: &Credentials) -> Result<ListCpuCatalog> {
+    api_get(creds, "/compute/catalog/cpu").await
 }
 
 pub async fn get_experiment(creds: &Credentials, exp_id: &str) -> Result<GetExperimentResult> {
