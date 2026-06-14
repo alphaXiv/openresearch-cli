@@ -91,7 +91,7 @@ enum Command {
     /// Print CLI usage for agents, or fetch a skill doc.
     Skill(SkillArgs),
 
-    /// Install the OpenResearch skill into local coding agents (Claude Code, Codex, OpenCode).
+    /// Install the OpenResearch skill into local coding agents (Claude Code, Codex, OpenCode, Cursor).
     #[command(name = "install-skills")]
     InstallSkills(InstallSkillsArgs),
 
@@ -353,8 +353,8 @@ pub struct SkillArgs {
 
 #[derive(Args, Debug)]
 pub struct InstallSkillsArgs {
-    /// Which agent(s) to install into: `claude`, `codex`, `opencode`, or `all`.
-    /// Defaults to every agent already set up on this machine.
+    /// Which agent(s) to install into: `claude`, `codex`, `opencode`, `cursor`,
+    /// or `all`. Defaults to every agent already set up on this machine.
     #[arg(long)]
     pub agent: Option<String>,
 }

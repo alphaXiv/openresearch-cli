@@ -79,6 +79,13 @@ pub struct Run {
     pub status: String,
     pub commit_sha: Option<String>,
     pub updated_at: String,
+    // Terminal time; only meaningful once `status` is terminal. Optional so
+    // older API deployments (without the field) still deserialize.
+    #[serde(default)]
+    pub ended_at: Option<String>,
+    // Seconds from run creation to end (or to now while still in-flight).
+    #[serde(default)]
+    pub duration_seconds: i64,
 }
 
 /// A single GPU offer from the compute catalog (`GET /compute/catalog`).
