@@ -41,10 +41,10 @@ Run the tests with `cargo test`.
 | `orx logout` | Removes the stored token. |
 | `orx install-skills [--agent claude\|codex\|opencode\|cursor\|all]` | Installs the `orx` skill shim into local coding agents (Claude Code, Codex, OpenCode, Cursor) so they auto-discover the CLI (`orx login` also offers this). |
 | `orx projects [--all]` | Lists your projects, grouped by organization. `--all` includes archived. |
-| `orx compute [--gpu <id>] [--count <n>]` | Lists the GPU compute catalog, sorted by price. |
+| `orx compute [--gpu <id>] [--count <n>] \| --cpu]` | Lists the GPU compute catalog, or CPU-only offers with `--cpu`, sorted by price. |
 | `orx exp status <expId>` | Shows an experiment's status, branch, parent, run command, and latest run, plus a local `git diff` recipe for what the run changed. |
 | `orx exp cmd <expId> [--set <command>]` | Views or sets the experiment's run command. |
-| `orx exp run <expId> (--gpu <id> [--count <n>] [--disk <gb>] \| --sandbox <id>)` | Launches a run on new or existing compute. |
+| `orx exp run <expId> (--gpu <id> [--count <n>] [--disk <gb>] \| --cpu <flavor> [--vcpus <n>] \| --sandbox <id>)` | Launches a run on new GPU, new CPU-only, or existing compute. |
 | `orx exp cancel <expId>` | Cancels the in-flight run. |
 | `orx lit "<query>" [--limit <n>] [--json]` | Full-text search alphaXiv's paper corpus (no login required). |
 | `orx paper <id\|url> [--full]` | Fetch a paper's machine-readable report, or its full text with `--full`. |

@@ -86,7 +86,7 @@ orx logout         # remove the stored token
 |---|---|
 | `orx create-project <orgId> --name "<n>" [--repo <owner/repo>]` | Create a project **and its baseline (root node)**: bound to a GitHub repo, or on a fresh blank repo when `--repo` is omitted. See below. |
 | `orx create-experiment <projectId> --title "<t>" [...]` | Add an experiment node; prints its git branch. See below. |
-| `orx compute [--gpu <id>] [--count <n>]` | List the GPU compute catalog (price-sorted). See below. |
+| `orx compute [--gpu <id>] [--count <n>] \| --cpu]` | List the GPU compute catalog, or CPU-only offers with `--cpu` (price-sorted). See below. |
 | `orx exp status/cmd/run/cancel/wait <expId>` | Inspect, run, cancel, and wait on a single experiment node. `status` prints the node's branch, its parent's branch, the latest run's full commit SHA, and a ready-to-paste local `git diff` recipe. See below. |
 | `orx exp desc <expId> [--set "<text>" \| --stdin]` | Read or overwrite the experiment's description (free-form notes). See below. |
 
@@ -343,7 +343,8 @@ orx create-experiment <projectId> --title "Baseline"
 
 Each experiment node has a **run command** (the shell command that trains/evaluates
 it) and is launched on **compute** you choose at run time. Compute is *not* stored
-on the node — you pick a GPU (or an existing sandbox) each time you launch.
+on the node — you pick a GPU, a CPU-only instance, or an existing sandbox each time
+you launch.
 
 ```sh
 orx exp status <expId>                 # status, branch, parent, run command, latest run + commit, local diff recipe
@@ -351,7 +352,9 @@ orx exp cmd <expId>                    # print the current run command
 orx exp cmd <baseId> --set "bash run.sh"   # set it ONCE on the baseline; children inherit it
 orx compute                            # browse GPU offers (price-sorted)
 orx compute --gpu H100_SXM --count 1   # filter the catalog
-orx exp run <expId> --gpu H100_SXM --count 1 [--disk 100]     # launch on a NEW instance
+orx compute --cpu                      # browse CPU-only offers (price-sorted)
+orx exp run <expId> --gpu H100_SXM --count 1 [--disk 100]     # launch on a NEW GPU instance
+orx exp run <expId> --cpu cpu5c --vcpus 8                 # launch on a NEW CPU-only instance
 orx exp run <expId> --sandbox <sandboxId>                 # launch on an EXISTING node
 orx exp cancel <expId>                 # cancel the in-flight run
 ```
@@ -370,14 +373,19 @@ Rules and notes:
   safety net, `orx exp run` refuses a child whose branch has **no changes over its
   parent** (the tell-tale of "queued before pushing") — push and retry, or pass
   `--force` to run the unchanged code deliberately.
-- **Pick compute with exactly one of `--gpu` or `--sandbox`.** With `--gpu`,
-  `--count` defaults to `1` and `--disk` to `100` (GB). New instances are
+- **Pick compute with exactly one of `--gpu`, `--cpu`, or `--sandbox`.** With
+  `--gpu`, `--count` defaults to `1` and `--disk` to `100` (GB). New instances are
   **RunPod-only** — the server picks the cheapest matching RunPod offer for the
   chosen (gpu, count); browse valid gpu ids and prices with `orx compute`.
 - **GPU ids are exact enum strings, not family names.** `--gpu H100` is invalid —
   the variant suffix is part of the id (`H100_SXM`, `H100_PCIE`, `A100_SXM_80GB`,
   `RTX_4090`, …). Use the exact `GPU` column value from `orx compute`; run it
   first if unsure.
+- **Use `--cpu` for GPU-less work** (data prep, eval harnesses, CPU-bound papers).
+  The flavor is one of `cpu5c` (compute), `cpu5g` (general), or `cpu5m` (memory);
+  `--vcpus` is one of `2`, `8`, `32` (default `8`). Browse offers with
+  `orx compute --cpu`. CPU instances size their disk from the vCPU count, so there
+  is no `--disk` knob.
 - `orx exp run` **queues** the run and returns immediately — it does not wait.
   Follow progress with `orx runs <projectId>` and `orx logs <runId>`, or block
   with `orx exp wait` (below).

@@ -248,10 +248,14 @@ pub struct CreateExperimentArgs {
 
 #[derive(Args, Debug)]
 pub struct ComputeArgs {
-    /// Filter to one GPU id (e.g. `H100_SXM`). Case-insensitive.
+    /// List CPU-only instance offers instead of the GPU catalog. CPU instances
+    /// suit GPU-less experiments (data prep, eval harnesses, CPU-bound papers).
+    #[arg(long)]
+    pub cpu: bool,
+    /// Filter to one GPU id (e.g. `H100_SXM`). Case-insensitive. GPU mode only.
     #[arg(long)]
     pub gpu: Option<String>,
-    /// Filter to a specific GPU count per instance.
+    /// Filter to a specific GPU count per instance. GPU mode only.
     #[arg(long)]
     pub count: Option<i64>,
 }
