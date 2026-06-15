@@ -9,9 +9,7 @@ use crate::error::{require_credentials, Result};
 /// Lists a project's effective env var names, grouped by source.
 pub async fn run(args: crate::EnvArgs) -> Result<()> {
     let creds = require_credentials().await;
-    let mut env_vars = list_env_var_names(&creds, &args.project_id)
-        .await?
-        .env_vars;
+    let mut env_vars = list_env_var_names(&creds, &args.project_id).await?.env_vars;
 
     if env_vars.is_empty() {
         println!("No environment variables set for this project.");
@@ -24,7 +22,11 @@ pub async fn run(args: crate::EnvArgs) -> Result<()> {
         "project" => 1,
         _ => 2,
     };
-    env_vars.sort_by(|a, b| rank(&a.source).cmp(&rank(&b.source)).then(a.key.cmp(&b.key)));
+    env_vars.sort_by(|a, b| {
+        rank(&a.source)
+            .cmp(&rank(&b.source))
+            .then(a.key.cmp(&b.key))
+    });
 
     let width = env_vars.iter().map(|v| v.key.len()).max().unwrap_or(0);
     for v in &env_vars {

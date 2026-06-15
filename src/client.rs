@@ -614,10 +614,7 @@ pub async fn list_experiments(creds: &Credentials, project_id: &str) -> Result<L
     api_get(creds, &format!("/projects/{}/experiments", project_id)).await
 }
 
-pub async fn list_env_var_names(
-    creds: &Credentials,
-    project_id: &str,
-) -> Result<ListEnvVarNames> {
+pub async fn list_env_var_names(creds: &Credentials, project_id: &str) -> Result<ListEnvVarNames> {
     api_get(creds, &format!("/projects/{}/env-var-names", project_id)).await
 }
 
