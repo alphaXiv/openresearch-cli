@@ -69,6 +69,7 @@ orx logout         # remove the stored token
 | `orx projects [--all]` | List your projects (id + name + GitHub `owner/repo`), grouped by org (name + org id). `--all` includes archived. **Project ids, org ids, and the repo to clone come from here.** |
 | `orx experiments <projectId>` | Print the project's experiments as an indented tree (nested by parent). **Experiment ids come from here.** |
 | `orx runs <projectId> [--experiment <id>]` | List runs as a table (status, experiment, commit, updated), newest first. `--experiment` filters to one experiment. **Run ids come from here.** |
+| `orx env <projectId>` | List the **names** of the environment variables a run in this project will see (merged org + project vars plus your own per-user vars), each tagged with its source. **Names only — values are never returned.** Use this to check whether a secret a run needs (e.g. `WANDB_API_KEY`) is set, without ever seeing its value. |
 
 ### Run evidence (run-scoped)
 | Command | What it does |
@@ -635,7 +636,8 @@ orx chart wandb <projectId> --metric "val/acc" --run <runId> --out ./charts
   the file path, so you can cite exact numbers without opening the image. Runs
   that produced no data are listed under `Skipped:`.
 - Requires `WANDB_API_KEY` set in the project or org env vars; otherwise the
-  command reports that and exits non-zero.
+  command reports that and exits non-zero. Run `orx env <projectId>` first to
+  confirm the key is present (it lists names only, never values).
 
 ## Literature search & paper content — `orx lit` / `orx paper`
 

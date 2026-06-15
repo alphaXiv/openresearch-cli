@@ -316,6 +316,22 @@ pub struct ListExperiments {
     pub experiments: Vec<Experiment>,
 }
 
+/// A single environment variable the project's runs will see. Only the name and
+/// where it's set are returned — values are never exposed over the CLI.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvVarName {
+    pub key: String,
+    /// `"org"`, `"project"`, or `"user"`.
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListEnvVarNames {
+    pub env_vars: Vec<EnvVarName>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ListRuns {
     pub runs: Vec<Run>,
@@ -596,6 +612,10 @@ pub async fn create_project(
 
 pub async fn list_experiments(creds: &Credentials, project_id: &str) -> Result<ListExperiments> {
     api_get(creds, &format!("/projects/{}/experiments", project_id)).await
+}
+
+pub async fn list_env_var_names(creds: &Credentials, project_id: &str) -> Result<ListEnvVarNames> {
+    api_get(creds, &format!("/projects/{}/env-var-names", project_id)).await
 }
 
 pub async fn list_runs(creds: &Credentials, project_id: &str) -> Result<ListRuns> {

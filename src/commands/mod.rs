@@ -22,6 +22,7 @@ pub mod chart;
 pub mod compute;
 pub mod create_experiment;
 pub mod create_project;
+pub mod env;
 pub mod exp;
 pub mod experiments;
 pub mod install_skills;

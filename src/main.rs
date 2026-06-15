@@ -49,6 +49,9 @@ enum Command {
     /// List a project's experiments as a tree.
     Experiments(ExperimentsArgs),
 
+    /// List the names (not values) of a project's environment variables.
+    Env(EnvArgs),
+
     /// List a project's runs.
     Runs(RunsArgs),
 
@@ -124,6 +127,11 @@ pub struct ProjectsArgs {
 
 #[derive(Args, Debug)]
 pub struct ExperimentsArgs {
+    pub project_id: String,
+}
+
+#[derive(Args, Debug)]
+pub struct EnvArgs {
     pub project_id: String,
 }
 
@@ -434,6 +442,7 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Logout => commands::logout::run().await,
         Command::Projects(args) => commands::projects::run(args).await,
         Command::Experiments(args) => commands::experiments::run(args).await,
+        Command::Env(args) => commands::env::run(args).await,
         Command::Runs(args) => commands::runs::run(args).await,
         Command::Logs(args) => commands::logs::run(args).await,
         Command::SearchLogs(args) => commands::search_logs::run(args).await,
