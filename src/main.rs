@@ -91,6 +91,9 @@ enum Command {
     /// Operate on one experiment node (status / run command / run / cancel).
     Exp(ExpArgs),
 
+    /// Upload or list a project's research reports (markdown + images).
+    Report(ReportArgs),
+
     /// Print CLI usage for agents, or fetch a skill doc.
     Skill(SkillArgs),
 
@@ -326,6 +329,28 @@ pub enum ExpCommand {
 }
 
 #[derive(Args, Debug)]
+pub struct ReportArgs {
+    #[command(subcommand)]
+    pub command: ReportCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ReportCommand {
+    /// Upload a report folder (report.md + images/) to a project.
+    Upload {
+        project_id: String,
+        /// Path to the report folder on disk.
+        folder: String,
+        /// Report title (defaults to the folder name).
+        #[arg(long)]
+        title: Option<String>,
+    },
+
+    /// List a project's reports.
+    List { project_id: String },
+}
+
+#[derive(Args, Debug)]
 pub struct ExpRunArgs {
     pub exp_id: String,
     /// Provision a new instance with this GPU id, e.g. `H100_SXM` — the exact
@@ -455,6 +480,7 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::CreateExperiment(args) => commands::create_experiment::run(args).await,
         Command::Compute(args) => commands::compute::run(args).await,
         Command::Exp(args) => commands::exp::run(args).await,
+        Command::Report(args) => commands::report::run(args).await,
         Command::Skill(args) => commands::skill::run(args).await,
         Command::InstallSkills(args) => commands::install_skills::run(args).await,
         Command::Lit(args) => commands::lit::run(args).await,
