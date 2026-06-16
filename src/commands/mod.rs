@@ -33,6 +33,7 @@ pub mod logs;
 pub mod paper;
 pub mod projects;
 pub mod query;
+pub mod report;
 pub mod runs;
 pub mod search_logs;
 pub mod skill;

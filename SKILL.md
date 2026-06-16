@@ -90,6 +90,7 @@ orx logout         # remove the stored token
 | `orx compute [--gpu <id>] [--count <n>] \| --cpu]` | List the GPU compute catalog, or CPU-only offers with `--cpu` (price-sorted). See below. |
 | `orx exp status/cmd/run/cancel/wait <expId>` | Inspect, run, cancel, and wait on a single experiment node. `status` prints the node's branch, its parent's branch, the latest run's full commit SHA, and a ready-to-paste local `git diff` recipe. See below. |
 | `orx exp desc <expId> [--set "<text>" \| --stdin]` | Read or overwrite the experiment's description (free-form notes). See below. |
+| `orx report upload <projectId> <folder> [--title "<t>"]` | Upload a report folder (`report.md` + `images/`) to the project. Appears on the project page and its public view. `orx report list <projectId>` lists them. See below. |
 
 To **read or edit** a node's code — including diffing what a run changed — use
 plain git in the cache-dir clone; there is no `orx` code command. See "Reading &
@@ -278,7 +279,11 @@ run command:
 
 Stop when the goal is met, or after ~3 consecutive failed or regressed runs.
 When you stop, consider writing up the tree as a local markdown report —
-fetch `orx skill report` for the folder layout and section structure.
+fetch `orx skill report` for the folder layout and section structure. Once
+written, publish it with `orx report upload <projectId> <reportFolder>` so it
+shows up on the project page (and its public view) with images inline. The
+folder should hold `report.md` plus an `images/` subfolder; the markdown
+references images by relative path (`![](images/foo.png)`).
 
 ## `orx create-project` — start a new project
 

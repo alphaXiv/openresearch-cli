@@ -299,6 +299,41 @@ pub struct SkillContent {
     pub content: String,
 }
 
+/// A research report attached to a project (`GET /projects/{id}/reports`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectReport {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub slug: String,
+    pub created_at: String,
+    pub created_by: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListReports {
+    pub reports: Vec<ProjectReport>,
+}
+
+/// One presigned upload slot returned by `POST /projects/{id}/reports`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportUploadSlot {
+    pub path: String,
+    pub url: String,
+    pub content_type: String,
+}
+
+/// Response of `POST /projects/{id}/reports`: the created report plus the
+/// presigned PUT URLs to upload each of its files directly to storage.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateReportResult {
+    pub report: ProjectReport,
+    pub uploads: Vec<ReportUploadSlot>,
+}
+
 // Thin envelope DTOs for the list endpoints.
 
 #[derive(Debug, Clone, Deserialize)]
@@ -408,6 +443,16 @@ pub struct CreateProjectBody {
     /// the repo's default branch.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateReportBody {
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    /// Report-relative paths to upload, e.g. ["report.md", "images/a.png"].
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -786,6 +831,38 @@ pub async fn cancel_experiment_run(creds: &Credentials, exp_id: &str) -> Result<
         Some(serde_json::json!({})),
     )
     .await
+}
+
+pub async fn list_reports(creds: &Credentials, project_id: &str) -> Result<ListReports> {
+    api_get(creds, &format!("/projects/{}/reports", project_id)).await
+}
+
+pub async fn create_report(
+    creds: &Credentials,
+    project_id: &str,
+    body: &CreateReportBody,
+) -> Result<CreateReportResult> {
+    let body = serde_json::to_value(body)?;
+    api_post(creds, &format!("/projects/{}/reports", project_id), body).await
+}
+
+/// Upload raw bytes to a presigned PUT URL (R2). No auth header — the signature
+/// in the URL authorizes the write. `content_type` must match what the server
+/// signed (the value returned alongside the URL).
+pub async fn upload_to_presigned(url: &str, content_type: &str, bytes: Vec<u8>) -> Result<()> {
+    let res = http()
+        .put(url)
+        .header("content-type", content_type)
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Could not upload to storage: {}", e))?;
+    let status = res.status();
+    if !status.is_success() {
+        let reason = status.canonical_reason().unwrap_or("");
+        return Err(anyhow!("Upload failed ({} {})", status.as_u16(), reason));
+    }
+    Ok(())
 }
 
 pub async fn list_skills(creds: &Credentials) -> Result<ListSkills> {
