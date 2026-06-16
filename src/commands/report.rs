@@ -86,8 +86,8 @@ async fn upload(project_id: &str, folder: &str, title: Option<String>) -> Result
     // Upload each file to its presigned URL.
     for slot in &result.uploads {
         let abs = root.join(&slot.path);
-        let bytes = std::fs::read(&abs)
-            .map_err(|e| anyhow!("Could not read {}: {}", abs.display(), e))?;
+        let bytes =
+            std::fs::read(&abs).map_err(|e| anyhow!("Could not read {}: {}", abs.display(), e))?;
         upload_to_presigned(&slot.url, &slot.content_type, bytes).await?;
         println!("  uploaded {}", slot.path);
     }
@@ -102,8 +102,8 @@ async fn upload(project_id: &str, folder: &str, title: Option<String>) -> Result
 /// Recursively collect files under `dir`, pushing each as a `/`-joined path
 /// relative to `base`.
 fn collect_files(base: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
-    for entry in std::fs::read_dir(dir)
-        .map_err(|e| anyhow!("Could not read {}: {}", dir.display(), e))?
+    for entry in
+        std::fs::read_dir(dir).map_err(|e| anyhow!("Could not read {}: {}", dir.display(), e))?
     {
         let entry = entry.map_err(|e| anyhow!("Could not read entry: {}", e))?;
         let path = entry.path();

@@ -860,11 +860,7 @@ pub async fn upload_to_presigned(url: &str, content_type: &str, bytes: Vec<u8>) 
     let status = res.status();
     if !status.is_success() {
         let reason = status.canonical_reason().unwrap_or("");
-        return Err(anyhow!(
-            "Upload failed ({} {})",
-            status.as_u16(),
-            reason
-        ));
+        return Err(anyhow!("Upload failed ({} {})", status.as_u16(), reason));
     }
     Ok(())
 }
