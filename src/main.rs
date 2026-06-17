@@ -46,6 +46,9 @@ enum Command {
     /// List your projects, grouped by organization.
     Projects(ProjectsArgs),
 
+    /// Operate on one project (edit its name / description).
+    Project(ProjectArgs),
+
     /// List a project's experiments as a tree.
     Experiments(ExperimentsArgs),
 
@@ -126,6 +129,29 @@ pub struct ProjectsArgs {
     /// Include archived projects.
     #[arg(long)]
     pub all: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ProjectArgs {
+    #[command(subcommand)]
+    pub command: ProjectCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProjectCommand {
+    /// Edit a project's metadata. Pass at least one of `--name` / `--description`.
+    Edit {
+        project_id: String,
+        /// Rename the project.
+        #[arg(long)]
+        name: Option<String>,
+        /// Overwrite the project's description with this value.
+        #[arg(long)]
+        description: Option<String>,
+        /// Overwrite the description with the whole of stdin (for long markdown).
+        #[arg(long)]
+        description_stdin: bool,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -466,6 +492,7 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Login(args) => commands::login::run(args).await,
         Command::Logout => commands::logout::run().await,
         Command::Projects(args) => commands::projects::run(args).await,
+        Command::Project(args) => commands::project::run(args).await,
         Command::Experiments(args) => commands::experiments::run(args).await,
         Command::Env(args) => commands::env::run(args).await,
         Command::Runs(args) => commands::runs::run(args).await,

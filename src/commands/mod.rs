@@ -31,6 +31,7 @@ pub mod login;
 pub mod logout;
 pub mod logs;
 pub mod paper;
+pub mod project;
 pub mod projects;
 pub mod query;
 pub mod report;

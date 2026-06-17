@@ -86,6 +86,7 @@ orx logout         # remove the stored token
 | Command | What it does |
 |---|---|
 | `orx create-project <orgId> --name "<n>" [--repo <owner/repo>]` | Create a project **and its baseline (root node)**: bound to a GitHub repo, or on a fresh blank repo when `--repo` is omitted. See below. |
+| `orx project edit <projectId> [--name "<n>"] [--description "<text>" \| --description-stdin]` | Edit a project's name and/or description (pass at least one). `--description-stdin` overwrites the description from stdin (long markdown). |
 | `orx create-experiment <projectId> --title "<t>" [...]` | Add an experiment node; prints its git branch. See below. |
 | `orx compute [--gpu <id>] [--count <n>] \| --cpu]` | List the GPU compute catalog, or CPU-only offers with `--cpu` (price-sorted). See below. |
 | `orx exp status/cmd/run/cancel/wait <expId>` | Inspect, run, cancel, and wait on a single experiment node. `status` prints the node's branch, its parent's branch, the latest run's full commit SHA, and a ready-to-paste local `git diff` recipe. See below. |

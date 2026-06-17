@@ -226,7 +226,7 @@ pub async fn offer_install_after_login() {
 /// only points the agent at the live guide.
 const CLAUDE_SKILL: &str = r#"---
 name: orx
-description: Drive automated ML research on OpenResearch with the `orx` CLI — create experiments, launch and monitor runs on GPU compute, analyze results and logs, query the evidence DB, and search literature. Use whenever the user wants to run experiments, do auto-research, or mentions orx or OpenResearch.
+description: Drive automated ML research on OpenResearch with the `orx` CLI — create experiments, launch and monitor runs on GPU compute, analyze results and logs, query the evidence DB, and search literature. Use whenever the user wants to understand, explain, explore, or work on an OpenResearch project, run experiments, do auto-research, or mentions orx or OpenResearch.
 ---
 
 # OpenResearch (`orx`)
