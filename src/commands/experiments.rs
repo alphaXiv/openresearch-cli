@@ -59,7 +59,7 @@ fn print_node(
     // commands (`orx exp …`, `orx create-experiment --parent …`).
     println!(
         "{indent}\u{25b8} {}  {}  ({})",
-        exp.id, exp.title, exp.status
+        exp.id, exp.title, exp.agent_status
     );
     if let Some(children) = children_of.get(&Some(exp.id.clone())) {
         for &child in children {

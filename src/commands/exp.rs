@@ -213,7 +213,7 @@ async fn status(creds: &crate::config::Credentials, exp_id: &str) -> Result<()> 
         None => None,
     };
 
-    println!("{}  ({})", exp.title, exp.status);
+    println!("{}  ({})", exp.title, exp.agent_status);
     println!("  id:       {}", exp.id);
     println!("  branch:   {}", exp.branch_name);
     match (&exp.parent_experiment_id, &parent_branch) {
