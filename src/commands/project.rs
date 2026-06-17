@@ -57,12 +57,7 @@ async fn edit(
         ));
     }
 
-    let res = update_project(
-        creds,
-        project_id,
-        &UpdateProjectBody { name, description },
-    )
-    .await?;
+    let res = update_project(creds, project_id, &UpdateProjectBody { name, description }).await?;
     let project = res.project;
 
     println!("\u{2713} Project updated.");
