@@ -385,6 +385,12 @@ pub struct CreateProjectResult {
     pub project: Project,
 }
 
+/// Response of `PATCH /projects/{id}`: the updated project row.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProjectEnvelope {
+    pub project: Project,
+}
+
 // ---------------------------------------------------------------------------
 // Request bodies (mirroring the inline TS body shapes)
 // ---------------------------------------------------------------------------
@@ -479,6 +485,17 @@ struct QueryBody<'a> {
 pub struct UpdateExperimentBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// PATCH body for `update_project`. Only the fields the CLI sets are included;
+/// every field is optional and omitted when `None`.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProjectBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
@@ -653,6 +670,15 @@ pub async fn create_project(
 ) -> Result<CreateProjectResult> {
     let body = serde_json::to_value(body)?;
     api_post(creds, &format!("/orgs/{}/projects", org_id), body).await
+}
+
+pub async fn update_project(
+    creds: &Credentials,
+    project_id: &str,
+    body: &UpdateProjectBody,
+) -> Result<ProjectEnvelope> {
+    let body = serde_json::to_value(body)?;
+    api_patch(creds, &format!("/projects/{}", project_id), body).await
 }
 
 pub async fn list_experiments(creds: &Credentials, project_id: &str) -> Result<ListExperiments> {
