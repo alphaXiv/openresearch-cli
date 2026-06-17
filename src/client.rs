@@ -62,11 +62,16 @@ pub struct Experiment {
     /// Free-form notes / write-up for the experiment; empty string when unset.
     #[serde(default)]
     pub description: String,
-    pub status: String,
+    /// Optional analysis write-up; `null` when unset.
+    #[serde(default)]
+    pub analysis: Option<String>,
     pub run_command: String,
     /// `null` until the experiment has been linked to a sandbox.
     #[serde(default)]
     pub sandbox_id: Option<String>,
+    /// The experiment agent's state, e.g. `"idle"` or `"implementing"`.
+    #[serde(default)]
+    pub agent_status: String,
     pub updated_at: String,
 }
 
