@@ -93,6 +93,21 @@ pub struct Run {
     pub duration_seconds: i64,
 }
 
+/// Disk pricing for an offer. Mirrors the backend `zDisk` discriminated union,
+/// keyed on the `sizable` bool: when `true`, `per_gb_hour` is set and the disk
+/// bills per GB/hour; when `false`, `included_gb` is set and the offer bundles a
+/// fixed capacity. Modeled as a flat struct with optional payloads rather than an
+/// enum because serde's tagged enums can't key on a bool discriminator, and an
+/// untagged enum would not apply the container's `camelCase` rename to variant
+/// fields. The unused payload is simply `None`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Disk {
+    pub sizable: bool,
+    pub per_gb_hour: Option<f64>,
+    pub included_gb: Option<f64>,
+}
+
 /// A single GPU offer from the compute catalog (`GET /compute/catalog`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,8 +121,7 @@ pub struct GpuOffer {
     /// System RAM in GB.
     pub ram_gb: f64,
     pub price_per_hour: f64,
-    /// Disk storage rate while running, USD per GB per hour.
-    pub disk_per_gb_hour: f64,
+    pub disk: Disk,
     pub region: Option<String>,
 }
 
@@ -130,8 +144,7 @@ pub struct CpuOffer {
     /// System RAM in GB.
     pub ram_gb: f64,
     pub price_per_hour: f64,
-    /// Disk storage rate while running, USD per GB per hour.
-    pub disk_per_gb_hour: f64,
+    pub disk: Disk,
     pub region: Option<String>,
 }
 
@@ -1041,4 +1054,85 @@ pub async fn fetch_paper_markdown(kind: &str, paper_id: &str) -> Result<Option<S
         ));
     }
     Ok(Some(res.text().await?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ListCatalog, ListCpuCatalog};
+
+    /// The GPU catalog wire format carries `disk` as a discriminated union and an
+    /// optional `region`, plus `bandwidth*` fields the CLI ignores. Pin that we
+    /// decode both disk shapes, treat a missing region as `None`, and tolerate the
+    /// extra fields — this is exactly the drift that previously broke `orx compute`.
+    #[test]
+    fn deserializes_gpu_catalog_with_disk_union_and_optional_region() {
+        let json = r#"{
+            "offers": [
+                {
+                    "provider": "runpod",
+                    "offerId": "a",
+                    "gpu": "H100_SXM",
+                    "gpuCount": 1,
+                    "vcpus": 16,
+                    "ramGb": 188,
+                    "pricePerHour": 2.5,
+                    "disk": { "sizable": true, "perGbHour": 0.0001 },
+                    "bandwidthInPerGb": 0,
+                    "bandwidthOutPerGb": 0,
+                    "region": "US_CA"
+                },
+                {
+                    "provider": "lambda",
+                    "offerId": "b",
+                    "gpu": "A100_SXM_80GB",
+                    "gpuCount": 8,
+                    "vcpus": 124,
+                    "ramGb": 1800,
+                    "pricePerHour": 14.0,
+                    "disk": { "sizable": false, "includedGb": 1024 },
+                    "bandwidthInPerGb": 0,
+                    "bandwidthOutPerGb": 0
+                }
+            ]
+        }"#;
+
+        let parsed: ListCatalog = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(parsed.offers.len(), 2);
+
+        let sizable = &parsed.offers[0];
+        assert_eq!(sizable.region.as_deref(), Some("US_CA"));
+        assert!(sizable.disk.sizable);
+        assert_eq!(sizable.disk.per_gb_hour, Some(0.0001));
+        assert_eq!(sizable.disk.included_gb, None);
+
+        let fixed = &parsed.offers[1];
+        // `region` absent on the wire must decode to `None`.
+        assert_eq!(fixed.region, None);
+        assert!(!fixed.disk.sizable);
+        assert_eq!(fixed.disk.included_gb, Some(1024.0));
+        assert_eq!(fixed.disk.per_gb_hour, None);
+    }
+
+    /// CPU offers share the same `disk` union; pin that the CPU catalog decodes too.
+    #[test]
+    fn deserializes_cpu_catalog_with_disk_union() {
+        let json = r#"{
+            "offers": [
+                {
+                    "provider": "runpod",
+                    "offerId": "c",
+                    "cpuFlavor": "cpu5c",
+                    "vcpus": 4,
+                    "ramGb": 16,
+                    "pricePerHour": 0.1,
+                    "disk": { "sizable": true, "perGbHour": 0.0001 }
+                }
+            ]
+        }"#;
+
+        let parsed: ListCpuCatalog = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(parsed.offers.len(), 1);
+        assert!(parsed.offers[0].disk.sizable);
+        assert_eq!(parsed.offers[0].disk.per_gb_hour, Some(0.0001));
+    }
 }
