@@ -4,10 +4,9 @@
 //! The GPU catalog endpoint (`GET /compute/catalog`) spans every configured
 //! provider and region; this command lists all of them, sorted by price
 //! ascending (the order the API returns), and can be narrowed with `--gpu`,
-//! `--count`, and `--provider`. Note that experiment runs launched on a *new*
-//! instance (`orx exp run --gpu ...`) are still RunPod-only, so an offer from
-//! another provider shown here is browsable but not directly launchable as a new
-//! instance. CPU offers (`--cpu`) are RunPod-only to begin with.
+//! `--count`, and `--provider`. Any provider shown here is launchable as a new
+//! instance via `orx exp run --gpu ... --provider ...` or `orx instance create`.
+//! CPU offers (`--cpu`) are RunPod-only.
 
 use crate::client::{list_catalog, list_cpu_catalog, Disk};
 use crate::error::{require_credentials, Result};
