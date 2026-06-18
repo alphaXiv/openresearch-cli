@@ -1,3 +1,4 @@
 /target
 *.log
 .DS_Store
+Claude.local.md
