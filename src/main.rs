@@ -308,6 +308,9 @@ pub struct ComputeArgs {
     /// Filter to a specific GPU count per instance. GPU mode only.
     #[arg(long)]
     pub count: Option<i64>,
+    /// Filter to one provider (e.g. `runpod`, `vast`, `lambda`). Case-insensitive. GPU mode only.
+    #[arg(long)]
+    pub provider: Option<String>,
 }
 
 #[derive(Args, Debug)]
