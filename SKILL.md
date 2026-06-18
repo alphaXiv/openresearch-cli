@@ -23,7 +23,10 @@ section expands on the why; these are the non-negotiables.
 
 1. **Never edit the baseline (the root).** The root is the control every variant
    is measured against. To try an idea, **branch a child** and edit the child.
-   Editing the root moves the goalposts and destroys every comparison.
+   Editing the root moves the goalposts and destroys every comparison. (One
+   exception, like rule 2's single legitimate `--set`: **seeding an *empty*
+   baseline** with starting code when it has none yet — see "Seeding an empty
+   baseline." Once the root holds real code, this rule is absolute.)
 2. **The run command *and* the environment are a fixed contract — identical on
    every node.** A child inherits its parent's run command verbatim; leave it
    alone. Do **not** give nodes different start commands, and do **not** vary
@@ -309,12 +312,78 @@ orx create-project <orgId> --name "My new idea"
 - The command prints the project id, repo, and the baseline's id + git branch.
   Next steps: hang children off the baseline with
   `orx create-experiment <projectId> --title "<t>" --parent <baselineId>`.
-- For a **blank** project the baseline starts empty (a stub README): check out
-  the baseline's branch and push your starting code to it (see "Reading &
-  editing a node's code" below) before launching runs.
+- For a **blank** project the baseline starts empty (a stub README): seed it
+  from existing code before launching runs — for a paper or a known idea there is
+  almost always a repo that implements it, and starting from that is faster and a
+  far better control than code written from scratch. See "Seeding an empty
+  baseline" below.
 - If the baseline step fails after the project was created, the command prints
   the `orx create-experiment <projectId> --title "<t>"` recovery — run that
   rather than re-running `create-project` (which would mint a second project).
+
+## Seeding an empty baseline — start from existing code, not from scratch
+
+A **blank** project's baseline is an empty stub (just a `README.md`) — there's no
+code to run yet. The right move is almost never to **write the implementation by
+hand.** For nearly any paper or idea there is already a repo that implements it,
+and seeding the baseline from that repo is faster, more faithful, and a far
+better control than something typed from memory. Reproductions should start from
+the authors' (or a strong community) implementation, not a blank file.
+
+This is the one legitimate time you put code *on the baseline itself* (cardinal
+rule 1's only exception): it applies **only while the baseline is still the empty
+stub.** Once it holds real code, the baseline is frozen — vary code on children
+from then on.
+
+**Find the code to seed from, in priority order:**
+
+1. **The paper's own repo.** If the project has a paper (`orx project view` shows
+   it, or you were given an arXiv id), run `orx paper <id>` — when alphaXiv has a
+   repo linked it prints `GitHub: <url>` as the first line. That repo is the
+   default seed. (Sanity-check the name: the linked repo is the most-starred one
+   and is occasionally a big framework rather than the paper's own code.)
+2. **No repo line, or the wrong repo? Search for one** — a missing `GitHub:` line
+   means alphaXiv didn't have one indexed, *not* that none exists. Before falling
+   back to scratch:
+   - skim the paper's full text for a code/project URL: `orx paper <id> --full`
+     (authors often link a repo or project page in the body or a footnote);
+   - search the literature for the method and check related papers' repos:
+     `orx lit "<the method>"` → `orx paper <hitId>` on the strongest hits and read
+     their `GitHub:` lines.
+3. **No paper at all (a free-form idea project)?** Treat the idea as the query:
+   `orx lit "<the idea>"`, read the most relevant report with `orx paper`, and
+   seed from the best implementation it points to. Only if a genuine search turns
+   up nothing usable do you start from a minimal scaffold of your own — and say so
+   in the baseline's description.
+
+**Seed the baseline branch from the chosen repo.** Work in the cache-dir clone
+(see "Reading & editing a node's code"); replace the stub with the source's code
+as one squashed commit, so the baseline keeps clean provenance and stays rooted
+on the project repo:
+
+```sh
+DIR=~/.cache/openresearch/repos/<owner>/<repo>          # the PROJECT's repo, from `orx projects`
+[ -d "$DIR" ] || git clone https://github.com/<owner>/<repo> "$DIR"
+git -C "$DIR" fetch origin
+git -C "$DIR" checkout -B orx/<baseline-slug> origin/orx/<baseline-slug>   # the baseline's branch
+
+src=$(mktemp -d) && git clone --depth 1 https://github.com/<srcOwner>/<srcRepo> "$src"
+SHA=$(git -C "$src" rev-parse --short HEAD) && rm -rf "$src/.git"
+find "$DIR" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +   # drop the stub
+cp -a "$src/." "$DIR/"                                               # lay down the source tree
+git -C "$DIR" add -A
+git -C "$DIR" commit -m "Seed baseline from <srcOwner>/<srcRepo>@$SHA"
+git -C "$DIR" push
+```
+
+Then make the baseline runnable and proceed normally:
+
+- read the seeded code, find its entry point, and set the run command **once**:
+  `orx exp cmd <baselineId> --set "bash run.sh"` (rule 2's one legitimate `--set`);
+- run the baseline first for a control `EVAL.md`, then branch children and vary
+  code per the auto-research loop. The baseline is **frozen** the moment it holds
+  real code — shrink to the smallest config that still shows the paper's claim by
+  editing a **child**, never by trimming the root.
 
 ## `orx create-experiment` — add a node to the tree
 
