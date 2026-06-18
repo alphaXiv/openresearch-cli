@@ -46,7 +46,10 @@ enum Command {
     /// List your projects, grouped by organization.
     Projects(ProjectsArgs),
 
-    /// Operate on one project (edit its name / description).
+    /// Browse the public project directory (no membership needed).
+    Explore(ExploreArgs),
+
+    /// Operate on one project (view it, or edit its name / description).
     Project(ProjectArgs),
 
     /// List a project's experiments as a tree.
@@ -132,6 +135,13 @@ pub struct ProjectsArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct ExploreArgs {
+    /// Emit raw JSON instead of the formatted table.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug)]
 pub struct ProjectArgs {
     #[command(subcommand)]
     pub command: ProjectCommand,
@@ -139,6 +149,9 @@ pub struct ProjectArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ProjectCommand {
+    /// Show a project's overview: details, experiment tree, and reports.
+    View { project_id: String },
+
     /// Edit a project's metadata. Pass at least one of `--name` / `--description`.
     Edit {
         project_id: String,
@@ -377,6 +390,13 @@ pub enum ReportCommand {
 
     /// List a project's reports.
     List { project_id: String },
+
+    /// Print a report's markdown body to stdout. Pass its id or slug.
+    Show {
+        project_id: String,
+        /// Report id (from `orx report list`) or its slug.
+        report: String,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -495,6 +515,7 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Login(args) => commands::login::run(args).await,
         Command::Logout => commands::logout::run().await,
         Command::Projects(args) => commands::projects::run(args).await,
+        Command::Explore(args) => commands::explore::run(args).await,
         Command::Project(args) => commands::project::run(args).await,
         Command::Experiments(args) => commands::experiments::run(args).await,
         Command::Env(args) => commands::env::run(args).await,

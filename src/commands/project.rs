@@ -8,13 +8,17 @@
 
 use tokio::io::AsyncReadExt;
 
-use crate::client::{update_project, UpdateProjectBody};
+use crate::client::{
+    get_project, list_experiments, list_reports, update_project, UpdateProjectBody,
+};
+use crate::commands::experiments::print_tree;
 use crate::error::{anyhow, require_credentials, Result};
 use crate::ProjectCommand;
 
 pub async fn run(args: crate::ProjectArgs) -> Result<()> {
     let creds = require_credentials().await;
     match args.command {
+        ProjectCommand::View { project_id } => view(&creds, &project_id).await,
         ProjectCommand::Edit {
             project_id,
             name,
@@ -22,6 +26,57 @@ pub async fn run(args: crate::ProjectArgs) -> Result<()> {
             description_stdin,
         } => edit(&creds, &project_id, name, description, description_stdin).await,
     }
+}
+
+/// `orx project view <projectId>` — overview of a single project: its details,
+/// experiment tree, and reports. Works for any public project, or any private
+/// one in an org you belong to.
+async fn view(creds: &crate::config::Credentials, project_id: &str) -> Result<()> {
+    let project = get_project(creds, project_id).await?.project;
+
+    println!("{}", project.name);
+    println!("  id:     {}", project.id);
+    if !project.github_owner.is_empty() {
+        println!("  repo:   {}/{}", project.github_owner, project.github_repo);
+    }
+    println!(
+        "  access: {}",
+        if project.is_public {
+            "public"
+        } else {
+            "private"
+        }
+    );
+    if !project.description.is_empty() {
+        println!("  about:  {}", project.description);
+    }
+    if let Some(q) = project
+        .example_question
+        .as_deref()
+        .filter(|q| !q.is_empty())
+    {
+        println!("  ask:    {}", q);
+    }
+
+    let experiments = list_experiments(creds, project_id).await?.experiments;
+    println!("\nExperiments");
+    if experiments.is_empty() {
+        println!("  (none)");
+    } else {
+        print_tree(&experiments);
+    }
+
+    let reports = list_reports(creds, project_id).await?.reports;
+    println!("\nReports");
+    if reports.is_empty() {
+        println!("  (none)");
+    } else {
+        for r in &reports {
+            println!("  {}  {}  ({})", r.id, r.title, r.created_at);
+        }
+        println!("\nRead one with: orx report show {} <reportId>", project_id);
+    }
+    Ok(())
 }
 
 /// `orx project edit <projectId> [--name …] [--description … | --description-stdin]`

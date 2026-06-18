@@ -18,6 +18,13 @@ pub async fn run(args: crate::ExperimentsArgs) -> Result<()> {
         return Ok(());
     }
 
+    print_tree(&experiments);
+    Ok(())
+}
+
+/// Prints `experiments` as an indented tree by `parentExperimentId`. Shared by
+/// `orx experiments` and `orx project view`. Assumes a non-empty slice.
+pub fn print_tree(experiments: &[Experiment]) {
     // Group children by parent so we can walk the tree from the roots down.
     let mut children_of: HashMap<Option<String>, Vec<usize>> = HashMap::new();
     for (idx, exp) in experiments.iter().enumerate() {
@@ -41,10 +48,8 @@ pub async fn run(args: crate::ExperimentsArgs) -> Result<()> {
         .collect();
 
     for root in roots {
-        print_node(&experiments, &children_of, root, 0);
+        print_node(experiments, &children_of, root, 0);
     }
-
-    Ok(())
 }
 
 fn print_node(

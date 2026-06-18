@@ -25,6 +25,7 @@ pub mod create_project;
 pub mod env;
 pub mod exp;
 pub mod experiments;
+pub mod explore;
 pub mod install_skills;
 pub mod lit;
 pub mod login;
