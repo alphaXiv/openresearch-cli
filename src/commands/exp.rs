@@ -380,6 +380,11 @@ async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<
     if chosen > 1 {
         return Err(anyhow!("Pass exactly one of --sandbox, --gpu, or --cpu."));
     }
+    if args.provider.is_some() && args.gpu.is_none() {
+        return Err(anyhow!(
+            "--provider only applies with --gpu (it selects among new GPU offers)."
+        ));
+    }
     let target = if let Some(sandbox_id) = &args.sandbox {
         RunTarget::Existing {
             sandbox_id: sandbox_id.clone(),
@@ -389,6 +394,9 @@ async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<
             gpu: gpu.clone(),
             gpu_count: args.count.unwrap_or(1),
             disk_gb: args.disk.unwrap_or(100),
+            // Omitted = server default (RunPod). The server validates the name
+            // and 400s on an unknown provider, so no client-side check.
+            provider: args.provider.clone(),
         }
     } else if let Some(cpu_flavor) = &args.cpu {
         RunTarget::NewCpu {
