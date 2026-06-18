@@ -31,19 +31,30 @@ pub struct Org {
     pub created_by: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
     pub id: String,
     pub name: String,
     pub description: String,
     pub archived: bool,
+    /// When true, anyone (incl. logged-out visitors) can view the project
+    /// read-only. The `/projects/public` directory only returns these.
+    #[serde(default)]
+    pub is_public: bool,
     /// GitHub repo the project's experiment branches live on. Clone this to edit
     /// experiments locally: `git clone https://github.com/<owner>/<repo>.git`.
     #[serde(default)]
     pub github_owner: String,
     #[serde(default)]
     pub github_repo: String,
+    /// One short, ready-to-send example question derived from the repo README.
+    /// `None` until generated.
+    #[serde(default)]
+    pub example_question: Option<String>,
+    /// Newest run in the project (UUIDv7 encodes the time), or `None` if no runs.
+    #[serde(default)]
+    pub last_activity_run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -106,8 +117,6 @@ pub struct GpuOffer {
     /// System RAM in GB.
     pub ram_gb: f64,
     pub price_per_hour: f64,
-    /// Disk storage rate while running, USD per GB per hour.
-    pub disk_per_gb_hour: f64,
     pub region: Option<String>,
 }
 
@@ -130,8 +139,6 @@ pub struct CpuOffer {
     /// System RAM in GB.
     pub ram_gb: f64,
     pub price_per_hour: f64,
-    /// Disk storage rate while running, USD per GB per hour.
-    pub disk_per_gb_hour: f64,
     pub region: Option<String>,
 }
 
@@ -319,6 +326,16 @@ pub struct ProjectReport {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ListReports {
     pub reports: Vec<ProjectReport>,
+}
+
+/// Response of `GET /projects/{id}/reports/{reportId}`: a report's metadata plus
+/// its rendered markdown body (`report.md`). `markdown` is empty if the body was
+/// never uploaded.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportDetail {
+    pub report: ProjectReport,
+    pub markdown: String,
 }
 
 /// One presigned upload slot returned by `POST /projects/{id}/reports`.
@@ -652,8 +669,20 @@ pub async fn list_projects(creds: &Credentials, org_id: &str) -> Result<ListProj
     api_get(creds, &format!("/orgs/{}/projects", org_id)).await
 }
 
-/// Find a project by id by scanning the caller's orgs (there is no
-/// `GET /projects/{id}` endpoint).
+/// The public project directory — every project flagged `isPublic`, viewable by
+/// anyone. A PAT still works here but doesn't widen the result set.
+pub async fn list_public_projects(creds: &Credentials) -> Result<ListProjects> {
+    api_get(creds, "/projects/public").await
+}
+
+/// Fetch a single project by id (`GET /projects/{id}`). Works for any public
+/// project, or any private one in an org the caller belongs to.
+pub async fn get_project(creds: &Credentials, project_id: &str) -> Result<ProjectEnvelope> {
+    api_get(creds, &format!("/projects/{}", project_id)).await
+}
+
+/// Find a project by id by scanning the caller's orgs. Prefer [`get_project`]
+/// when you only need the row; this stays for callers that need org context.
 pub async fn find_project(creds: &Credentials, project_id: &str) -> Result<Option<Project>> {
     for org in list_orgs(creds).await?.orgs {
         let found = list_projects(creds, &org.id)
@@ -866,6 +895,19 @@ pub async fn cancel_experiment_run(creds: &Credentials, exp_id: &str) -> Result<
 
 pub async fn list_reports(creds: &Credentials, project_id: &str) -> Result<ListReports> {
     api_get(creds, &format!("/projects/{}/reports", project_id)).await
+}
+
+/// Fetch one report's metadata and its rendered markdown body.
+pub async fn get_report(
+    creds: &Credentials,
+    project_id: &str,
+    report_id: &str,
+) -> Result<ReportDetail> {
+    api_get(
+        creds,
+        &format!("/projects/{}/reports/{}", project_id, report_id),
+    )
+    .await
 }
 
 pub async fn create_report(

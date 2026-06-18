@@ -8,7 +8,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::client::{create_report, list_reports, upload_to_presigned, CreateReportBody};
+use crate::client::{
+    create_report, get_report, list_reports, upload_to_presigned, CreateReportBody,
+};
 use crate::error::{anyhow, require_credentials, Result};
 
 pub async fn run(args: crate::ReportArgs) -> Result<()> {
@@ -19,7 +21,42 @@ pub async fn run(args: crate::ReportArgs) -> Result<()> {
             title,
         } => upload(&project_id, &folder, title).await,
         crate::ReportCommand::List { project_id } => list(&project_id).await,
+        crate::ReportCommand::Show { project_id, report } => show(&project_id, &report).await,
     }
+}
+
+/// `orx report show <projectId> <reportId|slug>` — print a report's markdown
+/// body to stdout. Accepts a report id or its slug (resolved via the list).
+async fn show(project_id: &str, report: &str) -> Result<()> {
+    let creds = require_credentials().await;
+
+    // Resolve a slug to its id; an id is passed straight through. We always list
+    // first so a stale/unknown ref gives a clear error rather than a 404 body.
+    let reports = list_reports(&creds, project_id).await?.reports;
+    let report_id = reports
+        .iter()
+        .find(|r| r.id == report || r.slug == report)
+        .map(|r| r.id.clone())
+        .ok_or_else(|| {
+            anyhow!(
+                "No report {:?} in this project. List them with: orx report list {}",
+                report,
+                project_id
+            )
+        })?;
+
+    let detail = get_report(&creds, project_id, &report_id).await?;
+    if detail.markdown.is_empty() {
+        return Err(anyhow!(
+            "Report {:?} has no markdown body (report.md was never uploaded).",
+            detail.report.title
+        ));
+    }
+    print!("{}", detail.markdown);
+    if !detail.markdown.ends_with('\n') {
+        println!();
+    }
+    Ok(())
 }
 
 async fn list(project_id: &str) -> Result<()> {
