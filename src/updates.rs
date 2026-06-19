@@ -15,7 +15,7 @@
 //! dist-workspace.toml sets `install-path = "CARGO_HOME"`), so `orx update`
 //! refuses to touch the binary unless the receipt matches it.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -278,6 +278,40 @@ fn opted_out() -> bool {
         || std::env::var("OPENRESEARCH_CLI_DISABLE_UPDATE").as_deref() == Ok("1")
 }
 
+/// Whether to emit ANSI styling on stderr: only when stderr is a real terminal
+/// and the user hasn't set the conventional `NO_COLOR` opt-out. Pipes, files,
+/// and CI logs get plain text — never raw escape codes — which matters because
+/// this warning now prints on non-interactive runs too.
+fn stderr_supports_ansi() -> bool {
+    std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal()
+}
+
+/// Wraps `text` in the ANSI bold sequence when `enabled`, else returns it as-is.
+/// `\x1b[22m` resets bold/faint specifically (not `\x1b[0m`, which would also
+/// clear any surrounding styling the terminal had).
+fn bold(text: &str, enabled: bool) -> String {
+    if enabled {
+        format!("\x1b[1m{text}\x1b[22m")
+    } else {
+        text.to_string()
+    }
+}
+
+/// Renders the warning for printing to stderr: bolds the leading `Warning:`
+/// label when `ansi` is set, and sets the whole thing off in its own block with
+/// a blank line above and below. Returns the exact bytes to write (the caller
+/// uses `write!`, not `writeln!`, since the trailing newlines are included).
+fn render(message: &str, ansi: bool) -> String {
+    // The message always begins with the literal "Warning:" (see `warning_for`);
+    // bold just that label, gh/cargo-style, rather than the whole sentence.
+    const LABEL: &str = "Warning:";
+    let styled = match message.strip_prefix(LABEL) {
+        Some(rest) => format!("{}{rest}", bold(LABEL, ansi)),
+        None => message.to_string(),
+    };
+    format!("\n{styled}\n\n")
+}
+
 /// Whether a `current` → `latest` upgrade crosses a breaking-change boundary
 /// under semver. A major bump is always breaking; pre-1.0 (`0.y.z`) a *minor*
 /// bump is the breaking signal too, since `0.y` versions treat `y` like a major
@@ -382,7 +416,11 @@ impl UpdateWarning {
             // Infallible: a closed/broken stderr (e.g. `2>&-`, or a reader that
             // already exited) must not panic the process before the command even
             // runs. `eprintln!` would; a swallowed `writeln!` won't.
-            let _ = writeln!(std::io::stderr(), "{message}\n");
+            let _ = write!(
+                std::io::stderr(),
+                "{}",
+                render(&message, stderr_supports_ansi())
+            );
         }
 
         // Refresh whenever the cache is stale (or absent), regardless of whether
@@ -437,9 +475,43 @@ impl UpdateWarning {
 
 #[cfg(test)]
 mod tests {
-    use super::{exe_matches_prefix, is_breaking_gap, parse_manifest, precedence, warning_for};
+    use super::{
+        bold, exe_matches_prefix, is_breaking_gap, parse_manifest, precedence, render, warning_for,
+    };
     use semver::Version;
     use std::path::Path;
+
+    #[test]
+    fn render_sets_off_the_warning_in_its_own_block() {
+        let msg = "Warning: orx 0.1.0 is outdated (latest 0.2.0). foo Run `orx update` to upgrade.";
+        // Plain (non-TTY): blank line before and after, no escape codes at all.
+        let plain = render(msg, false);
+        assert_eq!(plain, format!("\n{msg}\n\n"));
+        assert!(
+            !plain.contains('\x1b'),
+            "plain output must not contain ANSI"
+        );
+
+        // Styled (TTY): only the "Warning:" label is bolded; same blank-line block.
+        let styled = render(msg, true);
+        assert!(styled.starts_with("\n\x1b[1mWarning:\x1b[22m"));
+        assert!(styled.ends_with("upgrade.\n\n"));
+        // Everything after the label is unstyled — exactly one bold open/close.
+        assert_eq!(styled.matches("\x1b[1m").count(), 1);
+        assert_eq!(styled.matches("\x1b[22m").count(), 1);
+
+        // Fail-soft: a message without the "Warning:" prefix is passed through
+        // unstyled (no panic, no stray escapes), so the label/builder coupling
+        // degrades gracefully if the prefix ever changes.
+        let no_label = render("orx is outdated.", true);
+        assert_eq!(no_label, "\norx is outdated.\n\n");
+    }
+
+    #[test]
+    fn bold_is_a_noop_when_disabled() {
+        assert_eq!(bold("x", false), "x");
+        assert_eq!(bold("x", true), "\x1b[1mx\x1b[22m");
+    }
 
     #[test]
     fn precedence_ignores_build_metadata_and_orders_prereleases() {
