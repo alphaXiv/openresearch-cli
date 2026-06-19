@@ -318,32 +318,6 @@ fn render(message: &str, ansi: bool) -> String {
     format!("\n{styled}\n\n")
 }
 
-/// Whether a `current` → `latest` upgrade crosses a breaking-change boundary
-/// under semver. A major bump is always breaking; pre-1.0 (`0.y.z`) a *minor*
-/// bump is the breaking signal too, since `0.y` versions treat `y` like a major
-/// (`0.0.z` then treats every `z` as breaking). Post-1.0 a minor bump is
-/// additive. Assumes `latest` outranks `current` in [`precedence`] (the only
-/// case the warning builds for).
-///
-/// RE-CONFIRM AT 1.0: the moment orx ships `1.0.0`, a `1.x` minor bump silently
-/// downgrades from breaking to soft here. That is semver-correct, but if the
-/// backend keeps making breaking changes on minor bumps post-1.0, this rule
-/// would understate them — revisit the heuristic then.
-fn is_breaking_gap(current: &Version, latest: &Version) -> bool {
-    if latest.major != current.major {
-        return latest.major > current.major;
-    }
-    // Same major. Below 1.0 the minor (and, below 0.1, the patch) is the
-    // breaking axis.
-    if current.major == 0 {
-        if current.minor == 0 {
-            return latest.minor > 0 || latest.patch > current.patch;
-        }
-        return latest.minor > current.minor;
-    }
-    false
-}
-
 /// Version-precedence key: everything that orders two releases *except* build
 /// metadata. Per the SemVer spec build metadata is not part of precedence
 /// (`1.0.0+a` and `1.0.0+b` are the same release), but `semver::Version`'s `Ord`
@@ -360,23 +334,15 @@ fn precedence(v: &Version) -> (u64, u64, u64, &semver::Prerelease) {
 /// local dev build, or the same release with different build metadata).
 ///
 /// Because orx talks to a versioned backend, a stale client can hit removed or
-/// changed API shapes, so the warning leads with that risk rather than a
-/// neutral "new version available". The framing escalates with the size of the
-/// gap (see [`is_breaking_gap`]): a breaking gap warns that commands can start
-/// failing now, while a non-breaking gap is a gentler "upgrade soon".
+/// changed API shapes, so the warning notes the compatibility risk rather than a
+/// neutral "new version available".
 fn warning_for(current: &Version, latest: &Version) -> Option<String> {
     if precedence(latest) <= precedence(current) {
         return None;
     }
-    let detail = if is_breaking_gap(current, latest) {
-        "This release may include breaking API changes, so commands can start failing \
-         until you upgrade."
-    } else {
-        "A newer release is available; upgrade to stay compatible with the API."
-    };
     Some(format!(
-        "{WARNING_LABEL} orx {current} is outdated (latest {latest}). {detail} \
-         Run `orx update` to upgrade."
+        "{WARNING_LABEL} orx {current} is outdated (latest {latest}). A newer release is \
+         available; upgrade to stay compatible with the API. Run `orx update` to upgrade."
     ))
 }
 
@@ -490,9 +456,7 @@ impl UpdateWarning {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        bold, exe_matches_prefix, is_breaking_gap, parse_manifest, precedence, render, warning_for,
-    };
+    use super::{bold, exe_matches_prefix, parse_manifest, precedence, render, warning_for};
     use semver::Version;
     use std::path::Path;
 
@@ -541,22 +505,11 @@ mod tests {
         assert!(precedence(&v("0.2.0")) > precedence(&v("0.1.29")));
     }
 
-    // The substring the *breaking* message has and the soft one must not, used
-    // to assert which tier a warning landed in without pinning exact copy.
-    const BREAKING_MARKER: &str = "can start failing";
-
-    fn assert_soft(msg: &str) {
+    // Every outdated case shows the same message; assert its stable markers
+    // without pinning the exact copy.
+    fn assert_warns(msg: &str) {
         assert!(msg.contains("outdated"), "{msg}");
-        assert!(msg.contains("orx update"), "{msg}");
-        assert!(
-            !msg.contains(BREAKING_MARKER),
-            "soft warning claims breakage: {msg}"
-        );
-    }
-
-    fn assert_breaking(msg: &str) {
-        assert!(msg.contains("breaking API changes"), "{msg}");
-        assert!(msg.contains(BREAKING_MARKER), "{msg}");
+        assert!(msg.contains("stay compatible with the API"), "{msg}");
         assert!(msg.contains("orx update"), "{msg}");
     }
 
@@ -569,60 +522,30 @@ mod tests {
         assert!(warning_for(&v("0.2.0"), &v("0.1.29")).is_none());
         // Build metadata is ignored by semver ordering, so it's not "outdated".
         assert!(warning_for(&v("0.1.29"), &v("0.1.29+build.5")).is_none());
-    }
-
-    #[test]
-    fn is_breaking_gap_classifies_every_axis() {
-        let v = |s: &str| Version::parse(s).unwrap();
-        // major bump: always breaking.
-        assert!(is_breaking_gap(&v("0.9.0"), &v("1.0.0")));
-        assert!(is_breaking_gap(&v("1.4.0"), &v("2.0.0")));
-        // pre-1.0 minor bump: breaking.
-        assert!(is_breaking_gap(&v("0.1.29"), &v("0.2.0")));
-        // pre-1.0 patch bump: NOT breaking.
-        assert!(!is_breaking_gap(&v("0.1.28"), &v("0.1.29")));
-        // 0.0.x: even a patch bump is breaking (every 0.0.z is its own "major").
-        assert!(is_breaking_gap(&v("0.0.1"), &v("0.0.2")));
-        // post-1.0 minor/patch bump: NOT breaking (additive).
-        assert!(!is_breaking_gap(&v("1.2.3"), &v("1.3.0")));
-        assert!(!is_breaking_gap(&v("1.2.3"), &v("1.2.4")));
-    }
-
-    #[test]
-    fn patch_gap_is_a_soft_warning() {
-        assert_soft(&warning_for(&Version::new(0, 1, 28), &Version::new(0, 1, 29)).unwrap());
-    }
-
-    #[test]
-    fn minor_gap_warns_about_breaking_changes() {
-        // Pre-1.0, a bumped minor is the semver signal for a breaking change.
-        assert_breaking(&warning_for(&Version::new(0, 1, 29), &Version::new(0, 2, 0)).unwrap());
-    }
-
-    #[test]
-    fn major_gap_warns_about_breaking_changes() {
-        assert_breaking(&warning_for(&Version::new(1, 4, 0), &Version::new(2, 0, 0)).unwrap());
-    }
-
-    #[test]
-    fn post_1_0_patch_and_minor_are_not_breaking() {
-        // Once past 1.0, a minor bump is additive: patch (1.2.3 -> 1.2.4) and
-        // minor (1.2.3 -> 1.3.0) gaps both get the soft wording; only a major
-        // bump escalates.
-        assert_soft(&warning_for(&Version::new(1, 2, 3), &Version::new(1, 2, 4)).unwrap());
-        assert_soft(&warning_for(&Version::new(1, 2, 3), &Version::new(1, 3, 0)).unwrap());
-    }
-
-    #[test]
-    fn prerelease_current_vs_stable_latest() {
-        let v = |s: &str| Version::parse(s).unwrap();
-        // A pre-release of the same release is behind the final release, but it's
-        // the same version line, so it's a soft "you're a hair behind", not breaking.
-        assert_soft(&warning_for(&v("0.2.0-rc.1"), &v("0.2.0")).unwrap());
-        // A pre-release of the *next* pre-1.0 minor is a breaking gap.
-        assert_breaking(&warning_for(&v("0.1.29"), &v("0.2.0-rc.1")).unwrap());
         // Running ahead of the latest stable on a local pre-release: not outdated.
         assert!(warning_for(&v("0.3.0-dev.1"), &v("0.2.0")).is_none());
+    }
+
+    #[test]
+    fn warns_on_every_kind_of_outdated_gap() {
+        let v = |s: &str| Version::parse(s).unwrap();
+        // The same warning fires regardless of how far behind: patch, minor,
+        // major, 0.0.x, post-1.0, and a pre-release behind its final release.
+        for (cur, latest) in [
+            ("0.1.28", "0.1.29"),     // pre-1.0 patch
+            ("0.1.29", "0.2.0"),      // pre-1.0 minor
+            ("0.0.1", "0.0.2"),       // 0.0.x patch
+            ("0.9.0", "1.0.0"),       // 0.x -> 1.0
+            ("1.2.3", "1.2.4"),       // post-1.0 patch
+            ("1.2.3", "1.3.0"),       // post-1.0 minor
+            ("1.4.0", "2.0.0"),       // major
+            ("0.2.0-rc.1", "0.2.0"),  // pre-release behind its final release
+            ("0.1.29", "0.2.0-rc.1"), // behind the next minor's pre-release
+        ] {
+            assert_warns(&warning_for(&v(cur), &v(latest)).unwrap_or_else(|| {
+                panic!("expected a warning for {cur} -> {latest}");
+            }));
+        }
     }
 
     #[test]
