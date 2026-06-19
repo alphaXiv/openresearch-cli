@@ -1,5 +1,5 @@
-//! Self-update plumbing shared by `orx version`, `orx update`, and the passive
-//! outdated-version warning.
+//! Self-update plumbing shared by `orx version`, `orx update`, and the
+//! outdated-version warning shown on every command.
 //!
 //! Latest-version discovery deliberately avoids the GitHub REST API: its
 //! unauthenticated limit is 60 requests/hour *per IP*, which is routinely
@@ -263,8 +263,13 @@ pub fn write_check_cache(latest: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// Passive outdated-version warning
+// Outdated-version warning
 // ---------------------------------------------------------------------------
+
+/// The leading label every warning message starts with. Shared so the builder
+/// (`warning_for`) and the styler (`render`, which bolds just this label) can't
+/// silently drift apart on a copy edit.
+const WARNING_LABEL: &str = "Warning:";
 
 /// Whether the user has explicitly silenced the update check. When true, no
 /// warning is shown and no background refresh runs — the one escape hatch for
@@ -302,11 +307,12 @@ fn bold(text: &str, enabled: bool) -> String {
 /// a blank line above and below. Returns the exact bytes to write (the caller
 /// uses `write!`, not `writeln!`, since the trailing newlines are included).
 fn render(message: &str, ansi: bool) -> String {
-    // The message always begins with the literal "Warning:" (see `warning_for`);
-    // bold just that label, gh/cargo-style, rather than the whole sentence.
-    const LABEL: &str = "Warning:";
-    let styled = match message.strip_prefix(LABEL) {
-        Some(rest) => format!("{}{rest}", bold(LABEL, ansi)),
+    // The message always begins with WARNING_LABEL (see `warning_for`); bold just
+    // that label, gh/cargo-style, rather than the whole sentence. If the prefix
+    // ever drifts, fall back to the unstyled message — never panic, never emit a
+    // stray escape.
+    let styled = match message.strip_prefix(WARNING_LABEL) {
+        Some(rest) => format!("{}{rest}", bold(WARNING_LABEL, ansi)),
         None => message.to_string(),
     };
     format!("\n{styled}\n\n")
@@ -369,12 +375,12 @@ fn warning_for(current: &Version, latest: &Version) -> Option<String> {
         "A newer release is available; upgrade to stay compatible with the API."
     };
     Some(format!(
-        "Warning: orx {current} is outdated (latest {latest}). {detail} \
+        "{WARNING_LABEL} orx {current} is outdated (latest {latest}). {detail} \
          Run `orx update` to upgrade."
     ))
 }
 
-/// The passive outdated-version warning, modeled on the gh CLI / update-notifier
+/// The outdated-version warning, modeled on the gh CLI / update-notifier
 /// pattern: the message shown this run comes from the *cached* previous check,
 /// so it is instant and never adds latency to the command. A background refresh
 /// updates the cache for the next run at most once per [`CHECK_TTL`].
@@ -456,17 +462,26 @@ impl UpdateWarning {
         }
     }
 
-    /// Called after the real command finished. Grants the fire-and-forget refresh
-    /// a brief grace window to land in the cache — it has often finished during
-    /// the command's own work — then moves on. The window matters most for a fast
-    /// command (one that returns before the fetch does): it gives the write a
-    /// chance to commit before `#[tokio::main]` tears the runtime down, without
-    /// which quick commands would never warm the cache. Never blocks the command
-    /// meaningfully, never touches stdout or the exit code.
+    /// Called after the real command finished. On an interactive terminal, grants
+    /// the fire-and-forget refresh a brief grace window to land in the cache — it
+    /// has often finished during the command's own work — so the cache is warm for
+    /// the user's *next* command; the window gives the write a chance to commit
+    /// before `#[tokio::main]` tears the runtime down, without which quick commands
+    /// would never warm the cache.
+    ///
+    /// On a non-terminal (pipe, CI, cron) the wait is skipped entirely: an
+    /// ephemeral environment throws its cache away between runs, so warming it
+    /// buys nothing, and a per-invocation 250ms tail across a CI pipeline that
+    /// calls `orx` many times is pure cost. The refresh is still spawned (it may
+    /// land if the process outlives it); we just don't pay to wait for it. Never
+    /// blocks the command meaningfully, never touches stdout or the exit code.
     pub async fn finish(self) {
         let Some(handle) = self.refresh else {
             return;
         };
+        if !std::io::stderr().is_terminal() {
+            return;
+        }
         // Timed out -> the task keeps running (it may still land); the next stale
         // run tries again regardless.
         let _ = tokio::time::timeout(Duration::from_millis(250), handle).await;
@@ -596,6 +611,18 @@ mod tests {
         // bump escalates.
         assert_soft(&warning_for(&Version::new(1, 2, 3), &Version::new(1, 2, 4)).unwrap());
         assert_soft(&warning_for(&Version::new(1, 2, 3), &Version::new(1, 3, 0)).unwrap());
+    }
+
+    #[test]
+    fn prerelease_current_vs_stable_latest() {
+        let v = |s: &str| Version::parse(s).unwrap();
+        // A pre-release of the same release is behind the final release, but it's
+        // the same version line, so it's a soft "you're a hair behind", not breaking.
+        assert_soft(&warning_for(&v("0.2.0-rc.1"), &v("0.2.0")).unwrap());
+        // A pre-release of the *next* pre-1.0 minor is a breaking gap.
+        assert_breaking(&warning_for(&v("0.1.29"), &v("0.2.0-rc.1")).unwrap());
+        // Running ahead of the latest stable on a local pre-release: not outdated.
+        assert!(warning_for(&v("0.3.0-dev.1"), &v("0.2.0")).is_none());
     }
 
     #[test]

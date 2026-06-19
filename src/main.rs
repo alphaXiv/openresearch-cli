@@ -540,8 +540,8 @@ async fn main() {
         Cli::command().print_help().ok();
         return;
     };
-    // Passive outdated-version warning (skipped for the commands that manage
-    // updates themselves). `start` prints the cached warning to stderr *now*,
+    // Outdated-version warning (skipped for the commands that manage updates
+    // themselves). `start` prints the cached warning to stderr *now*,
     // before the command runs, so it shows even for commands that
     // `std::process::exit` on their own (e.g. the "not logged in" path) instead
     // of returning here. Never touches stdout or the exit code. Silence it with
