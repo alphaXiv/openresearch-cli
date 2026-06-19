@@ -2,3 +2,8 @@
 *.log
 .DS_Store
 Claude.local.md
+
+# Local git worktrees (created under .claude/worktrees/ for per-task work) must
+# never be committed — they get recorded as orphan gitlinks with no .gitmodules
+# entry, which breaks `git checkout --recurse-submodules` in CI.
+.claude/worktrees/
