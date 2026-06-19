@@ -540,15 +540,18 @@ async fn main() {
         Cli::command().print_help().ok();
         return;
     };
-    // Passive update nudge (skipped for the commands that manage updates
-    // themselves). Interactive terminals only; never delays or fails the
-    // command, never touches stdout or the exit code.
-    let nudge =
-        (!matches!(command, Command::Version(_) | Command::Update(_))).then(updates::Nudge::start);
+    // Outdated-version warning (skipped for the commands that manage updates
+    // themselves). `start` prints the cached warning to stderr *now*,
+    // before the command runs, so it shows even for commands that
+    // `std::process::exit` on their own (e.g. the "not logged in" path) instead
+    // of returning here. Never touches stdout or the exit code. Silence it with
+    // ORX_NO_UPDATE_CHECK / NO_UPDATE_NOTIFIER.
+    let warning = (!matches!(command, Command::Version(_) | Command::Update(_)))
+        .then(updates::UpdateWarning::start);
 
     let result = dispatch(command).await;
-    if let Some(nudge) = nudge {
-        nudge.finish().await;
+    if let Some(warning) = warning {
+        warning.finish().await;
     }
 
     if let Err(err) = result {

@@ -3,7 +3,7 @@
 //!
 //! `--json` (which implies `--check`) is the agent-facing form: one stable
 //! JSON object on stdout, exit 0 whether or not an update is available, so
-//! harnesses can poll deliberately instead of scraping stderr nudges.
+//! harnesses can poll deliberately instead of scraping the stderr warning.
 
 use std::time::Duration;
 
@@ -19,7 +19,7 @@ pub async fn run(args: crate::VersionArgs) -> Result<()> {
     }
 
     let latest = updates::fetch_latest(Duration::from_secs(10)).await?;
-    // Keep the passive nudge's cache in sync with this explicit check.
+    // Keep the update-check cache in sync with this explicit check.
     updates::write_check_cache(&latest.version.to_string());
     let update_available = latest.version > current;
 

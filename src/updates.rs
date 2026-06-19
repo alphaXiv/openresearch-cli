@@ -1,5 +1,5 @@
-//! Self-update plumbing shared by `orx version`, `orx update`, and the passive
-//! update nudge.
+//! Self-update plumbing shared by `orx version`, `orx update`, and the
+//! outdated-version warning shown on every command.
 //!
 //! Latest-version discovery deliberately avoids the GitHub REST API: its
 //! unauthenticated limit is 60 requests/hour *per IP*, which is routinely
@@ -15,7 +15,7 @@
 //! dist-workspace.toml sets `install-path = "CARGO_HOME"`), so `orx update`
 //! refuses to touch the binary unless the receipt matches it.
 
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -200,7 +200,7 @@ pub fn exe_matches_prefix(exe: &Path, prefix: &Path) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Update-check cache (the passive nudge's 24h throttle)
+// Update-check cache (the warning's 24h throttle)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -229,115 +229,324 @@ fn read_cache() -> Option<CheckCache> {
 
 /// Best-effort cache write; errors are swallowed because the cache only exists
 /// to throttle a best-effort background check.
+///
+/// The write is atomic (temp file + rename) so a reader never observes a torn
+/// file. Several processes can write this concurrently — the background refresh
+/// here plus `orx version` / `orx update`, and multiple `orx` invocations at
+/// once — and a non-atomic `write` could leave a half-written file that
+/// `read_cache` then parses to `None`, silently suppressing the warning until a
+/// clean write lands. A unique temp name keeps concurrent writers from
+/// clobbering each other's temp file; `rename` is atomic on the same
+/// filesystem, so the final file is always either the old or a complete new one.
 pub fn write_check_cache(latest: &str) {
     let cache = CheckCache {
         checked_at: now_unix(),
         latest: latest.to_string(),
     };
     let path = cache_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(parent);
+    let Ok(body) = serde_json::to_string(&cache) else {
+        return;
+    };
+    let tmp = parent.join(format!(".update-check.json.{}.tmp", uuid::Uuid::new_v4()));
+    if std::fs::write(&tmp, body).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return;
     }
-    if let Ok(body) = serde_json::to_string(&cache) {
-        let _ = std::fs::write(&path, body);
+    if std::fs::rename(&tmp, &path).is_err() {
+        // Rename failed (e.g. cross-device, racing cleanup); don't leak the temp.
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Passive nudge
+// Outdated-version warning
 // ---------------------------------------------------------------------------
 
-/// Whether the passive update check may run at all. Interactive terminals
-/// only: agents, scripts, pipes, and CI see zero behavior change.
-fn nudge_enabled() -> bool {
-    let opted_out = std::env::var_os("ORX_NO_UPDATE_CHECK").is_some()
+/// The leading label every warning message starts with. Shared so the builder
+/// (`warning_for`) and the styler (`render`, which bolds just this label) can't
+/// silently drift apart on a copy edit.
+const WARNING_LABEL: &str = "Warning:";
+
+/// Whether the user has explicitly silenced the update check. When true, no
+/// warning is shown and no background refresh runs — the one escape hatch for
+/// anyone who can't tolerate the extra stderr line (including CI).
+fn opted_out() -> bool {
+    std::env::var_os("ORX_NO_UPDATE_CHECK").is_some()
         // The generic convention honored by update-notifier and friends.
         || std::env::var_os("NO_UPDATE_NOTIFIER").is_some()
         // cargo-dist's own "don't manage updates for this install" switch; the
         // installer already honors it, so it is the one mental model.
         || std::env::var("OPENRESEARCH_CLI_DISABLE_UPDATE").as_deref() == Ok("1")
-        || std::env::var_os("CI").is_some();
-    !opted_out && std::io::stderr().is_terminal()
 }
 
-/// The passive update nudge, modeled on the gh CLI / update-notifier pattern:
-/// the message shown this run comes from the *cached* previous check (so it is
-/// instant), and a background refresh updates the cache for the next run at
-/// most once per [`CHECK_TTL`].
-pub struct Nudge {
-    message: Option<String>,
+/// Whether to emit ANSI styling on stderr: only when stderr is a real terminal
+/// and the user hasn't set the conventional `NO_COLOR` opt-out. Pipes, files,
+/// and CI logs get plain text — never raw escape codes — which matters because
+/// this warning now prints on non-interactive runs too.
+fn stderr_supports_ansi() -> bool {
+    std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal()
+}
+
+/// Wraps `text` in the ANSI bold sequence when `enabled`, else returns it as-is.
+/// `\x1b[22m` resets bold/faint specifically (not `\x1b[0m`, which would also
+/// clear any surrounding styling the terminal had).
+fn bold(text: &str, enabled: bool) -> String {
+    if enabled {
+        format!("\x1b[1m{text}\x1b[22m")
+    } else {
+        text.to_string()
+    }
+}
+
+/// Renders the warning for printing to stderr: bolds the leading `Warning:`
+/// label when `ansi` is set, and sets the whole thing off in its own block with
+/// a blank line above and below. Returns the exact bytes to write (the caller
+/// uses `write!`, not `writeln!`, since the trailing newlines are included).
+fn render(message: &str, ansi: bool) -> String {
+    // The message always begins with WARNING_LABEL (see `warning_for`); bold just
+    // that label, gh/cargo-style, rather than the whole sentence. If the prefix
+    // ever drifts, fall back to the unstyled message — never panic, never emit a
+    // stray escape.
+    let styled = match message.strip_prefix(WARNING_LABEL) {
+        Some(rest) => format!("{}{rest}", bold(WARNING_LABEL, ansi)),
+        None => message.to_string(),
+    };
+    format!("\n{styled}\n\n")
+}
+
+/// Version-precedence key: everything that orders two releases *except* build
+/// metadata. Per the SemVer spec build metadata is not part of precedence
+/// (`1.0.0+a` and `1.0.0+b` are the same release), but `semver::Version`'s `Ord`
+/// compares it anyway — so two builds of the same release would otherwise read
+/// as "outdated". Comparing this key instead avoids that false positive.
+/// `Prerelease`'s own `Ord` already encodes the spec rule that a release sorts
+/// above its pre-releases (empty pre-release is the greatest).
+fn precedence(v: &Version) -> (u64, u64, u64, &semver::Prerelease) {
+    (v.major, v.minor, v.patch, &v.pre)
+}
+
+/// Builds the outdated-version warning when `latest` outranks `current` in
+/// [`precedence`], or `None` when `current` is already current (or ahead — a
+/// local dev build, or the same release with different build metadata).
+///
+/// Because orx talks to a versioned backend, a stale client can hit removed or
+/// changed API shapes, so the warning notes the compatibility risk rather than a
+/// neutral "new version available".
+fn warning_for(current: &Version, latest: &Version) -> Option<String> {
+    if precedence(latest) <= precedence(current) {
+        return None;
+    }
+    Some(format!(
+        "{WARNING_LABEL} orx {current} is outdated (latest {latest}). A newer release is \
+         available; upgrade to stay compatible with the API. Run `orx update` to upgrade."
+    ))
+}
+
+/// The outdated-version warning, modeled on the gh CLI / update-notifier
+/// pattern: the message shown this run comes from the *cached* previous check,
+/// so it is instant and never adds latency to the command. A background refresh
+/// updates the cache for the next run at most once per [`CHECK_TTL`].
+///
+/// Unlike a quiet "new version" nudge, the warning is shown on every command —
+/// piped, scripted, or interactive — and is printed in [`start`](Self::start),
+/// *before* the command runs, so it survives commands that `std::process::exit`
+/// on their own (e.g. the "not logged in" path) instead of returning to `main`.
+/// [`opted_out`] is the single switch to silence it.
+///
+/// Because the message comes from cache, the *first* run after a fresh install
+/// has nothing cached yet and shows nothing; the background refresh it kicks off
+/// warms the cache so a later run can warn. The refresh is always fire-and-forget
+/// — it never blocks the command — so a one-shot environment that throws its
+/// cache away each run (e.g. an ephemeral CI container) may take a few runs to
+/// warm up, or never. That is the accepted cost of adding zero latency.
+pub struct UpdateWarning {
     refresh: Option<tokio::task::JoinHandle<()>>,
 }
 
-impl Nudge {
-    pub fn start() -> Nudge {
-        if !nudge_enabled() {
-            return Nudge {
-                message: None,
-                refresh: None,
-            };
+impl UpdateWarning {
+    /// Prints the cached warning (if any) to stderr immediately, then kicks off a
+    /// best-effort background refresh of the cached "latest" for next time.
+    /// Printing here — rather than after the command — is what guarantees the
+    /// warning shows even when the command exits the process itself.
+    pub fn start() -> UpdateWarning {
+        if opted_out() {
+            return UpdateWarning { refresh: None };
         }
 
         let current = current_version();
         let cache = read_cache();
 
-        let message = cache
+        if let Some(message) = cache
             .as_ref()
             .and_then(|c| Version::parse(&c.latest).ok())
-            .filter(|latest| *latest > current)
-            .map(|latest| {
-                format!(
-                    "A new release of orx is available: {} → {}. Run `orx update` to upgrade.",
-                    current, latest
-                )
-            });
+            .and_then(|latest| warning_for(&current, &latest))
+        {
+            // Infallible: a closed/broken stderr (e.g. `2>&-`, or a reader that
+            // already exited) must not panic the process before the command even
+            // runs. `eprintln!` would; a swallowed `writeln!` won't.
+            let _ = write!(
+                std::io::stderr(),
+                "{}",
+                render(&message, stderr_supports_ansi())
+            );
+        }
 
+        // Refresh whenever the cache is stale (or absent), regardless of whether
+        // stderr is a terminal: scripted/piped runs warn too, so their cache has
+        // to stay fresh or they'd warn off a frozen answer indefinitely.
         let stale = cache
             .as_ref()
             .map(|c| now_unix().saturating_sub(c.checked_at) >= CHECK_TTL.as_secs())
             .unwrap_or(true);
-        let refresh = stale.then(|| {
-            let prev_latest = cache.map(|c| c.latest);
-            tokio::spawn(async move {
-                let latest = fetch_latest(Duration::from_secs(3))
-                    .await
-                    .ok()
-                    .map(|l| l.version.to_string());
-                // On fetch failure, refresh checked_at with the old answer so
-                // errors don't cause a retry on every invocation.
-                let value = latest
-                    .or(prev_latest)
-                    .unwrap_or_else(|| current.to_string());
-                write_check_cache(&value);
-            })
+        if !stale {
+            return UpdateWarning { refresh: None };
+        }
+
+        let prev_latest = cache.map(|c| c.latest);
+        let handle = tokio::spawn(async move {
+            let latest = fetch_latest(Duration::from_secs(3))
+                .await
+                .ok()
+                .map(|l| l.version.to_string());
+            // On fetch failure, refresh checked_at with the old answer so errors
+            // don't cause a retry on every invocation. Only fabricate `current`
+            // as a last resort (no cache, no previous answer): a one-off failed
+            // fetch then suppresses the warning until the TTL lapses, which is
+            // the price of not re-fetching on every offline invocation.
+            let value = latest
+                .or(prev_latest)
+                .unwrap_or_else(|| current.to_string());
+            write_check_cache(&value);
         });
 
-        Nudge { message, refresh }
+        UpdateWarning {
+            refresh: Some(handle),
+        }
     }
 
-    /// Called after the real command finished: gives the background refresh a
-    /// short grace window (it usually finished while the command did its own
-    /// network work), then prints the nudge — stderr only, exit code untouched.
+    /// Called after the real command finished. On an interactive terminal, grants
+    /// the fire-and-forget refresh a brief grace window to land in the cache — it
+    /// has often finished during the command's own work — so the cache is warm for
+    /// the user's *next* command; the window gives the write a chance to commit
+    /// before `#[tokio::main]` tears the runtime down, without which quick commands
+    /// would never warm the cache.
+    ///
+    /// On a non-terminal (pipe, CI, cron) the wait is skipped entirely: an
+    /// ephemeral environment throws its cache away between runs, so warming it
+    /// buys nothing, and a per-invocation 250ms tail across a CI pipeline that
+    /// calls `orx` many times is pure cost. The refresh is still spawned (it may
+    /// land if the process outlives it); we just don't pay to wait for it. Never
+    /// blocks the command meaningfully, never touches stdout or the exit code.
     pub async fn finish(self) {
-        if let Some(handle) = self.refresh {
-            if tokio::time::timeout(Duration::from_millis(250), handle)
-                .await
-                .is_err()
-            {
-                // Took too long; the next stale run will try again.
-            }
+        let Some(handle) = self.refresh else {
+            return;
+        };
+        if !std::io::stderr().is_terminal() {
+            return;
         }
-        if let Some(message) = self.message {
-            eprintln!("\n{}", message);
-        }
+        // Timed out -> the task keeps running (it may still land); the next stale
+        // run tries again regardless.
+        let _ = tokio::time::timeout(Duration::from_millis(250), handle).await;
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{exe_matches_prefix, parse_manifest};
+    use super::{bold, exe_matches_prefix, parse_manifest, precedence, render, warning_for};
     use semver::Version;
     use std::path::Path;
+
+    #[test]
+    fn render_sets_off_the_warning_in_its_own_block() {
+        let msg = "Warning: orx 0.1.0 is outdated (latest 0.2.0). foo Run `orx update` to upgrade.";
+        // Plain (non-TTY): blank line before and after, no escape codes at all.
+        let plain = render(msg, false);
+        assert_eq!(plain, format!("\n{msg}\n\n"));
+        assert!(
+            !plain.contains('\x1b'),
+            "plain output must not contain ANSI"
+        );
+
+        // Styled (TTY): only the "Warning:" label is bolded; same blank-line block.
+        let styled = render(msg, true);
+        assert!(styled.starts_with("\n\x1b[1mWarning:\x1b[22m"));
+        assert!(styled.ends_with("upgrade.\n\n"));
+        // Everything after the label is unstyled — exactly one bold open/close.
+        assert_eq!(styled.matches("\x1b[1m").count(), 1);
+        assert_eq!(styled.matches("\x1b[22m").count(), 1);
+
+        // Fail-soft: a message without the "Warning:" prefix is passed through
+        // unstyled (no panic, no stray escapes), so the label/builder coupling
+        // degrades gracefully if the prefix ever changes.
+        let no_label = render("orx is outdated.", true);
+        assert_eq!(no_label, "\norx is outdated.\n\n");
+    }
+
+    #[test]
+    fn bold_is_a_noop_when_disabled() {
+        assert_eq!(bold("x", false), "x");
+        assert_eq!(bold("x", true), "\x1b[1mx\x1b[22m");
+    }
+
+    #[test]
+    fn precedence_ignores_build_metadata_and_orders_prereleases() {
+        let v = |s: &str| Version::parse(s).unwrap();
+        // Build metadata is not part of precedence: same release.
+        assert_eq!(precedence(&v("1.2.3+a")), precedence(&v("1.2.3+b")));
+        assert_eq!(precedence(&v("1.2.3")), precedence(&v("1.2.3+build.99")));
+        // A release outranks its pre-releases (empty pre-release is greatest).
+        assert!(precedence(&v("0.2.0")) > precedence(&v("0.2.0-rc.1")));
+        assert!(precedence(&v("0.2.0-rc.2")) > precedence(&v("0.2.0-rc.1")));
+        // Ordinary ordering on the numeric fields still holds.
+        assert!(precedence(&v("0.2.0")) > precedence(&v("0.1.29")));
+    }
+
+    // Every outdated case shows the same message; assert its stable markers
+    // without pinning the exact copy.
+    fn assert_warns(msg: &str) {
+        assert!(msg.contains("outdated"), "{msg}");
+        assert!(msg.contains("stay compatible with the API"), "{msg}");
+        assert!(msg.contains("orx update"), "{msg}");
+    }
+
+    #[test]
+    fn no_warning_when_current_or_ahead() {
+        let v = |s: &str| Version::parse(s).unwrap();
+        // Exactly current.
+        assert!(warning_for(&v("0.1.29"), &v("0.1.29")).is_none());
+        // Local build ahead of the latest release.
+        assert!(warning_for(&v("0.2.0"), &v("0.1.29")).is_none());
+        // Build metadata is ignored by semver ordering, so it's not "outdated".
+        assert!(warning_for(&v("0.1.29"), &v("0.1.29+build.5")).is_none());
+        // Running ahead of the latest stable on a local pre-release: not outdated.
+        assert!(warning_for(&v("0.3.0-dev.1"), &v("0.2.0")).is_none());
+    }
+
+    #[test]
+    fn warns_on_every_kind_of_outdated_gap() {
+        let v = |s: &str| Version::parse(s).unwrap();
+        // The same warning fires regardless of how far behind: patch, minor,
+        // major, 0.0.x, post-1.0, and a pre-release behind its final release.
+        for (cur, latest) in [
+            ("0.1.28", "0.1.29"),     // pre-1.0 patch
+            ("0.1.29", "0.2.0"),      // pre-1.0 minor
+            ("0.0.1", "0.0.2"),       // 0.0.x patch
+            ("0.9.0", "1.0.0"),       // 0.x -> 1.0
+            ("1.2.3", "1.2.4"),       // post-1.0 patch
+            ("1.2.3", "1.3.0"),       // post-1.0 minor
+            ("1.4.0", "2.0.0"),       // major
+            ("0.2.0-rc.1", "0.2.0"),  // pre-release behind its final release
+            ("0.1.29", "0.2.0-rc.1"), // behind the next minor's pre-release
+        ] {
+            assert_warns(&warning_for(&v(cur), &v(latest)).unwrap_or_else(|| {
+                panic!("expected a warning for {cur} -> {latest}");
+            }));
+        }
+    }
 
     #[test]
     fn parses_dist_manifest() {
