@@ -94,6 +94,9 @@ enum Command {
     /// List the GPU compute catalog.
     Compute(ComputeArgs),
 
+    /// Spin up standalone compute in an organization (no experiment).
+    Instance(InstanceArgs),
+
     /// Operate on one experiment node (status / run command / run / cancel).
     Exp(ExpArgs),
 
@@ -318,6 +321,47 @@ pub struct ComputeArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct InstanceArgs {
+    #[command(subcommand)]
+    pub command: InstanceCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum InstanceCommand {
+    /// Provision a standalone instance in an org (GPU with `--gpu`, or CPU with
+    /// `--cpu`). Not tied to an experiment — like the dashboard's "Spin up".
+    Create(InstanceCreateArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct InstanceCreateArgs {
+    /// Organization id (from `orx projects`).
+    pub org_id: String,
+    /// Provision a GPU instance with this GPU id, e.g. `H100_SXM` — the exact id
+    /// from `orx compute`, not a family name like `H100`.
+    #[arg(long)]
+    pub gpu: Option<String>,
+    /// GPUs per instance (with `--gpu`; default 1).
+    #[arg(long)]
+    pub count: Option<i64>,
+    /// Disk in GB (with `--gpu`; default 100).
+    #[arg(long)]
+    pub disk: Option<i64>,
+    /// Provider to provision from (with `--gpu`), e.g. runpod, vast, lambda.
+    /// Omit to pick the cheapest matching offer across providers (like the
+    /// dashboard). See `orx compute` for providers; validated server-side.
+    #[arg(long)]
+    pub provider: Option<String>,
+    /// Provision a CPU-only instance with this flavor: cpu5c (compute), cpu5g
+    /// (general), or cpu5m (memory-optimized). Mutually exclusive with `--gpu`.
+    #[arg(long)]
+    pub cpu: Option<String>,
+    /// vCPUs for a CPU instance (with `--cpu`): 2, 8, or 32 (default 8).
+    #[arg(long)]
+    pub vcpus: Option<i64>,
+}
+
+#[derive(Args, Debug)]
 pub struct ExpArgs {
     #[command(subcommand)]
     pub command: ExpCommand,
@@ -427,6 +471,10 @@ pub struct ExpRunArgs {
     /// Disk in GB (with `--gpu`; default 100).
     #[arg(long)]
     pub disk: Option<i64>,
+    /// Provider to provision from (with `--gpu`), e.g. runpod, vast, lambda.
+    /// Defaults to runpod when omitted; validated server-side.
+    #[arg(long)]
+    pub provider: Option<String>,
     /// Provision a CPU-only instance with this flavor: cpu5c (compute), cpu5g
     /// (general), or cpu5m (memory-optimized). Mutually exclusive with `--gpu`.
     #[arg(long)]
@@ -507,15 +555,18 @@ async fn main() {
         Cli::command().print_help().ok();
         return;
     };
-    // Passive update nudge (skipped for the commands that manage updates
-    // themselves). Interactive terminals only; never delays or fails the
-    // command, never touches stdout or the exit code.
-    let nudge =
-        (!matches!(command, Command::Version(_) | Command::Update(_))).then(updates::Nudge::start);
+    // Outdated-version warning (skipped for the commands that manage updates
+    // themselves). `start` prints the cached warning to stderr *now*,
+    // before the command runs, so it shows even for commands that
+    // `std::process::exit` on their own (e.g. the "not logged in" path) instead
+    // of returning here. Never touches stdout or the exit code. Silence it with
+    // ORX_NO_UPDATE_CHECK / NO_UPDATE_NOTIFIER.
+    let warning = (!matches!(command, Command::Version(_) | Command::Update(_)))
+        .then(updates::UpdateWarning::start);
 
     let result = dispatch(command).await;
-    if let Some(nudge) = nudge {
-        nudge.finish().await;
+    if let Some(warning) = warning {
+        warning.finish().await;
     }
 
     if let Err(err) = result {
@@ -545,6 +596,7 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::CreateProject(args) => commands::create_project::run(args).await,
         Command::CreateExperiment(args) => commands::create_experiment::run(args).await,
         Command::Compute(args) => commands::compute::run(args).await,
+        Command::Instance(args) => commands::instance::run(args).await,
         Command::Exp(args) => commands::exp::run(args).await,
         Command::Report(args) => commands::report::run(args).await,
         Command::Skill(args) => commands::skill::run(args).await,

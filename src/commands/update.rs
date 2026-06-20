@@ -173,7 +173,7 @@ pub async fn run(args: crate::UpdateArgs) -> Result<()> {
         ));
     }
 
-    // Keep the nudge cache in sync so it doesn't fire on a stale answer.
+    // Keep the update-check cache in sync so the warning doesn't fire on a stale answer.
     updates::write_check_cache(&latest.version.to_string());
     println!("✓ Updated orx {} → {}.", current, latest.version);
     Ok(())

@@ -561,6 +561,10 @@ pub enum RunTarget {
         gpu_count: i64,
         #[serde(rename = "diskGb")]
         disk_gb: i64,
+        /// Single lowercase word — same under camelCase, so no rename needed.
+        /// Omitted from the payload when `None`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
     },
     /// Provision a fresh CPU-only instance.
     #[serde(rename = "new-cpu")]
@@ -578,6 +582,74 @@ struct RunBody {
     /// Bypass the server's "branch unchanged vs parent" guard. Omitted when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     force: bool,
+}
+
+/// The `target` of a standalone instance (`POST /sandboxes`). Mirrors
+/// `RunTarget`'s `New`/`NewCpu` variants, minus `Existing` — a standalone box is
+/// always freshly provisioned, never an existing-sandbox reuse. Kept separate
+/// from `RunTarget` because the two hit different endpoints whose contracts may
+/// diverge.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SandboxTarget {
+    /// Provision a fresh GPU instance.
+    New {
+        gpu: String,
+        #[serde(rename = "gpuCount")]
+        gpu_count: i64,
+        #[serde(rename = "diskGb")]
+        disk_gb: i64,
+        /// Single lowercase word — same under camelCase, so no rename needed.
+        /// Omitted from the payload when `None`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+    },
+    /// Provision a fresh CPU-only instance.
+    #[serde(rename = "new-cpu")]
+    NewCpu {
+        #[serde(rename = "cpuFlavor")]
+        cpu_flavor: String,
+        #[serde(rename = "vcpuCount")]
+        vcpu_count: i64,
+    },
+}
+
+/// Body of `POST /sandboxes`. `projectId` is intentionally omitted — the server
+/// rejects it for `new`/`new-cpu` (those are org-level standalone only).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSandboxBody {
+    pub organization_id: String,
+    pub target: SandboxTarget,
+}
+
+/// A sandbox as returned by `POST /sandboxes`. Mirrors the API's `zSandbox`;
+/// fields are nullable while a hosted box is still provisioning.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Sandbox {
+    pub id: String,
+    pub organization_id: String,
+    pub project_id: Option<String>,
+    pub ssh_hostname: Option<String>,
+    pub ssh_port: Option<i64>,
+    pub ssh_username: Option<String>,
+    pub status: String,
+    pub machine_type: String,
+    pub created_by: Option<String>,
+    pub updated_at: String,
+    pub provision_warnings: Option<String>,
+    pub provider_name: Option<String>,
+    pub provider_instance_id: Option<String>,
+    pub price_per_hour: Option<f64>,
+    pub gpu: Option<String>,
+    pub gpu_count: Option<i64>,
+    pub vcpu_count: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SandboxEnvelope {
+    pub sandbox: Sandbox,
 }
 
 // ---------------------------------------------------------------------------
@@ -905,6 +977,15 @@ pub async fn start_experiment_run(
     api_post(creds, &format!("/experiments/{}/run", exp_id), body).await
 }
 
+/// Spin up a standalone instance in an org (no experiment) — `POST /sandboxes`.
+pub async fn create_sandbox(
+    creds: &Credentials,
+    body: &CreateSandboxBody,
+) -> Result<SandboxEnvelope> {
+    let body = serde_json::to_value(body)?;
+    api_post(creds, "/sandboxes", body).await
+}
+
 pub async fn cancel_experiment_run(creds: &Credentials, exp_id: &str) -> Result<()> {
     request_no_content(
         creds,
@@ -1138,7 +1219,11 @@ pub async fn fetch_paper_markdown(kind: &str, paper_id: &str) -> Result<Option<S
 
 #[cfg(test)]
 mod tests {
-    use super::{ListCatalog, ListCpuCatalog};
+    use super::{
+        CreateSandboxBody, ListCatalog, ListCpuCatalog, RunBody, RunTarget, SandboxEnvelope,
+        SandboxTarget,
+    };
+    use serde_json::json;
 
     /// The GPU catalog wire format carries `disk` as a discriminated union and an
     /// optional `region`, plus `bandwidth*` fields the CLI ignores. Pin that we
@@ -1214,5 +1299,165 @@ mod tests {
         assert_eq!(parsed.offers.len(), 1);
         assert!(parsed.offers[0].disk.sizable);
         assert_eq!(parsed.offers[0].disk.per_gb_hour, Some(0.0001));
+    }
+
+    /// The `new` GPU run target serializes with the discriminant and camelCase
+    /// keys the API expects, including `provider` when set.
+    #[test]
+    fn serializes_run_target_new_with_provider() {
+        let target = RunTarget::New {
+            gpu: "H100_SXM".into(),
+            gpu_count: 1,
+            disk_gb: 100,
+            provider: Some("runpod".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&target).unwrap(),
+            json!({"type": "new", "gpu": "H100_SXM", "gpuCount": 1, "diskGb": 100, "provider": "runpod"}),
+        );
+    }
+
+    /// A `None` provider must be omitted from the payload entirely (so the server
+    /// falls back to its own default), not sent as `null`.
+    #[test]
+    fn serializes_run_target_new_without_provider() {
+        let target = RunTarget::New {
+            gpu: "H100_SXM".into(),
+            gpu_count: 2,
+            disk_gb: 200,
+            provider: None,
+        };
+        let value = serde_json::to_value(&target).unwrap();
+        assert_eq!(
+            value,
+            json!({"type": "new", "gpu": "H100_SXM", "gpuCount": 2, "diskGb": 200}),
+        );
+        assert!(value.get("provider").is_none());
+    }
+
+    /// `force` is omitted when false and present when true.
+    #[test]
+    fn serializes_run_body_force_flag() {
+        let target = RunTarget::New {
+            gpu: "H100_SXM".into(),
+            gpu_count: 1,
+            disk_gb: 100,
+            provider: Some("vast".into()),
+        };
+        let with_force = serde_json::to_value(RunBody {
+            target: target.clone(),
+            force: true,
+        })
+        .unwrap();
+        assert_eq!(with_force.get("force"), Some(&json!(true)));
+
+        let without_force = serde_json::to_value(RunBody {
+            target,
+            force: false,
+        })
+        .unwrap();
+        assert!(without_force.get("force").is_none());
+    }
+
+    /// The standalone GPU sandbox target mirrors the run target's wire shape.
+    #[test]
+    fn serializes_sandbox_target_new() {
+        let target = SandboxTarget::New {
+            gpu: "H100_SXM".into(),
+            gpu_count: 2,
+            disk_gb: 100,
+            provider: Some("vast".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&target).unwrap(),
+            json!({"type": "new", "gpu": "H100_SXM", "gpuCount": 2, "diskGb": 100, "provider": "vast"}),
+        );
+    }
+
+    /// Omitting the provider must drop the key entirely — that's what lets the
+    /// server pick the cheapest offer across providers for `instance create`.
+    #[test]
+    fn serializes_sandbox_target_new_without_provider() {
+        let target = SandboxTarget::New {
+            gpu: "H100_SXM".into(),
+            gpu_count: 1,
+            disk_gb: 100,
+            provider: None,
+        };
+        let value = serde_json::to_value(&target).unwrap();
+        assert_eq!(
+            value,
+            json!({"type": "new", "gpu": "H100_SXM", "gpuCount": 1, "diskGb": 100}),
+        );
+        assert!(value.get("provider").is_none());
+    }
+
+    /// The CPU sandbox target uses the `new-cpu` discriminant and camelCase keys.
+    #[test]
+    fn serializes_sandbox_target_new_cpu() {
+        let target = SandboxTarget::NewCpu {
+            cpu_flavor: "cpu5g".into(),
+            vcpu_count: 8,
+        };
+        assert_eq!(
+            serde_json::to_value(&target).unwrap(),
+            json!({"type": "new-cpu", "cpuFlavor": "cpu5g", "vcpuCount": 8}),
+        );
+    }
+
+    /// The create-sandbox body sends `organizationId` and never a `projectId`
+    /// (the server rejects a project-scoped `new`/`new-cpu`).
+    #[test]
+    fn serializes_create_sandbox_body_without_project() {
+        let body = CreateSandboxBody {
+            organization_id: "org_123".into(),
+            target: SandboxTarget::NewCpu {
+                cpu_flavor: "cpu5c".into(),
+                vcpu_count: 2,
+            },
+        };
+        let value = serde_json::to_value(&body).unwrap();
+        assert_eq!(value.get("organizationId"), Some(&json!("org_123")));
+        assert!(value.get("projectId").is_none());
+    }
+
+    /// `POST /sandboxes` returns a freshly-provisioning box: ssh fields are still
+    /// `null` while the GPU/provider/price fields are already populated from the
+    /// offer. Pin that we decode that shape (camelCase keys, nulls → `None`).
+    #[test]
+    fn deserializes_sandbox_envelope_while_provisioning() {
+        let json = r#"{
+            "sandbox": {
+                "id": "sb_1",
+                "organizationId": "org_1",
+                "projectId": null,
+                "sshHostname": null,
+                "sshPort": null,
+                "sshUsername": null,
+                "status": "provisioning",
+                "machineType": "persistent",
+                "createdBy": "user_1",
+                "updatedAt": "2026-06-18T00:00:00Z",
+                "provisionWarnings": null,
+                "providerName": "runpod",
+                "providerInstanceId": null,
+                "pricePerHour": 2.5,
+                "gpu": "H100_SXM",
+                "gpuCount": 1,
+                "vcpuCount": null
+            }
+        }"#;
+
+        let parsed: SandboxEnvelope = serde_json::from_str(json).expect("should deserialize");
+        let sb = parsed.sandbox;
+        assert_eq!(sb.id, "sb_1");
+        assert_eq!(sb.status, "provisioning");
+        assert_eq!(sb.project_id, None);
+        assert_eq!(sb.ssh_hostname, None);
+        assert_eq!(sb.provider_name.as_deref(), Some("runpod"));
+        assert_eq!(sb.gpu.as_deref(), Some("H100_SXM"));
+        assert_eq!(sb.gpu_count, Some(1));
+        assert_eq!(sb.vcpu_count, None);
+        assert_eq!(sb.price_per_hour, Some(2.5));
     }
 }

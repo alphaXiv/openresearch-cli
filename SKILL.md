@@ -94,6 +94,7 @@ orx logout         # remove the stored token
 | `orx project edit <projectId> [--name "<n>"] [--description "<text>" \| --description-stdin]` | Edit a project's name and/or description (pass at least one). `--description-stdin` overwrites the description from stdin (long markdown). |
 | `orx create-experiment <projectId> --title "<t>" [...]` | Add an experiment node; prints its git branch. See below. |
 | `orx compute [--gpu <id>] [--count <n>] [--provider <name>] \| --cpu]` | List the GPU compute catalog across all providers, or CPU-only offers with `--cpu` (price-sorted). See below. |
+| `orx instance create <orgId> (--gpu <id> [--count <n>] [--disk <gb>] [--provider <name>] \| --cpu <flavor> [--vcpus <n>])` | Spin up a standalone instance in an org (not tied to an experiment), like the dashboard's "Spin up". See below. |
 | `orx exp status/cmd/run/cancel/wait <expId>` | Inspect, run, cancel, and wait on a single experiment node. `status` prints the node's branch, its parent's branch, the latest run's full commit SHA, and a ready-to-paste local `git diff` recipe. See below. |
 | `orx exp desc <expId> [--set "<text>" \| --stdin]` | Read or overwrite the experiment's description (free-form notes). See below. |
 | `orx report upload <projectId> <folder> [--title "<t>"]` | Upload a report folder (`report.md` + `images/`) to the project. Appears on the project page and its public view. `orx report list <projectId>` lists them; `orx report show <projectId> <reportId\|slug>` prints a report's markdown to stdout (works on any public project); `orx report download <projectId> <reportId\|slug> <dir>` writes `report.md` + referenced images back to a local folder (the inverse of `upload`). See below. |
@@ -432,7 +433,8 @@ orx compute                            # browse GPU offers across all providers 
 orx compute --gpu H100_SXM --count 1   # filter by gpu / count
 orx compute --provider vast            # filter by provider
 orx compute --cpu                      # browse CPU-only offers (price-sorted)
-orx exp run <expId> --gpu H100_SXM --count 1 [--disk 100]     # launch on a NEW GPU instance
+orx exp run <expId> --gpu H100_SXM --count 1 [--disk 100]     # launch on a NEW GPU instance (RunPod)
+orx exp run <expId> --gpu H100_SXM --provider vast       # launch on another provider's GPU
 orx exp run <expId> --cpu cpu5c --vcpus 8                 # launch on a NEW CPU-only instance
 orx exp run <expId> --sandbox <sandboxId>                 # launch on an EXISTING node
 orx exp cancel <expId>                 # cancel the in-flight run
@@ -453,10 +455,11 @@ Rules and notes:
   parent** (the tell-tale of "queued before pushing") — push and retry, or pass
   `--force` to run the unchanged code deliberately.
 - **Pick compute with exactly one of `--gpu`, `--cpu`, or `--sandbox`.** With
-  `--gpu`, `--count` defaults to `1` and `--disk` to `100` (GB). New instances are
-  **RunPod-only** — the server picks the cheapest matching RunPod offer for the
-  chosen (gpu, count); browse valid gpu ids and prices with `orx compute` (which
-  lists every provider, not only RunPod).
+  `--gpu`, `--count` defaults to `1` and `--disk` to `100` (GB). A new GPU
+  instance defaults to **RunPod** (the cheapest matching RunPod offer for the
+  chosen gpu/count); pass `--provider <name>` to launch from another provider
+  shown in `orx compute` (e.g. `vast`, `lambda`). New CPU instances are
+  RunPod-only. Browse valid gpu ids, providers, and prices with `orx compute`.
 - **GPU ids are exact enum strings, not family names.** `--gpu H100` is invalid —
   the variant suffix is part of the id (`H100_SXM`, `H100_PCIE`, `A100_SXM_80GB`,
   `RTX_4090`, …). Use the exact `GPU` column value from `orx compute`; run it
@@ -469,6 +472,27 @@ Rules and notes:
 - `orx exp run` **queues** the run and returns immediately — it does not wait.
   Follow progress with `orx runs <projectId>` and `orx logs <runId>`, or block
   with `orx exp wait` (below).
+
+## Spinning up a standalone instance — `orx instance create`
+
+Provision a persistent instance in an **organization**, not tied to any
+experiment — the CLI equivalent of the dashboard's org "Spin up" panel. Use this
+for ad-hoc/manual compute (you SSH in yourself); experiment runs use `orx exp run`
+instead.
+
+```sh
+orx instance create <orgId> --gpu H100_SXM --count 1 [--disk 100]   # GPU box (cheapest provider)
+orx instance create <orgId> --gpu H100_SXM --provider runpod        # pin a provider
+orx instance create <orgId> --cpu cpu5g --vcpus 8                    # CPU-only box
+```
+
+- `<orgId>` comes from `orx projects` (the `org:` line). The flags mirror
+  `orx exp run`: exactly one of `--gpu` or `--cpu`; `--count`/`--disk` apply to
+  `--gpu`, `--vcpus` to `--cpu`.
+- Unlike `orx exp run`, omitting `--provider` picks the **cheapest** matching
+  offer across all providers; pass `--provider <name>` to pin one.
+- The box provisions asynchronously — the command prints its id and current
+  status; its SSH host appears once it's online.
 
 ## Waiting on runs — `orx exp wait`
 
