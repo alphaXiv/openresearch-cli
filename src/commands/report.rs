@@ -9,8 +9,10 @@
 use std::path::{Path, PathBuf};
 
 use crate::client::{
-    create_report, get_report, list_reports, upload_to_presigned, CreateReportBody,
+    create_report, download_report_file, get_report, list_reports, upload_to_presigned,
+    CreateReportBody,
 };
+use crate::config::Credentials;
 use crate::error::{anyhow, require_credentials, Result};
 
 pub async fn run(args: crate::ReportArgs) -> Result<()> {
@@ -22,18 +24,19 @@ pub async fn run(args: crate::ReportArgs) -> Result<()> {
         } => upload(&project_id, &folder, title).await,
         crate::ReportCommand::List { project_id } => list(&project_id).await,
         crate::ReportCommand::Show { project_id, report } => show(&project_id, &report).await,
+        crate::ReportCommand::Download {
+            project_id,
+            report,
+            dir,
+        } => download(&project_id, &report, &dir).await,
     }
 }
 
-/// `orx report show <projectId> <reportId|slug>` — print a report's markdown
-/// body to stdout. Accepts a report id or its slug (resolved via the list).
-async fn show(project_id: &str, report: &str) -> Result<()> {
-    let creds = require_credentials().await;
-
-    // Resolve a slug to its id; an id is passed straight through. We always list
-    // first so a stale/unknown ref gives a clear error rather than a 404 body.
-    let reports = list_reports(&creds, project_id).await?.reports;
-    let report_id = reports
+/// Resolve a report id-or-slug to its id, erroring clearly if it isn't found.
+/// We always list first so a stale ref gives a helpful message, not a raw 404.
+async fn resolve_report_id(creds: &Credentials, project_id: &str, report: &str) -> Result<String> {
+    let reports = list_reports(creds, project_id).await?.reports;
+    reports
         .iter()
         .find(|r| r.id == report || r.slug == report)
         .map(|r| r.id.clone())
@@ -43,7 +46,14 @@ async fn show(project_id: &str, report: &str) -> Result<()> {
                 report,
                 project_id
             )
-        })?;
+        })
+}
+
+/// `orx report show <projectId> <reportId|slug>` — print a report's markdown
+/// body to stdout. Accepts a report id or its slug (resolved via the list).
+async fn show(project_id: &str, report: &str) -> Result<()> {
+    let creds = require_credentials().await;
+    let report_id = resolve_report_id(&creds, project_id, report).await?;
 
     let detail = get_report(&creds, project_id, &report_id).await?;
     if detail.markdown.is_empty() {
@@ -57,6 +67,114 @@ async fn show(project_id: &str, report: &str) -> Result<()> {
         println!();
     }
     Ok(())
+}
+
+/// `orx report download <projectId> <reportId|slug> <dir>` — write a report's
+/// `report.md` (raw, frontmatter intact) plus every image it references into
+/// `dir`, reconstructing the same folder shape `upload` consumes. This is what
+/// lets a local publish step feed the report back into the alphaXiv ingest.
+async fn download(project_id: &str, report: &str, dir: &str) -> Result<()> {
+    let creds = require_credentials().await;
+    let report_id = resolve_report_id(&creds, project_id, report).await?;
+
+    let detail = get_report(&creds, project_id, &report_id).await?;
+    if detail.markdown.is_empty() {
+        return Err(anyhow!(
+            "Report {:?} has no markdown body (report.md was never uploaded).",
+            detail.report.title
+        ));
+    }
+
+    let root = PathBuf::from(dir);
+    std::fs::create_dir_all(&root)
+        .map_err(|e| anyhow!("Could not create {}: {}", root.display(), e))?;
+
+    // report.md, byte-for-byte (the markdown the API returns is the stored file,
+    // YAML frontmatter included — the ingest reads `repo`/`gpu`/`count` from it).
+    let md_path = root.join("report.md");
+    std::fs::write(&md_path, detail.markdown.as_bytes())
+        .map_err(|e| anyhow!("Could not write {}: {}", md_path.display(), e))?;
+    println!("  wrote report.md");
+
+    // Pull every report-relative file the markdown links to (images, mostly).
+    // There's no list-files endpoint, so the references in report.md are the
+    // manifest — which is exactly the set that has to exist for it to render.
+    let mut downloaded = 0usize;
+    for rel in report_relative_links(&detail.markdown) {
+        if !is_safe_report_path(&rel) {
+            continue;
+        }
+        let bytes = match download_report_file(&creds, project_id, &report_id, &rel).await {
+            Ok(b) => b,
+            // A broken link in the markdown shouldn't abort the whole download;
+            // surface it and keep going.
+            Err(e) => {
+                eprintln!("  ! skipped {} ({})", rel, e);
+                continue;
+            }
+        };
+        let out = root.join(&rel);
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow!("Could not create {}: {}", parent.display(), e))?;
+        }
+        std::fs::write(&out, &bytes)
+            .map_err(|e| anyhow!("Could not write {}: {}", out.display(), e))?;
+        println!("  wrote {}", rel);
+        downloaded += 1;
+    }
+
+    println!(
+        "\u{2713} Downloaded report to {} (report.md + {} file{})",
+        root.display(),
+        downloaded,
+        if downloaded == 1 { "" } else { "s" }
+    );
+    Ok(())
+}
+
+/// Extract the report-relative link/image targets from markdown — the `target`
+/// in every `](target)` (covers `![alt](images/x.png)` and `[text](file)`).
+/// Filters out absolute URLs, anchors, and absolute paths, leaving the local
+/// files the report bundles. Deduplicated, order preserved.
+fn report_relative_links(md: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let bytes = md.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b']' && bytes[i + 1] == b'(' {
+            let start = i + 2;
+            if let Some(rel) = bytes[start..].iter().position(|&b| b == b')') {
+                let inner = &md[start..start + rel];
+                // Drop an optional `"title"` after the URL: `(path "t")`.
+                let target = inner.split_whitespace().next().unwrap_or("").trim();
+                if is_local_target(target) && !out.iter().any(|p| p == target) {
+                    out.push(target.to_string());
+                }
+                i = start + rel + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// A link target that points at a file bundled in the report (not the web).
+fn is_local_target(t: &str) -> bool {
+    !t.is_empty()
+        && !t.starts_with('#')
+        && !t.starts_with('/')
+        && !t.contains("://")
+        && !t.starts_with("//")
+        && !t.starts_with("mailto:")
+        && !t.starts_with("data:")
+}
+
+/// Mirror of the server's `isSafeReportPath`: relative, no `..`/`.` segments,
+/// no backslashes — so a malicious markdown link can't escape `dir`.
+fn is_safe_report_path(p: &str) -> bool {
+    !p.starts_with('/') && !p.contains('\\') && !p.split('/').any(|seg| seg == ".." || seg == ".")
 }
 
 async fn list(project_id: &str) -> Result<()> {

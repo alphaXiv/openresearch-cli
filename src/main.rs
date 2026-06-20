@@ -100,7 +100,7 @@ enum Command {
     /// Operate on one experiment node (status / run command / run / cancel).
     Exp(ExpArgs),
 
-    /// Upload or list a project's research reports (markdown + images).
+    /// Upload, list, show, or download a project's research reports.
     Report(ReportArgs),
 
     /// Print CLI usage for agents, or fetch a skill doc.
@@ -135,6 +135,10 @@ pub struct ProjectsArgs {
     /// Include archived projects.
     #[arg(long)]
     pub all: bool,
+    /// Emit raw JSON (id, name, paperId, repo, org) instead of the formatted
+    /// table — for scripts that need each project's `paperId`.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -440,6 +444,17 @@ pub enum ReportCommand {
         project_id: String,
         /// Report id (from `orx report list`) or its slug.
         report: String,
+    },
+
+    /// Download a report folder (report.md + referenced images) to a local
+    /// directory — the inverse of `upload`. Pass the report's id or slug.
+    Download {
+        project_id: String,
+        /// Report id (from `orx report list`) or its slug.
+        report: String,
+        /// Destination directory (created if absent). `report.md` and an
+        /// `images/` subfolder are written under it.
+        dir: String,
     },
 }
 

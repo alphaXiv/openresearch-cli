@@ -69,7 +69,7 @@ orx logout         # remove the stored token
 ### Discover (project- and experiment-scoped)
 | Command | What it does |
 |---|---|
-| `orx projects [--all]` | List your projects (id + name + GitHub `owner/repo`), grouped by org (name + org id). `--all` includes archived. **Project ids, org ids, and the repo to clone come from here.** |
+| `orx projects [--all] [--json]` | List your projects (id + name + GitHub `owner/repo`), grouped by org (name + org id). `--all` includes archived; `--json` emits a flat array (incl. each project's `paperId`) for scripts. **Project ids, org ids, and the repo to clone come from here.** |
 | `orx explore [--json]` | List the **public** project directory (id + name + repo) — projects anyone can view, not just yours. Use it to discover others' work; then drill in with `orx project view`, `orx experiments`, `orx runs`, `orx report show` on the id. |
 | `orx project view <projectId>` | Overview of one project: details (incl. public/private), its experiment tree, and its reports — a single-screen jumping-off point. Works on any public project or any private one in your orgs. |
 | `orx experiments <projectId>` | Print the project's experiments as an indented tree (nested by parent). **Experiment ids come from here.** |
@@ -97,7 +97,7 @@ orx logout         # remove the stored token
 | `orx instance create <orgId> (--gpu <id> [--count <n>] [--disk <gb>] [--provider <name>] \| --cpu <flavor> [--vcpus <n>])` | Spin up a standalone instance in an org (not tied to an experiment), like the dashboard's "Spin up". See below. |
 | `orx exp status/cmd/run/cancel/wait <expId>` | Inspect, run, cancel, and wait on a single experiment node. `status` prints the node's branch, its parent's branch, the latest run's full commit SHA, and a ready-to-paste local `git diff` recipe. See below. |
 | `orx exp desc <expId> [--set "<text>" \| --stdin]` | Read or overwrite the experiment's description (free-form notes). See below. |
-| `orx report upload <projectId> <folder> [--title "<t>"]` | Upload a report folder (`report.md` + `images/`) to the project. Appears on the project page and its public view. `orx report list <projectId>` lists them; `orx report show <projectId> <reportId\|slug>` prints a report's markdown to stdout (works on any public project). See below. |
+| `orx report upload <projectId> <folder> [--title "<t>"]` | Upload a report folder (`report.md` + `images/`) to the project. Appears on the project page and its public view. `orx report list <projectId>` lists them; `orx report show <projectId> <reportId\|slug>` prints a report's markdown to stdout (works on any public project); `orx report download <projectId> <reportId\|slug> <dir>` writes `report.md` + referenced images back to a local folder (the inverse of `upload`). See below. |
 
 To **read or edit** a node's code — including diffing what a run changed — use
 plain git in the cache-dir clone; there is no `orx` code command. See "Reading &
