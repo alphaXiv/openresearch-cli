@@ -174,9 +174,7 @@ fn is_local_target(t: &str) -> bool {
 /// Mirror of the server's `isSafeReportPath`: relative, no `..`/`.` segments,
 /// no backslashes — so a malicious markdown link can't escape `dir`.
 fn is_safe_report_path(p: &str) -> bool {
-    !p.starts_with('/')
-        && !p.contains('\\')
-        && !p.split('/').any(|seg| seg == ".." || seg == ".")
+    !p.starts_with('/') && !p.contains('\\') && !p.split('/').any(|seg| seg == ".." || seg == ".")
 }
 
 async fn list(project_id: &str) -> Result<()> {
