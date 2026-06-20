@@ -52,6 +52,11 @@ pub struct Project {
     /// `None` until generated.
     #[serde(default)]
     pub example_question: Option<String>,
+    /// arXiv id of the paper this project reproduces, derived from the repo
+    /// README at creation. `None` when the repo names no paper. This is the
+    /// key the publish-to-alphaXiv sweep matches a finished report against.
+    #[serde(default)]
+    pub paper_id: Option<String>,
     /// Newest run in the project (UUIDv7 encodes the time), or `None` if no runs.
     #[serde(default)]
     pub last_activity_run_id: Option<String>,
@@ -925,6 +930,35 @@ pub async fn get_report(
         &format!("/projects/{}/reports/{}", project_id, report_id),
     )
     .await
+}
+
+/// Download the raw bytes of one file within a report (e.g. `report.md` or an
+/// image referenced from it). The endpoint 302-redirects to a presigned R2 URL;
+/// `reqwest` follows it (and drops the bearer header on the cross-host hop, which
+/// is correct — the signature in the URL authorizes the read). `path` is a
+/// report-relative POSIX path like `images/loss.png`.
+pub async fn download_report_file(
+    creds: &Credentials,
+    project_id: &str,
+    report_id: &str,
+    path: &str,
+) -> Result<Vec<u8>> {
+    let encoded = urlencoding::encode(path);
+    let res = send_request(
+        creds,
+        Method::GET,
+        &format!(
+            "/projects/{}/reports/{}/file?path={}",
+            project_id, report_id, encoded
+        ),
+        None,
+    )
+    .await?;
+    let bytes = res
+        .bytes()
+        .await
+        .map_err(|e| anyhow!("Could not read {}: {}", path, e))?;
+    Ok(bytes.to_vec())
 }
 
 pub async fn create_report(
