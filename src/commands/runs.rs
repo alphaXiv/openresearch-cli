@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::client::{list_experiments, list_runs};
 use crate::error::{require_credentials, Result};
-use crate::output::{format_duration, print_table};
+use crate::output::{format_duration, print_table, run_failure_detail};
 
 /// Lists a project's runs as a table, newest first.
 pub async fn run(args: crate::RunsArgs) -> Result<()> {
@@ -38,6 +38,13 @@ pub async fn run(args: crate::RunsArgs) -> Result<()> {
         return Ok(());
     }
 
+    // Collect why each failed run failed, to print under the table — the reason
+    // (provider error on spin-up failures) doesn't fit a fixed-width column.
+    let failures: Vec<(String, String)> = filtered
+        .iter()
+        .filter_map(|r| run_failure_detail(r).map(|d| (r.id.clone(), d)))
+        .collect();
+
     let rows: Vec<Vec<String>> = filtered
         .into_iter()
         .map(|r| {
@@ -69,6 +76,13 @@ pub async fn run(args: crate::RunsArgs) -> Result<()> {
         ],
         &rows,
     );
+
+    if !failures.is_empty() {
+        println!();
+        for (id, detail) in &failures {
+            println!("{id}  {detail}");
+        }
+    }
 
     Ok(())
 }

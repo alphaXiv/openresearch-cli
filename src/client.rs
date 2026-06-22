@@ -100,6 +100,21 @@ pub struct Run {
     pub status: String,
     pub commit_sha: Option<String>,
     pub updated_at: String,
+    // The compute the run executed on. Optional so older API deployments (which
+    // omit the field) still deserialize.
+    #[serde(default)]
+    pub sandbox_id: Option<String>,
+    // Object-storage key for the run's logs, once captured. Where to look for the
+    // "why" when a run fails *after* the box is up (e.g. the script exited
+    // non-zero) and `result_markdown` is therefore empty.
+    #[serde(default)]
+    pub log_key: Option<String>,
+    // Human-readable terminal detail. On failure during compute spin-up this
+    // holds the provider error the website shows as a toast (e.g. "Provisioning
+    // failed: RunPod … Out of capacity"); on a successful run it's the run's
+    // EVAL.md. Null for runtime failures after the box came up — see `log_key`.
+    #[serde(default)]
+    pub result_markdown: Option<String>,
     // Terminal time; only meaningful once `status` is terminal. Optional so
     // older API deployments (without the field) still deserialize.
     #[serde(default)]

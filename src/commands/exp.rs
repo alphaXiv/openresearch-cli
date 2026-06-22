@@ -18,7 +18,7 @@ use crate::client::{
     update_experiment, RunTarget, UpdateExperimentBody,
 };
 use crate::error::{anyhow, require_credentials, Result};
-use crate::output::format_duration;
+use crate::output::{format_duration, run_failure_detail};
 use crate::{ExpCommand, ExpRunArgs};
 
 pub async fn run(args: crate::ExpArgs) -> Result<()> {
@@ -96,6 +96,9 @@ async fn wait_experiment(
                 }
                 if is_terminal(&r.status) {
                     println!("{} {}", r.id, r.status);
+                    if let Some(detail) = run_failure_detail(&r) {
+                        eprintln!("{detail}");
+                    }
                     return Ok(());
                 }
             }
@@ -160,7 +163,9 @@ async fn wait_project(
         sleep_until_or_timeout(interval, deadline).await?;
 
         let current = list_runs(creds, project_id).await?.runs;
-        let mut completed: Vec<String> = Vec::new();
+        // Each entry pairs the transition line with the run's failure detail (if
+        // it failed) so we can surface *why* on stderr after the machine line.
+        let mut completed: Vec<(String, Option<String>)> = Vec::new();
         for r in &current {
             if !is_terminal(&r.status) {
                 continue;
@@ -168,15 +173,19 @@ async fn wait_project(
             // Fire only on a *new* terminal: a run that was non-terminal before,
             // or a brand-new run that's already terminal. Skip runs that were
             // already terminal in the entry snapshot.
-            match snapshot.get(&r.id) {
-                Some(prev) if is_terminal(prev) => {}
-                Some(prev) => completed.push(format!("{} {} -> {}", r.id, prev, r.status)),
-                None => completed.push(format!("{} {} (new)", r.id, r.status)),
-            }
+            let line = match snapshot.get(&r.id) {
+                Some(prev) if is_terminal(prev) => continue,
+                Some(prev) => format!("{} {} -> {}", r.id, prev, r.status),
+                None => format!("{} {} (new)", r.id, r.status),
+            };
+            completed.push((line, run_failure_detail(r)));
         }
         if !completed.is_empty() {
-            for c in &completed {
-                println!("{}", c);
+            for (line, detail) in &completed {
+                println!("{line}");
+                if let Some(detail) = detail {
+                    eprintln!("{detail}");
+                }
             }
             return Ok(());
         }
@@ -250,6 +259,9 @@ async fn status(creds: &crate::config::Credentials, exp_id: &str) -> Result<()> 
                 format_duration(r.duration_seconds),
                 r.updated_at
             );
+            if let Some(detail) = run_failure_detail(&r) {
+                println!("  {detail}");
+            }
             if let Some(sha) = r.commit_sha {
                 println!("  commit:   {}", sha);
                 full_sha = Some(sha);
