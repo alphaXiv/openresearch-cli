@@ -532,6 +532,15 @@ orx exp wait <expId> --interval 10 --timeout 3600   # tune polling
 - Progress lines go to **stderr**; the final completion line(s) go to **stdout**,
   each as `<runId> <prev> -> <status>` (or `<runId> <status> (new)`), or the
   single line `drained: no runs in flight` when nothing was in flight.
+- **When a run is `failed`, a `reason:` line follows it.** Compute spin-up
+  failures (no GPU capacity, provider quota/limit hit, transient provider error)
+  carry the provider's own message here — the same text the website shows as a
+  toast. These are usually **transient and retryable**: wait and re-launch the
+  same run, or pick a different GPU/provider, rather than treating the experiment
+  as a dead end. If the run instead failed *after* the box came up, the `reason:`
+  line points at `orx logs <runId>`, where the traceback/OOM/setup error lives.
+  The same `reason:` line appears under `orx exp status <expId>` and beneath the
+  `orx runs <projectId>` table.
 
 ## Experiment description / notes — `orx exp desc`
 

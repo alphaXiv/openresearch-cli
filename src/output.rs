@@ -70,6 +70,28 @@ fn pad_end(s: &str, width: usize) -> String {
     }
 }
 
+/// When a run ended in `failed`, return a human-readable explanation to print
+/// beneath its status line — so an agent driving the CLI sees *why* a run died,
+/// not just that it did. For compute spin-up failures this is the same provider
+/// error the website shows as a toast (it's persisted to the run's
+/// `result_markdown`). For runtime failures after the box came up no reason is
+/// recorded, so we point at the logs instead. Returns `None` for non-failed runs.
+pub fn run_failure_detail(run: &crate::client::Run) -> Option<String> {
+    if run.status != "failed" {
+        return None;
+    }
+    match run.result_markdown.as_deref().map(str::trim) {
+        Some(reason) if !reason.is_empty() => Some(format!("reason: {reason}")),
+        // No persisted reason: the run failed after the box was up, so the detail
+        // is in the logs (when we captured any).
+        _ if run.log_key.is_some() => Some(format!(
+            "reason: — (failed after startup; no message recorded — see `orx logs {}`)",
+            run.id
+        )),
+        _ => Some("reason: — (no message recorded)".to_string()),
+    }
+}
+
 /// Formats an arbitrary SQL cell value for display, matching the TS `cell()`:
 /// `null`/absent -> "", objects/arrays -> compact JSON, scalars -> their string.
 pub fn cell(value: &Value) -> String {
