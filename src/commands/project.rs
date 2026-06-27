@@ -153,7 +153,11 @@ async fn edit(
     println!("  name:        {}", project.name);
     println!(
         "  access:      {}",
-        if project.is_public { "public" } else { "private" }
+        if project.is_public {
+            "public"
+        } else {
+            "private"
+        }
     );
     if project.description.is_empty() {
         println!("  description: — (empty)");
