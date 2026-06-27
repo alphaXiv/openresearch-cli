@@ -1,6 +1,6 @@
 //! The `project` command group: operate on a single project by id.
 //!
-//!   orx project edit <projectId> [--name …] [--description … | --description-stdin]
+//!   orx project edit <projectId> [--name …] [--description … | --description-stdin] [--public | --private]
 //!
 //! Sibling to `orx projects` (which lists): the plural lists, the singular edits
 //! one — mirroring `orx experiments` (list) vs `orx exp` (operate). Project ids
@@ -24,7 +24,20 @@ pub async fn run(args: crate::ProjectArgs) -> Result<()> {
             name,
             description,
             description_stdin,
-        } => edit(&creds, &project_id, name, description, description_stdin).await,
+            public,
+            private,
+        } => {
+            edit(
+                &creds,
+                &project_id,
+                name,
+                description,
+                description_stdin,
+                public,
+                private,
+            )
+            .await
+        }
     }
 }
 
@@ -79,14 +92,16 @@ async fn view(creds: &crate::config::Credentials, project_id: &str) -> Result<()
     Ok(())
 }
 
-/// `orx project edit <projectId> [--name …] [--description … | --description-stdin]`
-/// — overwrite a project's name and/or description.
+/// `orx project edit <projectId> [--name …] [--description … | --description-stdin] [--public | --private]`
+/// — overwrite a project's name, description, and/or visibility.
 async fn edit(
     creds: &crate::config::Credentials,
     project_id: &str,
     name: Option<String>,
     description: Option<String>,
     description_stdin: bool,
+    public: bool,
+    private: bool,
 ) -> Result<()> {
     // `--description` and `--description-stdin` are mutually exclusive; either
     // present means "overwrite the description".
@@ -105,19 +120,41 @@ async fn edit(
         (None, false) => None,
     };
 
-    if name.is_none() && description.is_none() {
+    // `--public` / `--private` map to the `isPublic` flag; clap's
+    // `conflicts_with` already rejects passing both. Neither flag leaves
+    // visibility untouched (`None`).
+    let is_public = match (public, private) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        _ => None,
+    };
+
+    if name.is_none() && description.is_none() && is_public.is_none() {
         return Err(anyhow!(
-            "Nothing to change. Pass at least one of --name or --description \
-             (or --description-stdin)."
+            "Nothing to change. Pass at least one of --name, --description \
+             (or --description-stdin), --public, or --private."
         ));
     }
 
-    let res = update_project(creds, project_id, &UpdateProjectBody { name, description }).await?;
+    let res = update_project(
+        creds,
+        project_id,
+        &UpdateProjectBody {
+            name,
+            description,
+            is_public,
+        },
+    )
+    .await?;
     let project = res.project;
 
     println!("\u{2713} Project updated.");
     println!("  id:          {}", project.id);
     println!("  name:        {}", project.name);
+    println!(
+        "  access:      {}",
+        if project.is_public { "public" } else { "private" }
+    );
     if project.description.is_empty() {
         println!("  description: — (empty)");
     } else {

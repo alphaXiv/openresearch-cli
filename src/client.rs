@@ -557,6 +557,10 @@ pub struct UpdateProjectBody {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Project visibility (`isPublic`): `Some(true)` lists it in the public
+    /// directory, `Some(false)` makes it private. `None` leaves it unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_public: Option<bool>,
 }
 
 /// The `target` of a run launch (`POST /experiments/{id}/run`). Internally

@@ -159,7 +159,8 @@ pub enum ProjectCommand {
     /// Show a project's overview: details, experiment tree, and reports.
     View { project_id: String },
 
-    /// Edit a project's metadata. Pass at least one of `--name` / `--description`.
+    /// Edit a project's metadata. Pass at least one of `--name` / `--description`
+    /// / `--public` / `--private`.
     Edit {
         project_id: String,
         /// Rename the project.
@@ -171,6 +172,12 @@ pub enum ProjectCommand {
         /// Overwrite the description with the whole of stdin (for long markdown).
         #[arg(long)]
         description_stdin: bool,
+        /// Make the project public (listed in the public directory).
+        #[arg(long)]
+        public: bool,
+        /// Make the project private. Mutually exclusive with `--public`.
+        #[arg(long, conflicts_with = "public")]
+        private: bool,
     },
 }
 
