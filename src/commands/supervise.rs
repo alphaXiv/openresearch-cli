@@ -181,7 +181,10 @@ async fn tail_logs(
     {
         Ok(f) => f,
         Err(err) => {
-            eprintln!("supervise {run_id}: could not open {}: {err}", path.display());
+            eprintln!(
+                "supervise {run_id}: could not open {}: {err}",
+                path.display()
+            );
             return;
         }
     };
