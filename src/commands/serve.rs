@@ -67,7 +67,13 @@ async fn handle(mut stream: TcpStream) -> Result<()> {
     let method = parts.next().unwrap_or_default();
     let target = parts.next().unwrap_or_default();
     if method != "GET" {
-        return respond(&mut stream, 405, "application/json", b"{\"error\":\"method\"}").await;
+        return respond(
+            &mut stream,
+            405,
+            "application/json",
+            b"{\"error\":\"method\"}",
+        )
+        .await;
     }
     let (path, query) = match target.split_once('?') {
         Some((p, q)) => (p, q),
@@ -112,12 +118,23 @@ async fn handle(mut stream: TcpStream) -> Result<()> {
                         respond(&mut stream, 200, "text/plain; charset=utf-8", &bytes).await
                     }
                     _ => {
-                        respond(&mut stream, 404, "application/json", b"{\"error\":\"not_found\"}")
-                            .await
+                        respond(
+                            &mut stream,
+                            404,
+                            "application/json",
+                            b"{\"error\":\"not_found\"}",
+                        )
+                        .await
                     }
                 }
             } else {
-                respond(&mut stream, 404, "application/json", b"{\"error\":\"not_found\"}").await
+                respond(
+                    &mut stream,
+                    404,
+                    "application/json",
+                    b"{\"error\":\"not_found\"}",
+                )
+                .await
             }
         }
     }
@@ -180,7 +197,11 @@ async fn serve_events(stream: &mut TcpStream) -> Result<()> {
             // (chunked per tick), so a subscriber needs no separate backfill
             // fetch and byte offsets make reconnect dedup exact. Terminal runs
             // start at EOF — their history lives in R2 via the run's logKey.
-            let start = if is_terminal(&run.status) { log_size(&run.id) } else { 0 };
+            let start = if is_terminal(&run.status) {
+                log_size(&run.id)
+            } else {
+                0
+            };
             log_offsets.insert(run.id.clone(), start);
             write_event(stream, "run.updated", &serde_json::json!({ "run": run })).await?;
         }
@@ -249,11 +270,7 @@ fn is_terminal(status: &str) -> bool {
     matches!(status, "done" | "failed" | "cancelled")
 }
 
-async fn write_event(
-    stream: &mut TcpStream,
-    event: &str,
-    data: &serde_json::Value,
-) -> Result<()> {
+async fn write_event(stream: &mut TcpStream, event: &str, data: &serde_json::Value) -> Result<()> {
     // SSE data must be newline-free per line; JSON-encode guarantees that.
     let frame = format!("event: {event}\ndata: {data}\n\n");
     stream.write_all(frame.as_bytes()).await?;

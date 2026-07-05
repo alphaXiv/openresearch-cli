@@ -62,7 +62,12 @@ pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
             let _ = writeln!(log_file, "{line}");
         };
         match hf::stream_logs(
-            &token, &namespace, &job_id, events_seen, LOG_IDLE, &mut sink,
+            &token,
+            &namespace,
+            &job_id,
+            events_seen,
+            LOG_IDLE,
+            &mut sink,
         )
         .await
         {
@@ -93,9 +98,12 @@ pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
                 if !bytes.is_empty() {
                     match presign_external_run_log(&creds, &run_id).await {
                         Ok(presigned) => {
-                            if let Err(err) =
-                                upload_to_presigned(&presigned.url, "application/octet-stream", bytes)
-                                    .await
+                            if let Err(err) = upload_to_presigned(
+                                &presigned.url,
+                                "application/octet-stream",
+                                bytes,
+                            )
+                            .await
                             {
                                 eprintln!("supervise {run_id}: log upload failed: {err}");
                             }

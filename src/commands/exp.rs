@@ -607,8 +607,12 @@ fn default_hf_image(flavor: &str) -> String {
 /// Spawn `orx supervise <runId>` fully detached (own process group, no stdio),
 /// so it outlives this command and any SSH session that launched it.
 fn spawn_detached_supervise(run_id: &str) -> Result<()> {
-    let exe = std::env::current_exe()
-        .map_err(|e| anyhow!("Could not locate the orx binary to spawn the supervisor: {}", e))?;
+    let exe = std::env::current_exe().map_err(|e| {
+        anyhow!(
+            "Could not locate the orx binary to spawn the supervisor: {}",
+            e
+        )
+    })?;
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("supervise")
         .arg(run_id)

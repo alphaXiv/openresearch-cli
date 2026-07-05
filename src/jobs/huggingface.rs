@@ -212,9 +212,9 @@ pub async fn stream_logs(
     let mut buf: Vec<u8> = Vec::new();
     loop {
         let chunk = match tokio::time::timeout(idle_timeout, res.chunk()).await {
-            Err(_) => break,        // idle — likely end of buffered history
-            Ok(Err(_)) => break,    // stream error — caller reconnects if live
-            Ok(Ok(None)) => break,  // server closed
+            Err(_) => break,       // idle — likely end of buffered history
+            Ok(Err(_)) => break,   // stream error — caller reconnects if live
+            Ok(Ok(None)) => break, // server closed
             Ok(Ok(Some(c))) => c,
         };
         buf.extend_from_slice(&chunk);
