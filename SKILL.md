@@ -473,6 +473,40 @@ Rules and notes:
   Follow progress with `orx runs <projectId>` and `orx logs <runId>`, or block
   with `orx exp wait` (below).
 
+### Running on Hugging Face Jobs — `--backend hf`
+
+If a Hugging Face token is available (`HF_TOKEN` in the environment — orgs that
+connect their HF account in compute settings get it synced automatically), you
+can run an experiment on **HF Jobs** instead of managed compute. The job runs
+on the user's own HF account and is billed there per minute; no OpenResearch
+balance is spent.
+
+```sh
+orx exp run <expId> --backend hf --flavor a10g-small              # one GPU job
+orx exp run <expId> --backend hf --flavor a100-large --timeout 8h
+orx exp run <expId> --backend hf --flavor cpu-upgrade --image python:3.12
+```
+
+Rules and notes:
+- **`--flavor` is required** and replaces `--gpu`/`--cpu`/`--sandbox`. Common
+  flavors: `t4-small`, `a10g-small`, `a10g-large`, `l4x1`, `l40sx1`,
+  `a100-large`, `h200` (and `x2/x4/x8` multiples); CPU: `cpu-basic`,
+  `cpu-upgrade`. Prefer the smallest flavor that fits — same sizing discipline
+  as managed GPUs.
+- **Set `--timeout` to cover the whole run** (default `4h`). HF kills the job
+  at the timeout; a killed job reads as a failed run.
+- The job clones the experiment branch's **GitHub tip** and runs the fixed run
+  command, same contract as managed runs — commit and push first. Private
+  repos need a `GITHUB_TOKEN` in the environment (passed to the job as a
+  secret).
+- `--image` overrides the container (default: a CUDA pytorch image on GPU
+  flavors, `python:3.12` on cpu flavors). Pick an image with your deps baked
+  in when pip-install time dominates the run.
+- Everything downstream is identical: the run appears in the tree, `orx exp
+  wait` / `orx runs` / `orx logs` work unchanged, and cancel from the web or
+  `orx exp cancel` reaches the job within a few seconds. A detached
+  `orx supervise` process mirrors status and logs; don't kill it.
+
 ## Spinning up a standalone instance — `orx instance create`
 
 Provision a persistent instance in an **organization**, not tied to any

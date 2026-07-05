@@ -1089,6 +1089,84 @@ pub async fn upload_to_presigned(url: &str, content_type: &str, bytes: Vec<u8>) 
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// External runs (jobs executed by orx itself — HF Jobs etc.). The api is a
+// mirror: create registers the row, PATCH reports transitions (and returns
+// cancel intent), the log presign hands back a PUT URL for the final log.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalRunLite {
+    pub id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalRunCreated {
+    pub run: ExternalRunLite,
+    pub project_id: String,
+    pub run_command: String,
+    pub branch_name: String,
+    pub github_owner: String,
+    pub github_repo: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalRunPatched {
+    pub cancel_requested: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalRunState {
+    pub status: String,
+    pub cancel_requested: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PresignedUrl {
+    pub url: String,
+}
+
+pub async fn create_external_run(
+    creds: &Credentials,
+    exp_id: &str,
+    backend: Value,
+) -> Result<ExternalRunCreated> {
+    api_post(
+        creds,
+        &format!("/experiments/{}/external-run", exp_id),
+        serde_json::json!({ "backend": backend }),
+    )
+    .await
+}
+
+/// Report a transition and/or descriptor update. Fields are all optional; the
+/// response's `cancelRequested` doubles as the supervisor's cancel poll.
+pub async fn update_external_run(
+    creds: &Credentials,
+    run_id: &str,
+    body: Value,
+) -> Result<ExternalRunPatched> {
+    api_patch(creds, &format!("/runs/{}/external", run_id), body).await
+}
+
+pub async fn get_external_run_state(creds: &Credentials, run_id: &str) -> Result<ExternalRunState> {
+    api_get(creds, &format!("/runs/{}/external", run_id)).await
+}
+
+pub async fn presign_external_run_log(creds: &Credentials, run_id: &str) -> Result<PresignedUrl> {
+    api_post(
+        creds,
+        &format!("/runs/{}/external-log", run_id),
+        serde_json::json!({}),
+    )
+    .await
+}
+
 pub async fn list_skills(creds: &Credentials) -> Result<ListSkills> {
     api_get(creds, "/skills").await
 }
