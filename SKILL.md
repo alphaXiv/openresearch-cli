@@ -497,8 +497,10 @@ Rules and notes:
   at the timeout; a killed job reads as a failed run.
 - The job clones the experiment branch's **GitHub tip** and runs the fixed run
   command, same contract as managed runs — commit and push first. Private
-  repos need a `GITHUB_TOKEN` in the environment (passed to the job as a
-  secret).
+  repos work automatically: the platform mints a repo-scoped clone token from
+  the project's connected GitHub app and passes it to the job as a secret.
+  Never ask the user to provision a `GITHUB_TOKEN`; setting one (env or
+  project env var) is only an override for repos outside the connected app.
 - `--image` overrides the container (default: a CUDA pytorch image on GPU
   flavors, `python:3.12` on cpu flavors). Pick an image with your deps baked
   in when pip-install time dominates the run.
