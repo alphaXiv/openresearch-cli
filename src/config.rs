@@ -99,3 +99,29 @@ pub async fn clear_credentials() -> Result<()> {
         Err(e) => Err(e.into()),
     }
 }
+
+/// Look up a var from the box's synced env file (`~/.openresearch/env`, written
+/// by the api's env sync). Needed because non-interactive shells never source
+/// it via .bashrc (Ubuntu's interactive guard returns first), so an agent's
+/// `orx` can't rely on the process environment alone. Parses only the exact
+/// format the api writes: `export KEY='value'` with `\` doubled and `'`
+/// written as `'\''`.
+pub fn synced_env_var(key: &str) -> Option<String> {
+    let path = dirs::home_dir()?.join(".openresearch").join("env");
+    let content = std::fs::read_to_string(path).ok()?;
+    let prefix = format!("export {key}='");
+    for line in content.lines() {
+        let Some(rest) = line.strip_prefix(&prefix) else {
+            continue;
+        };
+        let Some(escaped) = rest.strip_suffix('\'') else {
+            continue;
+        };
+        // Invert buildEnvFile's escaping (quotes first, then backslashes).
+        let value = escaped.replace(r"'\''", "'").replace(r"\\", r"\");
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
+}
