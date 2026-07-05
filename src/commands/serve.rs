@@ -176,8 +176,12 @@ async fn serve_events(stream: &mut TcpStream) -> Result<()> {
         let runs = Store::open()?.list_runs(200)?;
         for run in &runs {
             known.insert(run.id.clone(), (run.status.clone(), run.updated_at));
-            // Start log tails at the current end — history is on /runs/{id}/logs.
-            log_offsets.insert(run.id.clone(), log_size(&run.id));
+            // Live runs replay their WHOLE log from byte 0 through this stream
+            // (chunked per tick), so a subscriber needs no separate backfill
+            // fetch and byte offsets make reconnect dedup exact. Terminal runs
+            // start at EOF — their history lives in R2 via the run's logKey.
+            let start = if is_terminal(&run.status) { log_size(&run.id) } else { 0 };
+            log_offsets.insert(run.id.clone(), start);
             write_event(stream, "run.updated", &serde_json::json!({ "run": run })).await?;
         }
     }
@@ -226,16 +230,23 @@ async fn emit_log_delta(
     }
     let chunk = read_log_from(&run.id, offset);
     offsets.insert(run.id.clone(), offset + chunk.len() as u64);
+    // base64, not lossy UTF-8: chunk boundaries are arbitrary byte positions,
+    // and exact byte lengths are what lets the client dedup replays.
+    use base64::Engine as _;
     write_event(
         stream,
         "run.log",
         &serde_json::json!({
             "runId": run.id,
             "offset": offset,
-            "chunk": String::from_utf8_lossy(&chunk),
+            "chunkB64": base64::engine::general_purpose::STANDARD.encode(&chunk),
         }),
     )
     .await
+}
+
+fn is_terminal(status: &str) -> bool {
+    matches!(status, "done" | "failed" | "cancelled")
 }
 
 async fn write_event(

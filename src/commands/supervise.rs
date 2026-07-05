@@ -83,35 +83,14 @@ pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
         let stage = job.status.stage.as_str();
         let status = stage_to_run_status(stage).to_string();
 
-        // 3) Mirror the transition (local store first — it's the truth).
-        if status != last_status {
-            let ended = is_terminal_stage(stage).then(now_ms);
-            store.update_status(&run_id, &status, ended, None)?;
-            let cancel_requested = mirror_status(&creds, &run_id, &status, &job.status.message)
-                .await
-                .unwrap_or(false);
-            eprintln!("supervise {run_id}: {last_status} -> {status} (stage {stage})");
-            last_status = status.clone();
-            if cancel_requested && !cancel_sent && !is_terminal_stage(stage) {
-                request_backend_cancel(&token, &namespace, &job_id, &run_id, &mut cancel_sent)
-                    .await;
-            }
-        } else if !is_terminal_stage(stage) && !cancel_sent {
-            // No transition to report — poll cancel intent cheaply instead.
-            if let Ok(state) = crate::client::get_external_run_state(&creds, &run_id).await {
-                if state.cancel_requested {
-                    request_backend_cancel(&token, &namespace, &job_id, &run_id, &mut cancel_sent)
-                        .await;
-                }
-            }
-        }
-
+        // 3) Terminal: persist everything BEFORE reporting the final status, so
+        // the moment the UI sees done/failed the R2 log already exists (the
+        // run page switches from live tail to the persisted log on that flip).
         if is_terminal_stage(stage) {
-            // Final log upload so the web's normal run-log reader works. Bytes
-            // go straight to R2; the api only minted the URL.
+            store.update_status(&run_id, &status, Some(now_ms()), None)?;
             let _ = log_file.flush();
-            match std::fs::read(&path) {
-                Ok(bytes) if !bytes.is_empty() => {
+            if let Ok(bytes) = std::fs::read(&path) {
+                if !bytes.is_empty() {
                     match presign_external_run_log(&creds, &run_id).await {
                         Ok(presigned) => {
                             if let Err(err) =
@@ -124,10 +103,34 @@ pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
                         Err(err) => eprintln!("supervise {run_id}: log presign failed: {err}"),
                     }
                 }
-                _ => {}
+            }
+            if let Err(err) = mirror_status(&creds, &run_id, &status, &job.status.message).await {
+                eprintln!("supervise {run_id}: final status mirror failed: {err}");
             }
             eprintln!("supervise {run_id}: finished ({status})");
             return Ok(());
+        }
+
+        // 3b) Mirror a live transition (local store first — it's the truth).
+        if status != last_status {
+            store.update_status(&run_id, &status, None, None)?;
+            let cancel_requested = mirror_status(&creds, &run_id, &status, &job.status.message)
+                .await
+                .unwrap_or(false);
+            eprintln!("supervise {run_id}: {last_status} -> {status} (stage {stage})");
+            last_status = status.clone();
+            if cancel_requested && !cancel_sent {
+                request_backend_cancel(&token, &namespace, &job_id, &run_id, &mut cancel_sent)
+                    .await;
+            }
+        } else if !cancel_sent {
+            // No transition to report — poll cancel intent cheaply instead.
+            if let Ok(state) = crate::client::get_external_run_state(&creds, &run_id).await {
+                if state.cancel_requested {
+                    request_backend_cancel(&token, &namespace, &job_id, &run_id, &mut cancel_sent)
+                        .await;
+                }
+            }
         }
 
         tokio::time::sleep(POLL_INTERVAL).await;

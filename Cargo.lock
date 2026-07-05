@@ -758,6 +758,7 @@ name = "openresearch-cli"
 version = "0.1.32"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
  "dirs",
  "fd-lock",

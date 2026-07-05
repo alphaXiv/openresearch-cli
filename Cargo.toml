@@ -27,6 +27,7 @@ urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
 semver = "1"
 fd-lock = "4"
+base64 = "0.22"
 
 # The profile that 'dist' will build with
 [profile.dist]
