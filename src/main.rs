@@ -16,7 +16,9 @@ mod client;
 mod commands;
 mod config;
 mod error;
+mod jobs;
 mod output;
+mod store;
 mod updates;
 
 use clap::{Args, Parser, Subcommand};
@@ -121,6 +123,15 @@ enum Command {
 
     /// Update orx to the latest release (installer-script installs only).
     Update(UpdateArgs),
+
+    /// Loopback HTTP/SSE daemon over the local run store (jobs sibling of
+    /// `opencode serve`); the api tunnels to it on agent boxes.
+    Serve(ServeArgs),
+
+    /// Supervise one external run: tail backend logs, mirror status to the
+    /// api, honor cancel intent. Spawned detached by `exp run --backend hf`;
+    /// safe to re-run after a crash or box replacement.
+    Supervise(SuperviseArgs),
 }
 
 #[derive(Args, Debug)]
@@ -492,10 +503,40 @@ pub struct ExpRunArgs {
     /// Run on an existing sandbox instead of provisioning. Mutually exclusive with `--gpu`/`--cpu`.
     #[arg(long)]
     pub sandbox: Option<String>,
+    /// External executor instead of managed compute. Currently `hf` (Hugging
+    /// Face Jobs, billed to your HF account): orx submits the job and a
+    /// detached supervisor mirrors status/logs back.
+    #[arg(long)]
+    pub backend: Option<String>,
+    /// HF hardware flavor (with `--backend hf`), e.g. t4-small, a10g-small,
+    /// a100-large, h200. Required for HF runs.
+    #[arg(long)]
+    pub flavor: Option<String>,
+    /// Docker image for the job (with `--backend hf`). Defaults to python:3.12
+    /// on cpu-* flavors, a CUDA pytorch image otherwise.
+    #[arg(long)]
+    pub image: Option<String>,
+    /// Job timeout (with `--backend hf`): 90s, 30m, 4h, 1d. Default 4h — HF's
+    /// own default is only 30 minutes.
+    #[arg(long)]
+    pub timeout: Option<String>,
     /// Launch even if the experiment's branch has no changes over its parent
     /// (bypasses the "did you forget to push?" guard, for a deliberate re-run).
     #[arg(long)]
     pub force: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ServeArgs {
+    /// Port to bind on 127.0.0.1 (default 4790 — what the api proxies to).
+    #[arg(long)]
+    pub port: Option<u16>,
+}
+
+#[derive(Args, Debug)]
+pub struct SuperviseArgs {
+    /// The run to supervise (must exist in the local store).
+    pub run_id: String,
 }
 
 #[derive(Args, Debug)]
@@ -612,5 +653,7 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Paper(args) => commands::paper::run(args).await,
         Command::Version(args) => commands::version::run(args).await,
         Command::Update(args) => commands::update::run(args).await,
+        Command::Serve(args) => commands::serve::run(args).await,
+        Command::Supervise(args) => commands::supervise::run(args).await,
     }
 }

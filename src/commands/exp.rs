@@ -14,11 +14,13 @@ use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 
 use crate::client::{
-    cancel_experiment_run, find_project, get_experiment, list_runs, start_experiment_run,
-    update_experiment, RunTarget, UpdateExperimentBody,
+    cancel_experiment_run, create_external_run, find_project, get_experiment, list_runs,
+    start_experiment_run, update_experiment, RunTarget, UpdateExperimentBody,
 };
 use crate::error::{anyhow, require_credentials, Result};
+use crate::jobs::{huggingface as hf, BackendDescriptor};
 use crate::output::{format_duration, run_failure_detail};
+use crate::store::{now_ms, Store, StoredRun};
 use crate::{ExpCommand, ExpRunArgs};
 
 pub async fn run(args: crate::ExpArgs) -> Result<()> {
@@ -382,6 +384,23 @@ async fn desc(
 
 /// `orx exp run <expId> …` — launch a run on a new instance or existing sandbox.
 async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<()> {
+    // External backends: orx submits and supervises the job itself; the api
+    // only mirrors. Everything below this branch is the managed path.
+    match args.backend.as_deref() {
+        Some("hf") => return launch_hf(creds, args).await,
+        Some(other) => {
+            return Err(anyhow!(
+                "Unknown --backend '{}'. Supported: hf (Hugging Face Jobs).",
+                other
+            ));
+        }
+        None => {}
+    }
+    if args.flavor.is_some() || args.image.is_some() || args.timeout.is_some() {
+        return Err(anyhow!(
+            "--flavor/--image/--timeout only apply with --backend hf."
+        ));
+    }
     // Resolve the target: exactly one of --sandbox, --gpu, or --cpu.
     let selectors = [
         args.sandbox.is_some(),
@@ -440,6 +459,173 @@ async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<
         "  Follow it with `orx runs {}` and `orx logs <runId>`.",
         current.experiment.project_id
     );
+    Ok(())
+}
+
+/// `orx exp run <expId> --backend hf --flavor <flavor>` — run the experiment
+/// as a Hugging Face Job on the user's own HF account.
+///
+/// Flow: register the mirror run with the api (which returns repo/branch/
+/// command), submit the job natively (clone the branch tip, run the command),
+/// record the job handle everywhere, then detach `orx supervise <runId>` to
+/// tail logs and mirror status. Returns immediately, like the managed path.
+async fn launch_hf(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<()> {
+    if args.sandbox.is_some() || args.gpu.is_some() || args.cpu.is_some() {
+        return Err(anyhow!(
+            "--backend hf runs on Hugging Face Jobs; drop --gpu/--cpu/--sandbox \
+             and pass --flavor instead (e.g. --flavor a10g-small)."
+        ));
+    }
+    let flavor = args.flavor.clone().ok_or_else(|| {
+        anyhow!(
+            "--backend hf requires --flavor: t4-small, a10g-small/large, l4x1, \
+             l40sx1, a100-large, h200, … (cpu-basic/cpu-upgrade for CPU). \
+             Priced per minute on your Hugging Face account."
+        )
+    })?;
+    // HF's own default is 30 minutes — a footgun for training runs, so default
+    // generously and let --timeout tighten it.
+    let timeout_seconds = match &args.timeout {
+        Some(t) => hf::parse_timeout(t)?,
+        None => 4 * 3600,
+    };
+    let token = hf::resolve_token()?;
+    let namespace = hf::whoami(&token).await?;
+
+    // Register first: the run must exist in the tree before compute starts,
+    // and the response carries the repo/branch/command orx needs to submit.
+    let mut descriptor = BackendDescriptor {
+        kind: "hf_job".to_string(),
+        namespace: Some(namespace.clone()),
+        job_id: None,
+        flavor: Some(flavor.clone()),
+        image: args.image.clone(),
+        url: None,
+    };
+    let created =
+        create_external_run(creds, &args.exp_id, serde_json::to_value(&descriptor)?).await?;
+    let run_id = created.run.id.clone();
+
+    let image = args
+        .image
+        .clone()
+        .unwrap_or_else(|| default_hf_image(&flavor));
+    // Clone the experiment branch tip and run the fixed command. GITHUB_TOKEN
+    // (passed as a job secret when present locally) authenticates private
+    // repos via bash's ${VAR:+...} — the URL stays tokenless without it.
+    let script = format!(
+        "set -eo pipefail; command -v git >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq git); \
+         git clone --depth 1 --branch {branch} \"https://${{GITHUB_TOKEN:+x-access-token:${{GITHUB_TOKEN}}@}}github.com/{owner}/{repo}.git\" repo; \
+         cd repo; {cmd}",
+        branch = created.branch_name,
+        owner = created.github_owner,
+        repo = created.github_repo,
+        cmd = created.run_command,
+    );
+
+    let mut secrets = HashMap::new();
+    secrets.insert("HF_TOKEN".to_string(), token.clone());
+    if let Ok(gh) = std::env::var("GITHUB_TOKEN") {
+        if !gh.trim().is_empty() {
+            secrets.insert("GITHUB_TOKEN".to_string(), gh);
+        }
+    }
+    let mut labels = HashMap::new();
+    labels.insert("or_run".to_string(), run_id.clone());
+    labels.insert("or_experiment".to_string(), args.exp_id.clone());
+    labels.insert("or_project".to_string(), created.project_id.clone());
+
+    let job = hf::run_job(
+        &token,
+        &namespace,
+        &hf::JobSubmission {
+            command: vec!["bash".to_string(), "-c".to_string(), script],
+            docker_image: image.clone(),
+            flavor: flavor.clone(),
+            environment: HashMap::new(),
+            secrets,
+            timeout_seconds,
+            labels,
+        },
+    )
+    .await?;
+
+    // Record the job handle: local store (the truth orx serve exposes), then
+    // the api mirror (display + reconciliation). Local write must not be lost
+    // even if the PATCH fails — supervise needs it to reattach.
+    descriptor.job_id = Some(job.id.clone());
+    descriptor.url = Some(hf::job_url(&namespace, &job.id));
+    descriptor.image = Some(image);
+    let store = Store::open()?;
+    store.upsert_run(&StoredRun {
+        id: run_id.clone(),
+        experiment_id: args.exp_id.clone(),
+        project_id: created.project_id.clone(),
+        status: "starting".to_string(),
+        backend_json: descriptor.to_json(),
+        command: created.run_command.clone(),
+        created_at: now_ms(),
+        updated_at: now_ms(),
+        ended_at: None,
+        exit_code: None,
+    })?;
+    if let Err(err) = crate::client::update_external_run(
+        creds,
+        &run_id,
+        serde_json::json!({ "backend": serde_json::to_value(&descriptor)? }),
+    )
+    .await
+    {
+        eprintln!("warning: could not mirror the job handle to the api: {err}");
+    }
+
+    // Detach the supervisor: it tails logs, mirrors transitions, and uploads
+    // the final log. Survives this process exiting (new process group).
+    spawn_detached_supervise(&run_id)?;
+
+    println!("\u{2713} Hugging Face job submitted.");
+    println!("  run    {run_id}");
+    println!("  job    {}/{} ({flavor})", namespace, job.id);
+    println!("  watch  {}", descriptor.url.as_deref().unwrap_or(""));
+    println!(
+        "  Follow it with `orx exp wait {}` or `orx logs {run_id}`.",
+        args.exp_id
+    );
+    Ok(())
+}
+
+/// Default docker image per flavor family: plain python for CPU flavors, a
+/// CUDA-ready pytorch image for GPU flavors. Override with --image.
+fn default_hf_image(flavor: &str) -> String {
+    if flavor.starts_with("cpu") {
+        "python:3.12".to_string()
+    } else {
+        "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime".to_string()
+    }
+}
+
+/// Spawn `orx supervise <runId>` fully detached (own process group, no stdio),
+/// so it outlives this command and any SSH session that launched it.
+fn spawn_detached_supervise(run_id: &str) -> Result<()> {
+    let exe = std::env::current_exe().map_err(|e| {
+        anyhow!(
+            "Could not locate the orx binary to spawn the supervisor: {}",
+            e
+        )
+    })?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("supervise")
+        .arg(run_id)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd.spawn()
+        .map_err(|e| anyhow!("Could not spawn `orx supervise {}`: {}", run_id, e))?;
     Ok(())
 }
 
