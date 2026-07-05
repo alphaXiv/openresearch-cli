@@ -1111,6 +1111,10 @@ pub struct ExternalRunCreated {
     pub branch_name: String,
     pub github_owner: String,
     pub github_repo: String,
+    /// Short-lived repo-scoped read token from the org's connected GitHub app,
+    /// for the job's private-repo clone. Null for mint failures.
+    #[serde(default)]
+    pub github_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

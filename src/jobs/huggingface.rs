@@ -23,15 +23,18 @@ pub fn endpoint() -> String {
     std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string())
 }
 
-/// Resolve the HF token the way the hf CLI does: `HF_TOKEN` env first, then
-/// the CLI's token file. On agent boxes the org's connected credential arrives
-/// as HF_TOKEN via env sync.
+/// Resolve the HF token: `HF_TOKEN` env first, then the box's synced env file
+/// (`~/.openresearch/env` — where the org credential/env-var lands, invisible
+/// to non-interactive shells), then the hf CLI's token file.
 pub fn resolve_token() -> Result<String> {
     if let Ok(tok) = std::env::var("HF_TOKEN") {
         let tok = tok.trim().to_string();
         if !tok.is_empty() {
             return Ok(tok);
         }
+    }
+    if let Some(tok) = crate::config::synced_env_var("HF_TOKEN") {
+        return Ok(tok);
     }
     let path = dirs::home_dir()
         .unwrap_or_default()

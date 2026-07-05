@@ -525,10 +525,17 @@ async fn launch_hf(creds: &crate::config::Credentials, args: ExpRunArgs) -> Resu
 
     let mut secrets = HashMap::new();
     secrets.insert("HF_TOKEN".to_string(), token.clone());
-    if let Ok(gh) = std::env::var("GITHUB_TOKEN") {
-        if !gh.trim().is_empty() {
-            secrets.insert("GITHUB_TOKEN".to_string(), gh);
-        }
+    // Clone credential precedence: explicit GITHUB_TOKEN (env, then the box's
+    // synced env file) overrides; otherwise the api's repo-scoped installation
+    // token flows automatically from the org's connected GitHub app — a
+    // private repo needs zero extra setup beyond having connected it.
+    let github_token = std::env::var("GITHUB_TOKEN")
+        .ok()
+        .filter(|t| !t.trim().is_empty())
+        .or_else(|| crate::config::synced_env_var("GITHUB_TOKEN"))
+        .or_else(|| created.github_token.clone());
+    if let Some(gh) = github_token {
+        secrets.insert("GITHUB_TOKEN".to_string(), gh);
     }
     let mut labels = HashMap::new();
     labels.insert("or_run".to_string(), run_id.clone());
