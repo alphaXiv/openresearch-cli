@@ -192,7 +192,7 @@ pub async fn stream_logs(
     job_id: &str,
     skip: u64,
     idle_timeout: Duration,
-    sink: &mut dyn FnMut(&str),
+    sink: &mut (dyn FnMut(&str) + Send),
 ) -> Result<u64> {
     #[derive(Deserialize)]
     struct LogEvent {

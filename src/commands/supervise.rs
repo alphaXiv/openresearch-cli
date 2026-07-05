@@ -2,9 +2,10 @@
 //!
 //! Spawned detached by `orx exp run --backend hf`; restart-idempotent (state
 //! is the local store + the backend itself, and log dedup resumes from the
-//! store's log file). Loop: tail backend logs into the run's log file, poll
-//! job state, mirror transitions to the api (whose PATCH response carries
-//! cancel intent), and on terminal status upload the log via presigned PUT.
+//! store's log file). Two concurrent halves: a tail task streams backend logs
+//! into the run's log file, while the main loop polls job state, mirrors
+//! transitions to the api (whose PATCH response carries cancel intent), and on
+//! terminal status uploads the log via presigned PUT.
 //!
 //! API unreachability never kills supervision: the local store stays correct
 //! and mirroring resumes on the next transition.
@@ -41,42 +42,28 @@ pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
 
     eprintln!("supervise {run_id}: watching hf job {namespace}/{job_id}");
 
-    // Resume-aware log sink: append to the run's log file. `events_seen` dedups
-    // the SSE replay across reconnects; on a supervisor restart we conservatively
-    // start from 0 events but truncate the file first so the file never doubles.
+    // Log tailing runs CONCURRENTLY with status polling — never in series.
+    // `stream_logs` blocks for as long as the job keeps printing, so a
+    // sequential loop would sit inside the stream until the job ended and only
+    // then report `running`… as `done` (the UI would see no live run at all,
+    // then the whole log at once). The tail task owns the log file; this loop
+    // owns status, mirroring, and cancel intent.
     let path = log_path(&run_id);
-    let mut log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&path)
-        .map_err(|e| anyhow!("Could not open {}: {}", path.display(), e))?;
-    let mut events_seen = 0u64;
+    let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+    let mut log_task = tokio::spawn(tail_logs(
+        token.clone(),
+        namespace.clone(),
+        job_id.clone(),
+        path.clone(),
+        run_id.clone(),
+        done_rx,
+    ));
 
     let mut last_status = stored.status.clone();
     let mut cancel_sent = false;
 
     loop {
-        // 1) Drain whatever logs are available (returns on idle/close).
-        let mut sink = |line: &str| {
-            let _ = writeln!(log_file, "{line}");
-        };
-        match hf::stream_logs(
-            &token,
-            &namespace,
-            &job_id,
-            events_seen,
-            LOG_IDLE,
-            &mut sink,
-        )
-        .await
-        {
-            Ok(seen) => events_seen = seen,
-            Err(err) => eprintln!("supervise {run_id}: log stream error (will retry): {err}"),
-        }
-        let _ = log_file.flush();
-
-        // 2) Where is the job now?
+        // Where is the job now?
         let job = match hf::inspect_job(&token, &namespace, &job_id).await {
             Ok(j) => j,
             Err(err) => {
@@ -88,12 +75,19 @@ pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
         let stage = job.status.stage.as_str();
         let status = stage_to_run_status(stage).to_string();
 
-        // 3) Terminal: persist everything BEFORE reporting the final status, so
-        // the moment the UI sees done/failed the R2 log already exists (the
-        // run page switches from live tail to the persisted log on that flip).
+        // Terminal: let the tail drain the stream's remainder, then persist
+        // everything BEFORE reporting the final status, so the moment the UI
+        // sees done/failed the R2 log already exists (the run page switches
+        // from live tail to the persisted log on that flip).
         if is_terminal_stage(stage) {
             store.update_status(&run_id, &status, Some(now_ms()), None)?;
-            let _ = log_file.flush();
+            let _ = done_tx.send(true);
+            if tokio::time::timeout(Duration::from_secs(20), &mut log_task)
+                .await
+                .is_err()
+            {
+                log_task.abort();
+            }
             if let Ok(bytes) = std::fs::read(&path) {
                 if !bytes.is_empty() {
                     match presign_external_run_log(&creds, &run_id).await {
@@ -119,7 +113,7 @@ pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
             return Ok(());
         }
 
-        // 3b) Mirror a live transition (local store first — it's the truth).
+        // Mirror a live transition (local store first — it's the truth).
         if status != last_status {
             store.update_status(&run_id, &status, None, None)?;
             let cancel_requested = mirror_status(&creds, &run_id, &status, &job.status.message)
@@ -164,6 +158,50 @@ async fn mirror_status(
     }
     let patched = update_external_run(creds, run_id, body).await?;
     Ok(patched.cancel_requested)
+}
+
+/// Tail the job's log stream into the run's log file until told we're done.
+/// Reconnects forever (HF replays from the start; `seen` dedups), so a network
+/// blip or the stream's own idle-close never loses the tail. Truncates on
+/// open: a restarted supervisor rewrites the file from event zero rather than
+/// appending a duplicate history.
+async fn tail_logs(
+    token: String,
+    namespace: String,
+    job_id: String,
+    path: std::path::PathBuf,
+    run_id: String,
+    done: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut log_file = match std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&path)
+    {
+        Ok(f) => f,
+        Err(err) => {
+            eprintln!("supervise {run_id}: could not open {}: {err}", path.display());
+            return;
+        }
+    };
+    let mut seen = 0u64;
+    loop {
+        let mut sink = |line: &str| {
+            let _ = writeln!(log_file, "{line}");
+        };
+        match hf::stream_logs(&token, &namespace, &job_id, seen, LOG_IDLE, &mut sink).await {
+            Ok(s) => seen = s,
+            Err(err) => eprintln!("supervise {run_id}: log stream error (will retry): {err}"),
+        }
+        let _ = log_file.flush();
+        // Between passes: exit once the job is terminal (the closed stream has
+        // been fully drained by the pass above); otherwise breathe and retry.
+        if *done.borrow() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
 }
 
 async fn request_backend_cancel(
