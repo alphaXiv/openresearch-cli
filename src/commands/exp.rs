@@ -525,10 +525,14 @@ async fn launch_hf(creds: &crate::config::Credentials, args: ExpRunArgs) -> Resu
 
     let mut secrets = HashMap::new();
     secrets.insert("HF_TOKEN".to_string(), token.clone());
-    if let Ok(gh) = std::env::var("GITHUB_TOKEN") {
-        if !gh.trim().is_empty() {
-            secrets.insert("GITHUB_TOKEN".to_string(), gh);
-        }
+    // Env first, then the box's synced env file (non-interactive shells never
+    // source it) — same resolution order as the HF token.
+    let github_token = std::env::var("GITHUB_TOKEN")
+        .ok()
+        .filter(|t| !t.trim().is_empty())
+        .or_else(|| crate::config::synced_env_var("GITHUB_TOKEN"));
+    if let Some(gh) = github_token {
+        secrets.insert("GITHUB_TOKEN".to_string(), gh);
     }
     let mut labels = HashMap::new();
     labels.insert("or_run".to_string(), run_id.clone());
