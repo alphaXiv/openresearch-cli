@@ -16,6 +16,16 @@ use crate::config::Credentials;
 use crate::error::{anyhow, require_credentials, Result};
 
 pub async fn run(args: crate::ReportArgs) -> Result<()> {
+    let project_id = match &args.command {
+        crate::ReportCommand::Upload { project_id, .. }
+        | crate::ReportCommand::List { project_id }
+        | crate::ReportCommand::Show { project_id, .. }
+        | crate::ReportCommand::Download { project_id, .. } => project_id,
+    };
+    let store = crate::store::Store::open()?;
+    if store.get_local_project(project_id)?.is_some() {
+        return Err(crate::local::unsupported("report"));
+    }
     match args.command {
         crate::ReportCommand::Upload {
             project_id,

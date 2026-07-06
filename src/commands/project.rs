@@ -16,6 +16,13 @@ use crate::error::{anyhow, require_credentials, Result};
 use crate::ProjectCommand;
 
 pub async fn run(args: crate::ProjectArgs) -> Result<()> {
+    let project_id = match &args.command {
+        ProjectCommand::View { project_id } | ProjectCommand::Edit { project_id, .. } => project_id,
+    };
+    let store = crate::store::Store::open()?;
+    if store.get_local_project(project_id)?.is_some() {
+        return Err(crate::local::unsupported("project"));
+    }
     let creds = require_credentials().await;
     match args.command {
         ProjectCommand::View { project_id } => view(&creds, &project_id).await,

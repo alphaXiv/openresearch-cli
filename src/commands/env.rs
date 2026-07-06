@@ -8,6 +8,10 @@ use crate::error::{require_credentials, Result};
 
 /// Lists a project's effective env var names, grouped by source.
 pub async fn run(args: crate::EnvArgs) -> Result<()> {
+    let store = crate::store::Store::open()?;
+    if store.get_local_project(&args.project_id)?.is_some() {
+        return Err(crate::local::unsupported("env"));
+    }
     let creds = require_credentials().await;
     let mut env_vars = list_env_var_names(&creds, &args.project_id).await?.env_vars;
 

@@ -170,6 +170,10 @@ pub async fn run(args: crate::ChartArgs) -> Result<()> {
         }
     }
 
+    let store = crate::store::Store::open()?;
+    if store.get_local_project(&args.project_id)?.is_some() {
+        return Err(crate::local::unsupported("chart"));
+    }
     let creds = require_credentials().await;
     let body = WandbChartBody {
         metric_key: metric.to_string(),

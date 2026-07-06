@@ -19,24 +19,58 @@ use crate::client::{
 };
 use crate::error::{anyhow, require_credentials, Result};
 use crate::jobs::{huggingface as hf, BackendDescriptor};
+use crate::local::model::LocalExperiment;
 use crate::output::{format_duration, run_failure_detail};
 use crate::store::{now_ms, Store, StoredRun};
 use crate::{ExpCommand, ExpRunArgs};
 
 pub async fn run(args: crate::ExpArgs) -> Result<()> {
-    let creds = require_credentials().await;
+    // Local-mode detection first: an id in `local_experiments` takes the local
+    // path, and credentials are only required on the server path (a local-only
+    // user may never have logged in).
+    let store = Store::open()?;
     match args.command {
-        ExpCommand::Status { exp_id } => status(&creds, &exp_id).await,
-        ExpCommand::Cmd { exp_id, set } => cmd(&creds, &exp_id, set).await,
-        ExpCommand::Desc { exp_id, set, stdin } => desc(&creds, &exp_id, set, stdin).await,
-        ExpCommand::Run(run_args) => launch(&creds, run_args).await,
-        ExpCommand::Cancel { exp_id } => cancel(&creds, &exp_id).await,
+        ExpCommand::Status { exp_id } => {
+            if let Some(exp) = store.get_local_experiment(&exp_id)? {
+                return local_status(&store, &exp);
+            }
+            let creds = require_credentials().await;
+            status(&creds, &exp_id).await
+        }
+        ExpCommand::Cmd { exp_id, set } => {
+            if store.get_local_experiment(&exp_id)?.is_some() {
+                return Err(crate::local::unsupported("exp cmd"));
+            }
+            let creds = require_credentials().await;
+            cmd(&creds, &exp_id, set).await
+        }
+        ExpCommand::Desc { exp_id, set, stdin } => {
+            if let Some(exp) = store.get_local_experiment(&exp_id)? {
+                return local_desc(&store, exp, set, stdin).await;
+            }
+            let creds = require_credentials().await;
+            desc(&creds, &exp_id, set, stdin).await
+        }
+        ExpCommand::Run(run_args) => {
+            if store.get_local_experiment(&run_args.exp_id)?.is_some() {
+                return local_launch(run_args).await;
+            }
+            let creds = require_credentials().await;
+            launch(&creds, run_args).await
+        }
+        ExpCommand::Cancel { exp_id } => {
+            if let Some(exp) = store.get_local_experiment(&exp_id)? {
+                return local_cancel(&store, &exp);
+            }
+            let creds = require_credentials().await;
+            cancel(&creds, &exp_id).await
+        }
         ExpCommand::Wait {
             exp_id,
             project,
             timeout,
             interval,
-        } => wait(&creds, exp_id, project, timeout, interval).await,
+        } => wait(&store, exp_id, project, timeout, interval).await,
     }
 }
 
@@ -54,7 +88,7 @@ fn is_terminal(status: &str) -> bool {
 /// Polls every `--interval` seconds (default 5), gives up after `--timeout`
 /// seconds (default 1800) with a non-zero exit so callers can branch on it.
 async fn wait(
-    creds: &crate::config::Credentials,
+    store: &Store,
     exp_id: Option<String>,
     project: Option<String>,
     timeout: Option<u64>,
@@ -69,8 +103,20 @@ async fn wait(
             "Specify what to wait on: `orx exp wait <expId>` (one run) or \
              `orx exp wait --project <projectId>` (any run in a project)."
         )),
-        (Some(exp_id), None) => wait_experiment(creds, &exp_id, interval, deadline).await,
-        (None, Some(project_id)) => wait_project(creds, &project_id, interval, deadline).await,
+        (Some(exp_id), None) => {
+            if store.get_local_experiment(&exp_id)?.is_some() {
+                return local_wait_experiment(store, &exp_id, interval, deadline).await;
+            }
+            let creds = require_credentials().await;
+            wait_experiment(&creds, &exp_id, interval, deadline).await
+        }
+        (None, Some(project_id)) => {
+            if store.get_local_project(&project_id)?.is_some() {
+                return local_wait_project(store, &project_id, interval, deadline).await;
+            }
+            let creds = require_credentials().await;
+            wait_project(&creds, &project_id, interval, deadline).await
+        }
     }
 }
 
@@ -332,24 +378,28 @@ async fn cmd(creds: &crate::config::Credentials, exp_id: &str, set: Option<Strin
 
 /// `orx exp desc <expId> [--set <text> | --stdin]` — view or overwrite the
 /// experiment's free-form description / notes (the existing `description` field).
+/// Resolve the new description for `exp desc`, if this is a write. `--set`
+/// and `--stdin` are mutually exclusive; either present means "overwrite".
+async fn resolve_desc_input(set: Option<String>, stdin: bool) -> Result<Option<String>> {
+    match (set, stdin) {
+        (Some(_), true) => Err(anyhow!("Pass either --set or --stdin, not both.")),
+        (Some(text), false) => Ok(Some(text)),
+        (None, true) => {
+            let mut buf = String::new();
+            tokio::io::stdin().read_to_string(&mut buf).await?;
+            Ok(Some(buf))
+        }
+        (None, false) => Ok(None),
+    }
+}
+
 async fn desc(
     creds: &crate::config::Credentials,
     exp_id: &str,
     set: Option<String>,
     stdin: bool,
 ) -> Result<()> {
-    // Resolve the new value, if this is a write. `--set` and `--stdin` are
-    // mutually exclusive; either present means "overwrite".
-    let new_desc = match (set, stdin) {
-        (Some(_), true) => return Err(anyhow!("Pass either --set or --stdin, not both.")),
-        (Some(text), false) => Some(text),
-        (None, true) => {
-            let mut buf = String::new();
-            tokio::io::stdin().read_to_string(&mut buf).await?;
-            Some(buf)
-        }
-        (None, false) => None,
-    };
+    let new_desc = resolve_desc_input(set, stdin).await?;
 
     match new_desc {
         // Write path: overwrite the whole description.
@@ -510,17 +560,11 @@ async fn launch_hf(creds: &crate::config::Credentials, args: ExpRunArgs) -> Resu
         .image
         .clone()
         .unwrap_or_else(|| default_hf_image(&flavor));
-    // Clone the experiment branch tip and run the fixed command. GITHUB_TOKEN
-    // (passed as a job secret when present locally) authenticates private
-    // repos via bash's ${VAR:+...} — the URL stays tokenless without it.
-    let script = format!(
-        "set -eo pipefail; command -v git >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq git); \
-         git clone --depth 1 --branch {branch} \"https://${{GITHUB_TOKEN:+x-access-token:${{GITHUB_TOKEN}}@}}github.com/{owner}/{repo}.git\" repo; \
-         cd repo; {cmd}",
-        branch = created.branch_name,
-        owner = created.github_owner,
-        repo = created.github_repo,
-        cmd = created.run_command,
+    let script = hf_clone_script(
+        &created.branch_name,
+        &created.github_owner,
+        &created.github_repo,
+        &created.run_command,
     );
 
     let mut secrets = HashMap::new();
@@ -575,6 +619,9 @@ async fn launch_hf(creds: &crate::config::Credentials, args: ExpRunArgs) -> Resu
         updated_at: now_ms(),
         ended_at: None,
         exit_code: None,
+        commit_sha: None,
+        result_markdown: None,
+        cancel_requested: false,
     })?;
     if let Err(err) = crate::client::update_external_run(
         creds,
@@ -601,9 +648,20 @@ async fn launch_hf(creds: &crate::config::Credentials, args: ExpRunArgs) -> Resu
     Ok(())
 }
 
+/// Clone the experiment branch tip and run the fixed command. GITHUB_TOKEN
+/// (passed as a job secret when present locally) authenticates private
+/// repos via bash's ${VAR:+...} — the URL stays tokenless without it.
+pub(crate) fn hf_clone_script(branch: &str, owner: &str, repo: &str, cmd: &str) -> String {
+    format!(
+        "set -eo pipefail; command -v git >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq git); \
+         git clone --depth 1 --branch {branch} \"https://${{GITHUB_TOKEN:+x-access-token:${{GITHUB_TOKEN}}@}}github.com/{owner}/{repo}.git\" repo; \
+         cd repo; {cmd}"
+    )
+}
+
 /// Default docker image per flavor family: plain python for CPU flavors, a
 /// CUDA-ready pytorch image for GPU flavors. Override with --image.
-fn default_hf_image(flavor: &str) -> String {
+pub(crate) fn default_hf_image(flavor: &str) -> String {
     if flavor.starts_with("cpu") {
         "python:3.12".to_string()
     } else {
@@ -613,7 +671,7 @@ fn default_hf_image(flavor: &str) -> String {
 
 /// Spawn `orx supervise <runId>` fully detached (own process group, no stdio),
 /// so it outlives this command and any SSH session that launched it.
-fn spawn_detached_supervise(run_id: &str) -> Result<()> {
+pub(crate) fn spawn_detached_supervise(run_id: &str) -> Result<()> {
     let exe = std::env::current_exe().map_err(|e| {
         anyhow!(
             "Could not locate the orx binary to spawn the supervisor: {}",
@@ -641,4 +699,200 @@ async fn cancel(creds: &crate::config::Credentials, exp_id: &str) -> Result<()> 
     cancel_experiment_run(creds, exp_id).await?;
     println!("\u{2713} Run cancelled.");
     Ok(())
+}
+
+// --- local mode (orx up) ---
+
+/// Local `exp status`: the store row plus its latest run.
+fn local_status(store: &Store, exp: &LocalExperiment) -> Result<()> {
+    println!("{}  ({})  [local]", exp.display_name(), exp.agent_status);
+    println!("  id:       {}", exp.id);
+    println!("  branch:   {}", exp.branch_name);
+    match &exp.parent_experiment_id {
+        Some(parent_id) => match store.get_local_experiment(parent_id)? {
+            Some(parent) => println!("  parent:   {} (branch {})", parent_id, parent.branch_name),
+            None => println!("  parent:   {}", parent_id),
+        },
+        None => println!("  parent:   — (root experiment)"),
+    }
+    if exp.run_command.is_empty() {
+        println!("  command:  — (not set)");
+    } else {
+        println!("  command:  {}", exp.run_command);
+    }
+
+    match store.latest_run_for_experiment(&exp.id)? {
+        Some(r) => {
+            let commit = r
+                .commit_sha
+                .as_deref()
+                .map(|s| s.chars().take(7).collect::<String>())
+                .unwrap_or_else(|| "—".to_string());
+            println!(
+                "  last run: {} ({}, commit {}, ran {}, updated {})",
+                r.id,
+                r.status,
+                commit,
+                format_duration(crate::local::run_duration_secs(&r)),
+                crate::local::fmt_ago(r.updated_at)
+            );
+            if let Some(detail) = crate::local::run_failure_detail(&r) {
+                println!("  {detail}");
+            }
+            if let Some(sha) = &r.commit_sha {
+                println!("  commit:   {}", sha);
+            }
+        }
+        None => println!("  last run: — (never run)"),
+    }
+    Ok(())
+}
+
+/// Local `exp desc`: read/write the description on the store row.
+async fn local_desc(
+    store: &Store,
+    mut exp: LocalExperiment,
+    set: Option<String>,
+    stdin: bool,
+) -> Result<()> {
+    match resolve_desc_input(set, stdin).await? {
+        Some(description) => {
+            exp.description = Some(description);
+            store.update_local_experiment(&exp)?;
+            println!("\u{2713} Description saved.");
+        }
+        None => match exp.description.as_deref().filter(|d| !d.trim().is_empty()) {
+            Some(d) => println!("{d}"),
+            None => eprintln!(
+                "No description set. Add one with `orx exp desc {} --set \"…\"` \
+                 or pipe a file: `cat notes.md | orx exp desc {} --stdin`.",
+                exp.id, exp.id
+            ),
+        },
+    }
+    Ok(())
+}
+
+/// Local `exp run`: external backends only — HF Jobs for v1.
+async fn local_launch(args: ExpRunArgs) -> Result<()> {
+    match args.backend.as_deref() {
+        Some("hf") => crate::local::hf::launch_local_hf(&args).await,
+        Some(other) => Err(anyhow!(
+            "Unknown --backend '{}'. Local experiments support: hf (Hugging Face Jobs).",
+            other
+        )),
+        None => Err(anyhow!(
+            "Local experiments run on external compute only. \
+             Pass `--backend hf --flavor <flavor>` (e.g. --flavor a10g-small)."
+        )),
+    }
+}
+
+/// Local `exp cancel`: flag cancel intent on every in-flight run (concurrent
+/// runs are possible via --force); the local supervisors cancel the HF jobs.
+fn local_cancel(store: &Store, exp: &LocalExperiment) -> Result<()> {
+    let in_flight: Vec<_> = store
+        .list_runs_by_experiment(&exp.id)?
+        .into_iter()
+        .filter(|r| !is_terminal(&r.status))
+        .collect();
+    if in_flight.is_empty() {
+        return Err(anyhow!("No run in flight for this experiment."));
+    }
+    for r in &in_flight {
+        store.set_cancel_requested(&r.id, true)?;
+        println!("\u{2713} Cancel requested for run {}.", r.id);
+    }
+    Ok(())
+}
+
+/// Local twin of `wait_experiment`: poll the store's latest run until terminal.
+async fn local_wait_experiment(
+    store: &Store,
+    exp_id: &str,
+    interval: Duration,
+    deadline: Instant,
+) -> Result<()> {
+    let mut last_status: Option<String> = None;
+    loop {
+        match store.latest_run_for_experiment(exp_id)? {
+            None => {
+                if last_status.is_none() {
+                    eprintln!("No run yet for this experiment — waiting for one to start…");
+                    last_status = Some(String::new());
+                }
+            }
+            Some(r) => {
+                if last_status.as_deref() != Some(r.status.as_str()) {
+                    eprintln!("{}  {}", r.id, r.status);
+                    last_status = Some(r.status.clone());
+                }
+                if is_terminal(&r.status) {
+                    println!("{} {}", r.id, r.status);
+                    if let Some(detail) = crate::local::run_failure_detail(&r) {
+                        eprintln!("{detail}");
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        sleep_until_or_timeout(interval, deadline).await?;
+    }
+}
+
+/// Local twin of `wait_project`: same edge-trigger semantics over the store.
+async fn local_wait_project(
+    store: &Store,
+    project_id: &str,
+    interval: Duration,
+    deadline: Instant,
+) -> Result<()> {
+    let snapshot: HashMap<String, String> = store
+        .list_runs_by_project(project_id)?
+        .into_iter()
+        .map(|r| (r.id, r.status))
+        .collect();
+    let in_flight = snapshot.values().filter(|s| !is_terminal(s)).count();
+
+    if in_flight == 0 {
+        eprintln!(
+            "No runs in flight in this project ({} run(s), all terminal).",
+            snapshot.len()
+        );
+        println!("drained: no runs in flight");
+        return Ok(());
+    }
+
+    eprintln!(
+        "Watching {} run(s) in project ({} in flight) — returning on the first completion…",
+        snapshot.len(),
+        in_flight
+    );
+
+    loop {
+        sleep_until_or_timeout(interval, deadline).await?;
+
+        let current = store.list_runs_by_project(project_id)?;
+        let mut completed: Vec<(String, Option<String>)> = Vec::new();
+        for r in &current {
+            if !is_terminal(&r.status) {
+                continue;
+            }
+            let line = match snapshot.get(&r.id) {
+                Some(prev) if is_terminal(prev) => continue,
+                Some(prev) => format!("{} {} -> {}", r.id, prev, r.status),
+                None => format!("{} {} (new)", r.id, r.status),
+            };
+            completed.push((line, crate::local::run_failure_detail(r)));
+        }
+        if !completed.is_empty() {
+            for (line, detail) in &completed {
+                println!("{line}");
+                if let Some(detail) = detail {
+                    eprintln!("{detail}");
+                }
+            }
+            return Ok(());
+        }
+    }
 }

@@ -11,6 +11,10 @@ use crate::error::require_credentials;
 use crate::error::{anyhow, Result};
 
 pub async fn run(args: crate::ArtifactArgs) -> Result<()> {
+    let store = crate::store::Store::open()?;
+    if crate::local::local_run(&store, &args.run_id)?.is_some() {
+        return Err(crate::local::unsupported("artifact"));
+    }
     let creds = require_credentials().await;
 
     let mode = if args.head { "head" } else { "tail" };

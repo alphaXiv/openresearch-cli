@@ -17,6 +17,9 @@ mod commands;
 mod config;
 mod error;
 mod jobs;
+// Local mode (`orx up`): builds out across stages; not all of it is wired yet.
+#[allow(dead_code)]
+mod local;
 mod output;
 mod store;
 mod updates;
@@ -132,6 +135,10 @@ enum Command {
     /// api, honor cancel intent. Spawned detached by `exp run --backend hf`;
     /// safe to re-run after a crash or box replacement.
     Supervise(SuperviseArgs),
+
+    /// Start the local autoresearch dashboard on 127.0.0.1: embedded UI,
+    /// JSON/SSE API over the local store, and the opencode agent proxy.
+    Up(UpArgs),
 }
 
 #[derive(Args, Debug)]
@@ -540,6 +547,22 @@ pub struct SuperviseArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct UpArgs {
+    /// Port to bind on 127.0.0.1.
+    #[arg(long, default_value_t = 4791)]
+    pub port: u16,
+    /// Don't open the dashboard in the browser on startup.
+    #[arg(long)]
+    pub no_browser: bool,
+    /// Don't spawn the opencode agent on startup (for tests).
+    #[arg(long)]
+    pub no_agent: bool,
+    /// opencode model override, e.g. `anthropic/claude-sonnet-4-5`.
+    #[arg(long)]
+    pub model: Option<String>,
+}
+
+#[derive(Args, Debug)]
 pub struct SkillArgs {
     pub path: Option<String>,
 }
@@ -655,5 +678,6 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Update(args) => commands::update::run(args).await,
         Command::Serve(args) => commands::serve::run(args).await,
         Command::Supervise(args) => commands::supervise::run(args).await,
+        Command::Up(args) => commands::up::run(args).await,
     }
 }

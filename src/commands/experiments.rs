@@ -8,6 +8,10 @@ use crate::error::{require_credentials, Result};
 
 /// Lists a project's experiments as an indented tree (by parentExperimentId).
 pub async fn run(args: crate::ExperimentsArgs) -> Result<()> {
+    let store = crate::store::Store::open()?;
+    if store.get_local_project(&args.project_id)?.is_some() {
+        return Err(crate::local::unsupported("experiments"));
+    }
     let creds = require_credentials().await;
     let experiments = list_experiments(&creds, &args.project_id)
         .await?

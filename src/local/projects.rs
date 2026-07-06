@@ -1,0 +1,75 @@
+//! Local project creation — clone the repo, insert the project row and its
+//! baseline root experiment. Used by the `orx up` HTTP API (`POST /api/projects`).
+
+use std::collections::HashSet;
+
+use crate::error::Result;
+use crate::store::{now_ms, Store};
+
+use super::model::{LocalExperiment, LocalProject};
+use super::{experiments, git, slugify};
+
+fn unique_project_slug(store: &Store, base: &str) -> Result<String> {
+    let taken: HashSet<String> = store
+        .list_local_projects()?
+        .into_iter()
+        .map(|p| p.slug)
+        .collect();
+    if !taken.contains(base) {
+        return Ok(base.to_string());
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{base}-{n}");
+        if !taken.contains(&candidate) {
+            return Ok(candidate);
+        }
+        n += 1;
+    }
+}
+
+/// Clone the repo and create the project plus its root "baseline" experiment
+/// (parent NULL, branch = baseline branch, command = the project default).
+pub fn create_project(
+    store: &Store,
+    name: &str,
+    github_owner: &str,
+    github_repo: &str,
+    baseline_branch: Option<String>,
+    run_command: Option<String>,
+) -> Result<(LocalProject, LocalExperiment)> {
+    let baseline_branch = baseline_branch
+        .filter(|b| !b.trim().is_empty())
+        .unwrap_or_else(|| "main".to_string());
+    let slug = unique_project_slug(store, &slugify(name))?;
+    let repo_path = git::ensure_clone(github_owner, github_repo, &baseline_branch)?;
+
+    let now = now_ms();
+    let project = LocalProject {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: name.to_string(),
+        slug,
+        github_owner: github_owner.to_string(),
+        github_repo: github_repo.to_string(),
+        baseline_branch,
+        repo_path: repo_path.to_string_lossy().to_string(),
+        run_command: run_command.filter(|c| !c.trim().is_empty()),
+        created_at: now,
+        updated_at: now,
+    };
+    // One transaction: a project without its baseline root must never persist
+    // (a failed baseline insert would orphan the project and burn its slug).
+    let tx = store.begin()?;
+    store.create_local_project(&project)?;
+    let baseline = experiments::create_experiment(
+        store,
+        &project,
+        None,
+        Some("baseline"),
+        Some("Baseline".to_string()),
+        None,
+        project.run_command.clone(),
+    )?;
+    tx.commit()?;
+    Ok((project, baseline))
+}

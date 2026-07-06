@@ -9,6 +9,10 @@
 //!
 //! API unreachability never kills supervision: the local store stays correct
 //! and mirroring resumes on the next transition.
+//!
+//! Local-mode runs (`orx up`, experiment in `local_experiments`) skip the api
+//! entirely: no credentials, no mirror, no upload — cancel intent comes from
+//! the local run row's `cancel_requested` flag instead.
 
 use std::io::Write as _;
 use std::time::Duration;
@@ -27,13 +31,19 @@ const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const LOG_IDLE: Duration = Duration::from_secs(30);
 
 pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
-    let creds = require_credentials().await;
     let run_id = args.run_id;
 
     let store = Store::open()?;
     let stored = store
         .get_run(&run_id)?
         .ok_or_else(|| anyhow!("Run {} not found in the local store.", run_id))?;
+    // Local runs never touch client.rs; credentials load only on the server path.
+    let local = store.get_local_experiment(&stored.experiment_id)?.is_some();
+    let creds = if local {
+        None
+    } else {
+        Some(require_credentials().await)
+    };
     let descriptor = BackendDescriptor::parse(&stored.backend_json)?;
     let (namespace, job_id) = descriptor.hf_ref()?;
     let namespace = namespace.to_string();
@@ -81,6 +91,17 @@ pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
         // from live tail to the persisted log on that flip).
         if is_terminal_stage(stage) {
             store.update_status(&run_id, &status, Some(now_ms()), None)?;
+            // Local runs record the failure reason on the row itself — that's
+            // what `orx logs`-adjacent surfaces (exp status, runs) read.
+            if creds.is_none() && status == "failed" {
+                if let Some(msg) = &job.status.message {
+                    if let Err(err) =
+                        store.set_result_markdown(&run_id, &format!("Job failed: {msg}"))
+                    {
+                        eprintln!("supervise {run_id}: could not record failure reason: {err}");
+                    }
+                }
+            }
             let _ = done_tx.send(true);
             if tokio::time::timeout(Duration::from_secs(20), &mut log_task)
                 .await
@@ -88,26 +109,29 @@ pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
             {
                 log_task.abort();
             }
-            if let Ok(bytes) = std::fs::read(&path) {
-                if !bytes.is_empty() {
-                    match presign_external_run_log(&creds, &run_id).await {
-                        Ok(presigned) => {
-                            if let Err(err) = upload_to_presigned(
-                                &presigned.url,
-                                "application/octet-stream",
-                                bytes,
-                            )
-                            .await
-                            {
-                                eprintln!("supervise {run_id}: log upload failed: {err}");
+            if let Some(creds) = &creds {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    if !bytes.is_empty() {
+                        match presign_external_run_log(creds, &run_id).await {
+                            Ok(presigned) => {
+                                if let Err(err) = upload_to_presigned(
+                                    &presigned.url,
+                                    "application/octet-stream",
+                                    bytes,
+                                )
+                                .await
+                                {
+                                    eprintln!("supervise {run_id}: log upload failed: {err}");
+                                }
                             }
+                            Err(err) => eprintln!("supervise {run_id}: log presign failed: {err}"),
                         }
-                        Err(err) => eprintln!("supervise {run_id}: log presign failed: {err}"),
                     }
                 }
-            }
-            if let Err(err) = mirror_status(&creds, &run_id, &status, &job.status.message).await {
-                eprintln!("supervise {run_id}: final status mirror failed: {err}");
+                if let Err(err) = mirror_status(creds, &run_id, &status, &job.status.message).await
+                {
+                    eprintln!("supervise {run_id}: final status mirror failed: {err}");
+                }
             }
             eprintln!("supervise {run_id}: finished ({status})");
             return Ok(());
@@ -116,9 +140,12 @@ pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
         // Mirror a live transition (local store first — it's the truth).
         if status != last_status {
             store.update_status(&run_id, &status, None, None)?;
-            let cancel_requested = mirror_status(&creds, &run_id, &status, &job.status.message)
-                .await
-                .unwrap_or(false);
+            let cancel_requested = match &creds {
+                Some(creds) => mirror_status(creds, &run_id, &status, &job.status.message)
+                    .await
+                    .unwrap_or(false),
+                None => local_cancel_requested(&store, &run_id),
+            };
             eprintln!("supervise {run_id}: {last_status} -> {status} (stage {stage})");
             last_status = status.clone();
             if cancel_requested && !cancel_sent {
@@ -127,16 +154,32 @@ pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
             }
         } else if !cancel_sent {
             // No transition to report — poll cancel intent cheaply instead.
-            if let Ok(state) = crate::client::get_external_run_state(&creds, &run_id).await {
-                if state.cancel_requested {
-                    request_backend_cancel(&token, &namespace, &job_id, &run_id, &mut cancel_sent)
-                        .await;
-                }
+            let cancel_requested = match &creds {
+                Some(creds) => crate::client::get_external_run_state(creds, &run_id)
+                    .await
+                    .map(|s| s.cancel_requested)
+                    .unwrap_or(false),
+                None => local_cancel_requested(&store, &run_id),
+            };
+            if cancel_requested {
+                request_backend_cancel(&token, &namespace, &job_id, &run_id, &mut cancel_sent)
+                    .await;
             }
         }
 
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+/// Local cancel intent from the run row itself. Best-effort — a transient
+/// db error must not kill supervision.
+fn local_cancel_requested(store: &Store, run_id: &str) -> bool {
+    store
+        .get_run(run_id)
+        .ok()
+        .flatten()
+        .map(|r| r.cancel_requested)
+        .unwrap_or(false)
 }
 
 /// PATCH the mirror; returns the server's cancel intent. Best-effort.

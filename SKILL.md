@@ -475,11 +475,16 @@ Rules and notes:
 
 ### Running on Hugging Face Jobs — `--backend hf`
 
-If a Hugging Face token is available (`HF_TOKEN` in the environment — orgs that
-connect their HF account in compute settings get it synced automatically), you
-can run an experiment on **HF Jobs** instead of managed compute. The job runs
-on the user's own HF account and is billed there per minute; no OpenResearch
-balance is spent.
+**Managed compute (`--gpu`/`--cpu`/`--sandbox`) is the default. Use
+`--backend hf` ONLY when the user explicitly asks for Hugging Face Jobs**
+(e.g. "run this on HF", "use my huggingface account") or the project context
+says to prefer it. A connected HF token by itself is NOT a signal to switch —
+it just means the option exists. When in doubt, launch on managed compute.
+
+With `--backend hf`, the job runs on the user's own HF account (requires
+`HF_TOKEN` in the environment — orgs that connect their HF account in compute
+settings get it synced automatically) and is billed there per minute; no
+OpenResearch balance is spent.
 
 ```sh
 orx exp run <expId> --backend hf --flavor a10g-small              # one GPU job
