@@ -118,7 +118,27 @@ impl Store {
                 created_at           INTEGER NOT NULL,
                 updated_at           INTEGER NOT NULL,
                 UNIQUE(project_id, slug)
-            );",
+            );
+            DROP TABLE IF EXISTS local_reports;
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id                TEXT PRIMARY KEY,
+                project_id        TEXT NOT NULL,
+                harness           TEXT NOT NULL,
+                native_session_id TEXT,
+                title             TEXT,
+                model             TEXT,
+                created_at        INTEGER NOT NULL,
+                updated_at        INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id         TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                role       TEXT NOT NULL,
+                parts_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_session
+                ON chat_messages(session_id, created_at);",
         )?;
         // Best-effort migrations for pre-existing dbs; re-runs fail with
         // "duplicate column name", which is exactly the no-op we want.
@@ -367,6 +387,163 @@ impl Store {
         )?;
         Ok(())
     }
+
+    // --- chat sessions / messages ------------------------------------------
+
+    pub fn create_chat_session(&self, s: &StoredChatSession) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO chat_sessions (id, project_id, harness, native_session_id, title, model,
+                                        created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                s.id,
+                s.project_id,
+                s.harness,
+                s.native_session_id,
+                s.title,
+                s.model,
+                s.created_at,
+                s.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_chat_session(&self, id: &str) -> Result<Option<StoredChatSession>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {CHAT_SESSION_COLS} FROM chat_sessions WHERE id = ?1"
+        ))?;
+        let mut rows = stmt.query_map(params![id], row_to_chat_session)?;
+        Ok(rows.next().transpose()?)
+    }
+
+    pub fn list_chat_sessions_by_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<StoredChatSession>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {CHAT_SESSION_COLS} FROM chat_sessions WHERE project_id = ?1
+             ORDER BY updated_at DESC"
+        ))?;
+        let rows = stmt.query_map(params![project_id], row_to_chat_session)?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn delete_chat_session(&self, id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM chat_messages WHERE session_id = ?1",
+            params![id],
+        )?;
+        self.conn
+            .execute("DELETE FROM chat_sessions WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn set_chat_session_native_id(&self, id: &str, native_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE chat_sessions SET native_session_id = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, native_id, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_chat_session_model(&self, id: &str, model: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE chat_sessions SET model = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, model, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_chat_session_title(&self, id: &str, title: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE chat_sessions SET title = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, title, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    pub fn touch_chat_session(&self, id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE chat_sessions SET updated_at = ?2 WHERE id = ?1",
+            params![id, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// Insert or replace a message's parts — assistant messages are rewritten
+    /// as their parts stream in.
+    pub fn upsert_chat_message(&self, m: &StoredChatMessage) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO chat_messages (id, session_id, role, parts_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET parts_json = excluded.parts_json",
+            params![m.id, m.session_id, m.role, m.parts_json, m.created_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_chat_messages(&self, session_id: &str) -> Result<Vec<StoredChatMessage>> {
+        let mut stmt = self.conn.prepare(
+            // rowid tiebreak: a user message and its reply can share a millisecond.
+            "SELECT id, session_id, role, parts_json, created_at FROM chat_messages
+             WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| {
+            Ok(StoredChatMessage {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                role: row.get(2)?,
+                parts_json: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+}
+
+/// One chat thread with a harness. `native_session_id` is the harness's own
+/// session/rollout id (set after the first turn for CLIs that mint it lazily).
+#[derive(Debug, Clone)]
+pub struct StoredChatSession {
+    pub id: String,
+    pub project_id: String,
+    pub harness: String,
+    pub native_session_id: Option<String>,
+    pub title: Option<String>,
+    pub model: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Normalized transcript entry; `parts_json` is the wire-format parts array
+/// the UI renders (orx is the system of record for transcripts, not the
+/// harness's own storage).
+#[derive(Debug, Clone)]
+pub struct StoredChatMessage {
+    pub id: String,
+    pub session_id: String,
+    pub role: String,
+    pub parts_json: String,
+    pub created_at: i64,
+}
+
+const CHAT_SESSION_COLS: &str =
+    "id, project_id, harness, native_session_id, title, model, created_at, updated_at";
+
+fn row_to_chat_session(
+    row: &rusqlite::Row<'_>,
+) -> std::result::Result<StoredChatSession, rusqlite::Error> {
+    Ok(StoredChatSession {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        harness: row.get(2)?,
+        native_session_id: row.get(3)?,
+        title: row.get(4)?,
+        model: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+    })
 }
 
 const SELECT_RUN: &str = "SELECT id, experiment_id, project_id, status, backend_json, command,

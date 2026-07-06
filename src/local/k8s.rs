@@ -1,28 +1,28 @@
-//! Local HF Jobs launch — mirrors `commands/exp.rs::launch_hf` with the api
-//! calls deleted: the run row comes from and goes to the local store only.
-//! The detached `orx supervise` it spawns detects local runs itself.
+//! Local Kubernetes launch — the k8s twin of `local/hf.rs`: the run row comes
+//! from and goes to the local store only, and the detached `orx supervise`
+//! watches the Job via kubectl. Cluster/namespace/flavors come from the
+//! settings file (`orx up` Settings → Compute, or `~/.config/openresearch/k8s.json`).
 
 use std::collections::HashMap;
 
-use crate::commands::exp::{default_hf_image, hf_clone_script, spawn_detached_supervise};
+use crate::commands::exp::{hf_clone_script, spawn_detached_supervise};
 use crate::error::{anyhow, Result};
-use crate::jobs::{huggingface as hf, BackendDescriptor};
+use crate::jobs::{huggingface as hf, kubernetes as k8s, BackendDescriptor};
 use crate::local::git;
 use crate::store::{now_ms, Store, StoredRun};
 
-/// CLI wrapper around `submit_local_hf`: submit, then print the summary.
-pub async fn launch_local_hf(args: &crate::ExpRunArgs) -> Result<()> {
-    let run = submit_local_hf(args).await?;
-    let backend = crate::jobs::BackendDescriptor::parse(&run.backend_json)?;
-    println!("\u{2713} Hugging Face job submitted.");
-    println!("  run    {}", run.id);
+/// CLI wrapper around `submit_local_k8s`: submit, then print the summary.
+pub async fn launch_local_k8s(args: &crate::ExpRunArgs) -> Result<()> {
+    let run = submit_local_k8s(args).await?;
+    let backend = BackendDescriptor::parse(&run.backend_json)?;
+    println!("\u{2713} Kubernetes job submitted.");
     println!(
         "  job    {}/{} ({})",
         backend.namespace.as_deref().unwrap_or(""),
         backend.job_id.as_deref().unwrap_or(""),
         backend.flavor.as_deref().unwrap_or("")
     );
-    println!("  watch  {}", backend.url.as_deref().unwrap_or(""));
+    println!("  run    {}", run.id);
     println!(
         "  Follow it with `orx exp wait {}` or `orx logs {}`.",
         run.experiment_id, run.id
@@ -30,24 +30,23 @@ pub async fn launch_local_hf(args: &crate::ExpRunArgs) -> Result<()> {
     Ok(())
 }
 
-/// Submit the local experiment's run as a Hugging Face Job and detach a
-/// supervisor. `args.exp_id` must exist in `local_experiments`; requires
-/// `--backend hf` and `--flavor`. Shared by the CLI and the `orx up` API.
-pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
+/// Submit the local experiment's run as a Kubernetes Job and detach a
+/// supervisor. Requires `--backend k8s` and `--flavor <name>` where the name
+/// is a detected or custom flavor from the k8s settings.
+pub async fn submit_local_k8s(args: &crate::ExpRunArgs) -> Result<StoredRun> {
     if args.sandbox.is_some() || args.gpu.is_some() || args.cpu.is_some() {
         return Err(anyhow!(
-            "Local experiments run on Hugging Face Jobs; drop --gpu/--cpu/--sandbox \
-             and pass --flavor instead (e.g. --flavor a10g-small)."
+            "--backend k8s runs on your Kubernetes cluster; drop --gpu/--cpu/--sandbox \
+             and pass --flavor instead (see `orx up` Settings → Compute for names)."
         ));
     }
-    let flavor = args.flavor.clone().ok_or_else(|| {
-        anyhow!(
-            "--backend hf requires --flavor: t4-small, a10g-small/large, l4x1, \
-             l40sx1, a100-large, h200, … (cpu-basic/cpu-upgrade for CPU). \
-             Priced per minute on your Hugging Face account."
-        )
-    })?;
-    // Same default as the server path — HF's own 30m default is a footgun.
+    let settings = k8s::load_settings()?.unwrap_or_default();
+    let flavors = settings.all_flavors();
+    let flavor_name = args.flavor.clone().ok_or_else(|| flavor_error(&flavors))?;
+    let flavor = settings
+        .resolve_flavor(&flavor_name)
+        .ok_or_else(|| flavor_error(&flavors))?;
+    // Same default as the HF path — no-timeout jobs are a footgun.
     let timeout_seconds = match &args.timeout {
         Some(t) => hf::parse_timeout(t)?,
         None => 4 * 3600,
@@ -60,7 +59,6 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
     let project = store
         .get_local_project(&exp.project_id)?
         .ok_or_else(|| anyhow!("Local project {} not found.", exp.project_id))?;
-    // Experiment command, else the project default.
     let run_command = Some(exp.run_command.clone())
         .filter(|c| !c.trim().is_empty())
         .or_else(|| project.run_command.clone().filter(|c| !c.trim().is_empty()))
@@ -74,8 +72,7 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
             )
         })?;
 
-    // One run in flight per experiment unless the caller deliberately forces
-    // a concurrent launch — the double-click / double-submit guard.
+    // One run in flight per experiment unless deliberately forced.
     if !args.force {
         if let Some(r) = store
             .list_runs_by_experiment(&exp.id)?
@@ -92,12 +89,7 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         }
     }
 
-    let token = hf::resolve_token()?;
-    let namespace = hf::whoami(&token).await?;
-
-    // The job clones from GitHub, so the branch tip must exist there. Fetch
-    // via ensure_clone so branch_head_sha matches what the job will check out.
-    // Git shells out (network, can stall) — keep it off the async workers.
+    // The job clones from GitHub, so the branch tip must exist there.
     let commit_sha = {
         let (owner, repo, baseline, branch) = (
             project.github_owner.clone(),
@@ -120,7 +112,14 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
     let image = args
         .image
         .clone()
-        .unwrap_or_else(|| default_hf_image(&flavor));
+        .or_else(|| settings.default_image.clone())
+        .unwrap_or_else(|| {
+            if flavor.gpu > 0 {
+                "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime".to_string()
+            } else {
+                "python:3.12".to_string()
+            }
+        });
     let script = hf_clone_script(
         &exp.branch_name,
         &project.github_owner,
@@ -128,26 +127,31 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         &run_command,
     );
 
-    // Tokens travel as job secrets only — the command line stays tokenless.
-    let mut secrets = HashMap::new();
-    secrets.insert("HF_TOKEN".to_string(), token.clone());
+    // The pod's env: everything the user synced (API keys), plus the tokens
+    // the clone script and common tooling expect. Travels via a k8s Secret,
+    // never on a command line.
+    let mut env: HashMap<String, String> = crate::config::list_synced_env().into_iter().collect();
+    if let Ok(hf_token) = hf::resolve_token() {
+        env.entry("HF_TOKEN".to_string()).or_insert(hf_token);
+    }
     if let Some(gh) = git::resolve_github_token() {
-        secrets.insert("GITHUB_TOKEN".to_string(), gh);
+        env.insert("GITHUB_TOKEN".to_string(), gh);
     }
     let mut labels = HashMap::new();
     labels.insert("or_run".to_string(), run_id.clone());
     labels.insert("or_experiment".to_string(), exp.id.clone());
     labels.insert("or_project".to_string(), project.id.clone());
 
-    let job = hf::run_job(
-        &token,
+    let context = settings.context.clone();
+    let namespace = settings.namespace.clone();
+    let job_name = k8s::run_job(
+        context.as_deref(),
         &namespace,
-        &hf::JobSubmission {
-            command: vec!["bash".to_string(), "-c".to_string(), script],
-            docker_image: image.clone(),
+        &k8s::K8sJobSpec {
+            script,
+            image: image.clone(),
             flavor: flavor.clone(),
-            environment: HashMap::new(),
-            secrets,
+            env,
             timeout_seconds,
             labels,
         },
@@ -155,13 +159,13 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
     .await?;
 
     let descriptor = BackendDescriptor {
-        kind: "hf_job".to_string(),
-        namespace: Some(namespace.clone()),
-        job_id: Some(job.id.clone()),
-        flavor: Some(flavor.clone()),
+        kind: "k8s_job".to_string(),
+        namespace: Some(namespace),
+        job_id: Some(job_name),
+        flavor: Some(flavor.name.clone()),
         image: Some(image),
-        url: Some(hf::job_url(&namespace, &job.id)),
-        context: None,
+        url: None,
+        context,
     };
     let run = StoredRun {
         id: run_id.clone(),
@@ -182,4 +186,19 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
 
     spawn_detached_supervise(&run_id)?;
     Ok(run)
+}
+
+fn flavor_error(flavors: &[k8s::Flavor]) -> crate::error::Error {
+    if flavors.is_empty() {
+        anyhow!(
+            "--backend k8s requires --flavor, and no flavors are configured yet. \
+             Open `orx up` Settings → Compute to pick a cluster and auto-detect flavors."
+        )
+    } else {
+        let names: Vec<&str> = flavors.iter().map(|f| f.name.as_str()).collect();
+        anyhow!(
+            "--backend k8s requires --flavor: {}. Manage them in `orx up` Settings → Compute.",
+            names.join(", ")
+        )
+    }
 }

@@ -14,12 +14,12 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::{Body, Bytes};
+use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderName, Method, StatusCode, Uri};
+use axum::http::{header, StatusCode, Uri};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{any, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine as _;
 use futures::Stream;
@@ -29,8 +29,9 @@ use tokio::sync::mpsc;
 
 use crate::error::{anyhow, Result};
 use crate::local;
+use crate::local::chat::ChatHost;
 use crate::local::opencode::AgentHost;
-use crate::store::{log_path, Store, StoredRun};
+use crate::store::{log_path, now_ms, Store, StoredChatSession, StoredRun};
 use crate::{browser, UpArgs};
 
 pub async fn run(args: UpArgs) -> Result<()> {
@@ -39,31 +40,20 @@ pub async fn run(args: UpArgs) -> Result<()> {
         .await
         .map_err(|e| anyhow!("Could not bind 127.0.0.1:{}: {}", port, e))?;
     // Open early so the schema exists before any request or agent spawn.
-    let store = Store::open()?;
+    Store::open()?;
 
+    // Harnesses spawn lazily on the first message to one of their sessions;
+    // no eager agent bring-up. (--no-agent is now a no-op kept for compat.)
     let agent = Arc::new(AgentHost::new(args.model.clone()));
     let state = AppState {
         agent: agent.clone(),
-        // Timeout-free client: the proxy carries long-lived SSE bodies.
-        http: reqwest::Client::new(),
+        chat: Arc::new(ChatHost::new(agent.clone())),
+        harnesses: Arc::new(tokio::sync::Mutex::new(None)),
     };
 
-    if !args.no_agent {
-        let projects = store.list_local_projects()?;
-        if projects.len() == 1 {
-            let project = projects.into_iter().next().unwrap();
-            let agent = agent.clone();
-            // Spawn in the background: ensure() clones/fetches + health-polls
-            // for up to 30s and must not delay the dashboard coming up.
-            tokio::spawn(async move {
-                if let Err(err) = agent.ensure(&project).await {
-                    eprintln!("orx up: could not start the agent: {err}");
-                }
-            });
-        }
-    }
-
     spawn_hf_preflight();
+    spawn_k8s_preflight();
+    spawn_agent_git_preflight();
 
     let app = router(state);
     let url = format!("http://127.0.0.1:{port}");
@@ -85,7 +75,10 @@ pub async fn run(args: UpArgs) -> Result<()> {
 #[derive(Clone)]
 struct AppState {
     agent: Arc<AgentHost>,
-    http: reqwest::Client,
+    chat: Arc<ChatHost>,
+    /// Harness detection cache — detection shells out to CLIs, so it's rate-
+    /// limited to once per TTL unless the UI asks for a refresh.
+    harnesses: Arc<tokio::sync::Mutex<Option<(std::time::Instant, Value)>>>,
 }
 
 fn router(state: AppState) -> Router {
@@ -108,11 +101,46 @@ fn router(state: AppState) -> Router {
             get(experiment_commit_diff),
         )
         .route("/api/projects/{id}/working-tree", get(project_working_tree))
+        .route("/api/projects/{id}/file", get(project_file))
+        .route(
+            "/api/projects/{id}/artifacts",
+            get(list_artifacts).delete(delete_artifact),
+        )
+        .route("/api/projects/{id}/artifacts/report", get(artifact_report))
+        .route("/api/projects/{id}/artifacts/file", get(artifact_file))
         .route("/api/events", get(events))
         .route("/api/settings/hf", get(hf_settings).post(set_hf_token))
+        .route(
+            "/api/settings/k8s",
+            get(k8s_settings).post(set_k8s_settings),
+        )
+        .route("/api/settings/k8s/detect", post(detect_k8s_flavors))
+        .route("/api/settings/modal", get(modal_settings))
+        .route("/api/settings/modal/provision", post(provision_modal))
+        .route("/api/settings/env", get(env_settings).post(set_env_var))
+        .route(
+            "/api/settings/env/{key}",
+            axum::routing::delete(delete_env_var),
+        )
+        .route(
+            "/api/settings/git",
+            get(git_settings).post(set_git_settings),
+        )
+        .route("/api/settings/ssh", get(ssh_settings))
+        .route("/api/settings/ssh/preflight", post(ssh_preflight))
+        .route("/api/harnesses", get(list_harnesses))
+        .route(
+            "/api/chat/sessions",
+            get(list_chat_sessions).post(create_chat_session),
+        )
+        .route(
+            "/api/chat/sessions/{id}",
+            axum::routing::delete(delete_chat_session),
+        )
+        .route("/api/chat/sessions/{id}/messages", get(chat_messages))
+        .route("/api/chat/sessions/{id}/message", post(send_chat_message))
+        .route("/api/chat/sessions/{id}/interrupt", post(interrupt_chat))
         .route("/api/agent/status", get(agent_status))
-        .route("/api/agent/ensure", post(agent_ensure))
-        .route("/opencode/{*path}", any(proxy_opencode))
         .fallback(spa)
         .with_state(state)
 }
@@ -205,36 +233,53 @@ async fn list_projects() -> ApiResult {
 #[serde(rename_all = "camelCase")]
 struct CreateProjectReq {
     name: String,
-    github_owner: String,
-    github_repo: String,
+    github_owner: Option<String>,
+    github_repo: Option<String>,
     baseline_branch: Option<String>,
     run_command: Option<String>,
+    /// Create a blank private repo named after the project on the user's
+    /// GitHub account instead of pointing at an existing one.
+    #[serde(default)]
+    create_repo: bool,
 }
 
 async fn create_project(Json(req): Json<CreateProjectReq>) -> ApiResult {
-    if req.name.trim().is_empty()
-        || req.github_owner.trim().is_empty()
-        || req.github_repo.trim().is_empty()
-    {
-        return Err(bad_request("name, githubOwner and githubRepo are required"));
+    let name = req.name.trim().to_string();
+    if name.is_empty() {
+        return Err(bad_request("name is required"));
     }
+    let (owner, repo, baseline_branch) = if req.create_repo {
+        let (owner, repo, default_branch) = local::github::create_user_repo(&local::slugify(&name))
+            .await
+            .map_err(bad_request)?;
+        (owner, repo, Some(default_branch))
+    } else {
+        let owner = req.github_owner.unwrap_or_default().trim().to_string();
+        let repo = req.github_repo.unwrap_or_default().trim().to_string();
+        if owner.is_empty() || repo.is_empty() {
+            return Err(bad_request("githubOwner and githubRepo are required"));
+        }
+        (owner, repo, req.baseline_branch)
+    };
     // The clone shells out to git (network); keep it off the async workers.
-    let project = tokio::task::spawn_blocking(move || {
+    let run_command = req.run_command;
+    let clone = move || {
         let store = Store::open()?;
-        local::projects::create_project(
-            &store,
-            req.name.trim(),
-            req.github_owner.trim(),
-            req.github_repo.trim(),
-            req.baseline_branch,
-            req.run_command,
-        )
-        .map(|(project, _baseline)| project)
-    })
-    .await
-    .map_err(|e| anyhow!("clone task failed: {e}"))?
-    .map_err(bad_request)?;
-    Ok(Json(json!({ "project": project })))
+        local::projects::create_project(&store, &name, &owner, &repo, baseline_branch, run_command)
+            .map(|(project, _baseline)| project)
+    };
+    let mut result = tokio::task::spawn_blocking(clone.clone())
+        .await
+        .map_err(|e| anyhow!("clone task failed: {e}"))?;
+    // A just-created repo can lag a beat before its auto-init commit is
+    // cloneable; one retry covers it (the clone step is idempotent).
+    if result.is_err() && req.create_repo {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        result = tokio::task::spawn_blocking(clone)
+            .await
+            .map_err(|e| anyhow!("clone task failed: {e}"))?;
+    }
+    Ok(Json(json!({ "project": result.map_err(bad_request)? })))
 }
 
 async fn get_project(Path(id): Path<String>) -> ApiResult {
@@ -358,17 +403,19 @@ async fn create_experiment(
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct RunReq {
+    backend: Option<String>,
     flavor: Option<String>,
     timeout: Option<String>,
 }
 
 async fn run_experiment(Path(id): Path<String>, body: Bytes) -> ApiResult {
-    // Tolerate an empty body — flavor/timeout are both optional in the schema.
+    // Tolerate an empty body — every field is optional in the schema.
     let req: RunReq = if body.is_empty() {
         RunReq::default()
     } else {
         serde_json::from_slice(&body).map_err(bad_request)?
     };
+    let backend = req.backend.as_deref().unwrap_or("hf").to_string();
     let args = crate::ExpRunArgs {
         exp_id: id,
         gpu: None,
@@ -378,16 +425,19 @@ async fn run_experiment(Path(id): Path<String>, body: Bytes) -> ApiResult {
         cpu: None,
         vcpus: None,
         sandbox: None,
-        backend: Some("hf".to_string()),
+        backend: Some(backend.clone()),
         flavor: req.flavor,
         image: None,
         timeout: req.timeout,
         force: false,
     };
-    // Same code path as CLI `orx exp run --backend hf` on a local experiment.
-    let run = local::hf::submit_local_hf(&args)
-        .await
-        .map_err(bad_request)?;
+    // Same code paths as CLI `orx exp run --backend <b>` on a local experiment.
+    let run = match backend.as_str() {
+        "hf" => local::hf::submit_local_hf(&args).await,
+        "k8s" => local::k8s::submit_local_k8s(&args).await,
+        other => Err(anyhow!("Unknown backend '{other}'. Supported: hf, k8s.")),
+    }
+    .map_err(bad_request)?;
     Ok(Json(json!({ "run": ApiRun::from(&run) })))
 }
 
@@ -459,9 +509,9 @@ async fn run_diff(Path(id): Path<String>) -> ApiResult {
         let exp = store
             .get_local_experiment(&run.experiment_id)?
             .ok_or_else(|| not_found("experiment"))?;
-        let parent_id = exp.parent_experiment_id.ok_or_else(|| {
-            bad_request("baseline runs have no parent branch to diff against")
-        })?;
+        let parent_id = exp
+            .parent_experiment_id
+            .ok_or_else(|| bad_request("baseline runs have no parent branch to diff against"))?;
         let parent = store
             .get_local_experiment(&parent_id)?
             .ok_or_else(|| not_found("parent experiment"))?;
@@ -498,9 +548,7 @@ async fn experiment_commits(Path(id): Path<String>) -> ApiResult {
         };
         let commits: Vec<Value> = commits
             .iter()
-            .map(|c| {
-                json!({ "sha": c.sha, "subject": c.subject, "committedAt": c.committed_at })
-            })
+            .map(|c| json!({ "sha": c.sha, "subject": c.subject, "committedAt": c.committed_at }))
             .collect();
         Ok(Json(json!({ "commits": commits })))
     })
@@ -552,6 +600,149 @@ async fn project_working_tree(Path(id): Path<String>) -> ApiResult {
         })))
     })
     .await
+}
+
+/// Cap on file bytes served to the viewer (mirrors openresearch.sh).
+const FILE_READ_LIMIT: u64 = 512_000;
+
+#[derive(Deserialize)]
+struct ProjectFileQuery {
+    path: String,
+}
+
+/// One file from the project's clone (the agent's working tree), for the UI
+/// file viewer. Path is repo-relative; traversal outside the clone is rejected.
+async fn project_file(Path(id): Path<String>, Query(q): Query<ProjectFileQuery>) -> ApiResult {
+    blocking_api(move || {
+        use std::io::Read as _;
+        let rel = q.path.trim().trim_start_matches("./").to_string();
+        if rel.is_empty() || rel.len() > 1024 {
+            return Err(bad_request("invalid path"));
+        }
+        let rel_path = std::path::Path::new(&rel);
+        let traversal = rel_path.is_absolute()
+            || rel_path
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)));
+        if traversal {
+            return Err(bad_request("path must be repo-relative"));
+        }
+
+        let store = Store::open()?;
+        let project = store
+            .get_local_project(&id)?
+            .ok_or_else(|| not_found("project"))?;
+        let root = std::fs::canonicalize(&project.repo_path)
+            .map_err(|e| ApiError::from(anyhow!("repo clone unavailable: {e}")))?;
+        let not_found_json = json!({
+            "path": rel, "content": "", "truncated": false, "notFound": true,
+        });
+        // Canonicalize so symlinks can't escape the clone.
+        let full = match std::fs::canonicalize(root.join(rel_path)) {
+            Ok(p) => p,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Json(not_found_json)),
+            Err(e) => return Err(ApiError::from(anyhow!("read failed: {e}"))),
+        };
+        if !full.starts_with(&root) {
+            return Err(bad_request("path escapes repository"));
+        }
+        if full.is_dir() {
+            return Err(bad_request("path is a directory"));
+        }
+        let file = match std::fs::File::open(&full) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Json(not_found_json)),
+            Err(e) => return Err(ApiError::from(anyhow!("read failed: {e}"))),
+        };
+        let mut buf = Vec::new();
+        std::io::Read::take(file, FILE_READ_LIMIT + 1)
+            .read_to_end(&mut buf)
+            .map_err(|e| ApiError::from(anyhow!("read failed: {e}")))?;
+        let truncated = buf.len() as u64 > FILE_READ_LIMIT;
+        buf.truncate(FILE_READ_LIMIT as usize);
+        Ok(Json(json!({
+            "path": rel,
+            "content": String::from_utf8_lossy(&buf).into_owned(),
+            "truncated": truncated,
+            "notFound": false,
+        })))
+    })
+    .await
+}
+
+// --- artifacts ----------------------------------------------------------------
+
+/// Listing of the project's artifacts dir — the filesystem is the source of
+/// truth; this scans it fresh on every call (and creates it if missing).
+async fn list_artifacts(Path(id): Path<String>) -> ApiResult {
+    blocking_api(move || {
+        let store = Store::open()?;
+        let project = store
+            .get_local_project(&id)?
+            .ok_or_else(|| not_found("project"))?;
+        let listing = local::artifacts::list(&project)?;
+        Ok(Json(json!(listing)))
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct ArtifactPathQuery {
+    path: String,
+}
+
+/// A report folder's markdown body (`<name>/report.md`).
+async fn artifact_report(Path(id): Path<String>, Query(q): Query<ArtifactPathQuery>) -> ApiResult {
+    blocking_api(move || {
+        let store = Store::open()?;
+        let project = store
+            .get_local_project(&id)?
+            .ok_or_else(|| not_found("project"))?;
+        let markdown = local::artifacts::read_report_markdown(&project, &q.path)
+            .map_err(|_| not_found("report"))?;
+        Ok(Json(json!({ "markdown": markdown })))
+    })
+    .await
+}
+
+/// Delete a file or report folder in the artifacts dir, by relative path.
+async fn delete_artifact(Path(id): Path<String>, Query(q): Query<ArtifactPathQuery>) -> ApiResult {
+    blocking_api(move || {
+        let store = Store::open()?;
+        let project = store
+            .get_local_project(&id)?
+            .ok_or_else(|| not_found("project"))?;
+        local::artifacts::delete_entry(&project, &q.path)?;
+        Ok(Json(json!({ "ok": true })))
+    })
+    .await
+}
+
+/// Raw artifact file bytes, by artifacts-dir-relative path. `no-cache`: the
+/// same path can be rewritten in place on disk.
+async fn artifact_file(
+    Path(id): Path<String>,
+    Query(q): Query<ArtifactPathQuery>,
+) -> std::result::Result<Response, ApiError> {
+    tokio::task::spawn_blocking(move || {
+        let store = Store::open()?;
+        let project = store
+            .get_local_project(&id)?
+            .ok_or_else(|| not_found("project"))?;
+        let bytes = local::artifacts::read_file(&project, &q.path)
+            .map_err(|_| not_found("artifact file"))?;
+        let content_type = local::artifacts::content_type_for_path(&q.path);
+        Ok((
+            [
+                (header::CONTENT_TYPE, content_type),
+                (header::CACHE_CONTROL, "no-cache"),
+            ],
+            bytes,
+        )
+            .into_response())
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow!("artifact task failed: {e}")))?
 }
 
 // --- HF token settings ------------------------------------------------------
@@ -656,104 +847,536 @@ fn spawn_hf_preflight() {
     });
 }
 
+/// Startup summary of detected coding agents + git/GitHub credentials, so a
+/// first-time CLI user learns autodetection happened at all. Never blocks.
+fn spawn_agent_git_preflight() {
+    tokio::spawn(async {
+        let harnesses = local::harness::detect_harnesses().await;
+        let line: Vec<String> = harnesses
+            .iter()
+            .map(|h| {
+                if h.agent_ready {
+                    match &h.account {
+                        Some(acct) => format!("{} ✓ ({acct})", h.name),
+                        None => format!("{} ✓", h.name),
+                    }
+                } else if h.installed {
+                    format!("{} — not signed in", h.name)
+                } else {
+                    format!("{} — not installed", h.name)
+                }
+            })
+            .collect();
+        eprintln!("orx up: agents: {}", line.join(" · "));
+        if !harnesses.iter().any(|h| h.agent_ready) {
+            eprintln!(
+                "orx up: warning: no coding agent detected — install Claude Code, Codex or opencode and sign in to chat in the dashboard."
+            );
+        }
+        // git checks shell out; keep them off the async workers.
+        let _ = tokio::task::spawn_blocking(|| {
+            let git = git_settings_json();
+            if git.get("gitVersion").and_then(Value::as_str).is_none() {
+                eprintln!("orx up: warning: git not found on PATH — cloning projects will fail.");
+            } else if git.get("githubTokenSource").and_then(Value::as_str).is_none() {
+                eprintln!(
+                    "orx up: note: no GitHub credentials found (`gh auth login` or GITHUB_TOKEN) — private-repo clones and experiment-branch pushes need them unless SSH keys are set up."
+                );
+            }
+        })
+        .await;
+    });
+}
+
+// --- modal settings -----------------------------------------------------------
+
+use crate::jobs::modal;
+
+fn modal_settings_json(s: &modal::ModalStatus) -> Value {
+    json!({
+        "envProvisioned": s.env_provisioned,
+        "modalImportable": s.modal_importable,
+        "tokenConfigured": s.token_configured,
+        "tokenSource": s.token_source,
+        "ready": s.modal_importable && s.token_configured,
+        "error": s.error,
+    })
+}
+
+async fn modal_settings() -> Json<Value> {
+    Json(modal_settings_json(&modal::detect().await))
+}
+
+/// Build the orx-managed Modal env (first run downloads the SDK, ~30–60s), then
+/// report status. Idempotent — a no-op once the env exists.
+async fn provision_modal() -> ApiResult {
+    modal::ensure_env().await.map_err(bad_request)?;
+    Ok(Json(modal_settings_json(&modal::detect().await)))
+}
+
+// --- kubernetes settings ------------------------------------------------------
+
+use crate::jobs::kubernetes as k8s;
+
+/// One payload powers the whole settings card: stored config, live cluster
+/// health, and the flavor list. Contexts come from the local kubeconfig.
+async fn k8s_settings_json() -> Value {
+    let settings = k8s::load_settings().ok().flatten();
+    let configured = settings.is_some();
+    let settings = settings.unwrap_or_default();
+    let (contexts, current) = k8s::list_contexts().await.unwrap_or((Vec::new(), None));
+    let preflight = k8s::preflight(settings.context.as_deref(), &settings.namespace).await;
+    json!({
+        "configured": configured,
+        "contexts": contexts,
+        "currentContext": current,
+        "context": settings.context,
+        "namespace": settings.namespace,
+        "defaultImage": settings.default_image,
+        "flavors": settings.all_flavors(),
+        "detectedAt": settings.detected_at,
+        "preflight": preflight,
+    })
+}
+
+async fn k8s_settings() -> ApiResult {
+    Ok(Json(k8s_settings_json().await))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetK8sSettingsReq {
+    /// `None` leaves the field alone; `Some("")` clears it (kubectl default).
+    context: Option<String>,
+    namespace: Option<String>,
+    default_image: Option<String>,
+}
+
+/// Save context/namespace/image, then re-detect flavors against the (possibly
+/// new) cluster. Detection failure doesn't fail the save — the preflight in
+/// the response says why the cluster is unhappy.
+async fn set_k8s_settings(Json(req): Json<SetK8sSettingsReq>) -> ApiResult {
+    let mut settings = k8s::load_settings()?.unwrap_or_default();
+    if let Some(ctx) = req.context {
+        settings.context = Some(ctx.trim().to_string()).filter(|c| !c.is_empty());
+    }
+    if let Some(ns) = req.namespace {
+        let ns = ns.trim().to_string();
+        settings.namespace = if ns.is_empty() {
+            "default".to_string()
+        } else {
+            ns
+        };
+    }
+    if let Some(img) = req.default_image {
+        settings.default_image = Some(img.trim().to_string()).filter(|i| !i.is_empty());
+    }
+    if let Ok(flavors) = k8s::detect_flavors(settings.context.as_deref()).await {
+        settings.flavors = flavors;
+        settings.detected_at = Some(now_ms());
+    }
+    k8s::save_settings(&settings)?;
+    Ok(Json(k8s_settings_json().await))
+}
+
+async fn detect_k8s_flavors() -> ApiResult {
+    let mut settings = k8s::load_settings()?.unwrap_or_default();
+    settings.flavors = k8s::detect_flavors(settings.context.as_deref())
+        .await
+        .map_err(bad_request)?;
+    settings.detected_at = Some(now_ms());
+    k8s::save_settings(&settings)?;
+    Ok(Json(k8s_settings_json().await))
+}
+
+/// Startup warning when a configured k8s backend can't launch as-is. Silent
+/// when k8s was never configured — HF remains the default backend.
+fn spawn_k8s_preflight() {
+    tokio::spawn(async {
+        let Ok(Some(settings)) = k8s::load_settings() else {
+            return;
+        };
+        let p = k8s::preflight(settings.context.as_deref(), &settings.namespace).await;
+        let fix = "check the cluster in the dashboard Settings → Compute page";
+        if !p.kubectl_found {
+            eprintln!("orx up: warning: kubectl not found on PATH — k8s runs can't launch.");
+        } else if !p.reachable {
+            eprintln!(
+                "orx up: warning: Kubernetes cluster unreachable ({}) — k8s runs can't launch; {fix}.",
+                p.error.unwrap_or_default()
+            );
+        } else if !p.can_create_jobs {
+            eprintln!(
+                "orx up: warning: no permission to create Jobs in namespace '{}' — k8s runs will fail; {fix}.",
+                settings.namespace
+            );
+        }
+    });
+}
+
+// --- env var settings -------------------------------------------------------
+
+/// Everything in `~/.openresearch/env`, values masked. `inProcessEnv` flags
+/// keys that are also set in orx up's own environment (which wins at runtime).
+fn env_settings_json() -> Value {
+    let vars: Vec<Value> = crate::config::list_synced_env()
+        .iter()
+        .map(|(key, value)| {
+            json!({
+                "key": key,
+                "maskedValue": mask_token(value),
+                "inProcessEnv": std::env::var_os(key).is_some(),
+            })
+        })
+        .collect();
+    json!({ "vars": vars })
+}
+
+async fn env_settings() -> ApiResult {
+    tokio::task::spawn_blocking(|| Ok(Json(env_settings_json())))
+        .await
+        .map_err(|e| ApiError::from(anyhow!("env task failed: {e}")))?
+}
+
+#[derive(Deserialize)]
+struct SetEnvVarReq {
+    key: String,
+    value: String,
+}
+
+fn valid_env_key(key: &str) -> bool {
+    !key.is_empty()
+        && !key.starts_with(|c: char| c.is_ascii_digit())
+        && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+async fn set_env_var(Json(req): Json<SetEnvVarReq>) -> ApiResult {
+    let key = req.key.trim().to_string();
+    let value = req.value.trim().to_string();
+    if !valid_env_key(&key) {
+        return Err(bad_request(
+            "key must be letters, digits or _, not starting with a digit",
+        ));
+    }
+    if value.is_empty() {
+        return Err(bad_request("value is required"));
+    }
+    tokio::task::spawn_blocking(move || {
+        crate::config::write_synced_env_var(&key, &value)?;
+        Ok(Json(env_settings_json()))
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow!("env task failed: {e}")))?
+}
+
+async fn delete_env_var(Path(key): Path<String>) -> ApiResult {
+    if !valid_env_key(&key) {
+        return Err(bad_request("invalid key"));
+    }
+    tokio::task::spawn_blocking(move || {
+        crate::config::remove_synced_env_var(&key)?;
+        Ok(Json(env_settings_json()))
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow!("env task failed: {e}")))?
+}
+
+// --- git settings -----------------------------------------------------------
+
+fn git_out(args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("git").args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+fn git_settings_json() -> Value {
+    let github_source = if std::env::var("GITHUB_TOKEN").is_ok_and(|t| !t.trim().is_empty()) {
+        Some("env")
+    } else {
+        let gh = std::process::Command::new("gh")
+            .args(["auth", "token"])
+            .output();
+        matches!(gh, Ok(out) if out.status.success() && !out.stdout.is_empty()).then_some("gh")
+    };
+    json!({
+        "gitVersion": git_out(&["--version"]),
+        "userName": git_out(&["config", "--global", "user.name"]),
+        "userEmail": git_out(&["config", "--global", "user.email"]),
+        "githubTokenSource": github_source,
+    })
+}
+
+async fn git_settings() -> ApiResult {
+    tokio::task::spawn_blocking(|| Ok(Json(git_settings_json())))
+        .await
+        .map_err(|e| ApiError::from(anyhow!("git task failed: {e}")))?
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetGitSettingsReq {
+    user_name: Option<String>,
+    user_email: Option<String>,
+}
+
+async fn set_git_settings(Json(req): Json<SetGitSettingsReq>) -> ApiResult {
+    let name = req.user_name.map(|s| s.trim().to_string());
+    let email = req.user_email.map(|s| s.trim().to_string());
+    if name.as_deref().is_none_or(str::is_empty) && email.as_deref().is_none_or(str::is_empty) {
+        return Err(bad_request(
+            "nothing to update: pass userName and/or userEmail",
+        ));
+    }
+    tokio::task::spawn_blocking(move || {
+        for (key, value) in [("user.name", name), ("user.email", email)] {
+            if let Some(v) = value.filter(|v| !v.is_empty()) {
+                let ok = std::process::Command::new("git")
+                    .args(["config", "--global", key, &v])
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if !ok {
+                    return Err(bad_request(format!("git config --global {key} failed")));
+                }
+            }
+        }
+        Ok(Json(git_settings_json()))
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow!("git task failed: {e}")))?
+}
+
+// --- ssh hosts ----------------------------------------------------------------
+
+/// Concrete Host entries from `~/.ssh/config` (wildcard patterns skipped) —
+/// read-only groundwork for an SSH compute backend. No keys are read.
+fn list_ssh_hosts() -> Vec<Value> {
+    let Some(path) = dirs::home_dir().map(|h| h.join(".ssh").join("config")) else {
+        return Vec::new();
+    };
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut hosts: Vec<Value> = Vec::new();
+    // Indices into `hosts` for the Host block currently being filled.
+    let mut current: Vec<usize> = Vec::new();
+    for line in raw.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (key, value) = match line.split_once([' ', '\t', '=']) {
+            Some((k, v)) => (k.trim().to_ascii_lowercase(), v.trim().trim_matches('"')),
+            None => continue,
+        };
+        if key == "host" {
+            current = value
+                .split_whitespace()
+                .filter(|name| !name.contains(['*', '?', '!']))
+                .map(|name| {
+                    hosts.push(json!({ "host": name }));
+                    hosts.len() - 1
+                })
+                .collect();
+            continue;
+        }
+        let field = match key.as_str() {
+            "hostname" => "hostname",
+            "user" => "user",
+            "port" => "port",
+            "identityfile" => "identityFile",
+            _ => continue,
+        };
+        for &i in &current {
+            // First value wins, like ssh itself.
+            if hosts[i].get(field).is_none() {
+                hosts[i][field] = json!(value);
+            }
+        }
+    }
+    hosts
+}
+
+async fn ssh_settings() -> ApiResult {
+    tokio::task::spawn_blocking(|| Ok(Json(json!({ "hosts": list_ssh_hosts() }))))
+        .await
+        .map_err(|e| ApiError::from(anyhow!("ssh task failed: {e}")))?
+}
+
+#[derive(Deserialize)]
+struct SshPreflightReq {
+    host: String,
+}
+
+/// Live check for one host: can we reach it (BatchMode ssh), and is `git` there?
+async fn ssh_preflight(Json(req): Json<SshPreflightReq>) -> ApiResult {
+    let host = req.host.trim().to_string();
+    if host.is_empty() {
+        return Err(bad_request("host is required"));
+    }
+    let p = crate::jobs::ssh::preflight(&host).await;
+    Ok(Json(json!({
+        "reachable": p.reachable,
+        "gitFound": p.git_found,
+        "error": p.error,
+    })))
+}
+
+// --- harnesses ---------------------------------------------------------------
+
+const HARNESS_CACHE_TTL: Duration = Duration::from_secs(60);
+
+#[derive(Deserialize)]
+struct HarnessQuery {
+    refresh: Option<u8>,
+}
+
+async fn list_harnesses(
+    State(state): State<AppState>,
+    Query(q): Query<HarnessQuery>,
+) -> Json<Value> {
+    let mut cache = state.harnesses.lock().await;
+    if q.refresh != Some(1) {
+        if let Some((at, payload)) = cache.as_ref() {
+            if at.elapsed() < HARNESS_CACHE_TTL {
+                return Json(payload.clone());
+            }
+        }
+    }
+    let payload = json!({ "harnesses": local::harness::detect_harnesses().await });
+    *cache = Some((std::time::Instant::now(), payload.clone()));
+    Json(payload)
+}
+
+// --- chat --------------------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionsQuery {
+    project_id: String,
+}
+
+async fn list_chat_sessions(
+    State(state): State<AppState>,
+    Query(q): Query<SessionsQuery>,
+) -> ApiResult {
+    let sessions = Store::open()?.list_chat_sessions_by_project(&q.project_id)?;
+    let busy = state.chat.busy_sessions().await;
+    let sessions: Vec<Value> = sessions
+        .iter()
+        .map(|s| local::chat::session_json(s, busy.contains(&s.id)))
+        .collect();
+    Ok(Json(json!({ "sessions": sessions })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateChatSessionReq {
+    project_id: String,
+    harness: String,
+    model: Option<String>,
+}
+
+async fn create_chat_session(Json(req): Json<CreateChatSessionReq>) -> ApiResult {
+    if !local::chat::HARNESS_IDS.contains(&req.harness.as_str()) {
+        return Err(bad_request(format!("unknown harness: {}", req.harness)));
+    }
+    let store = Store::open()?;
+    store
+        .get_local_project(&req.project_id)?
+        .ok_or_else(|| not_found("project"))?;
+    let session = StoredChatSession {
+        id: format!("chat_{}", uuid::Uuid::new_v4()),
+        project_id: req.project_id,
+        harness: req.harness,
+        native_session_id: None,
+        title: None,
+        model: req.model.filter(|m| !m.trim().is_empty()),
+        created_at: now_ms(),
+        updated_at: now_ms(),
+    };
+    store.create_chat_session(&session)?;
+    Ok(Json(
+        json!({ "session": local::chat::session_json(&session, false) }),
+    ))
+}
+
+async fn delete_chat_session(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
+    state.chat.delete_session(&id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn chat_messages(Path(id): Path<String>) -> ApiResult {
+    Store::open()?
+        .get_chat_session(&id)?
+        .ok_or_else(|| not_found("chat session"))?;
+    let messages = local::chat::list_messages(&id)?;
+    Ok(Json(json!({ "messages": messages })))
+}
+
+#[derive(Deserialize)]
+struct SendChatReq {
+    text: String,
+    model: Option<String>,
+}
+
+async fn send_chat_message(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<SendChatReq>,
+) -> ApiResult {
+    let text = req.text.trim().to_string();
+    if text.is_empty() {
+        return Err(bad_request("text is required"));
+    }
+    // The turn runs in the background; progress streams over /api/events.
+    state
+        .chat
+        .send_message(&id, text, req.model)
+        .await
+        .map_err(bad_request)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn interrupt_chat(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
+    state.chat.interrupt(&id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 // --- agent ----------------------------------------------------------------
 
 async fn agent_status(State(state): State<AppState>) -> Json<Value> {
     Json(json!(state.agent.status().await))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EnsureReq {
-    project_id: String,
-}
-
-async fn agent_ensure(State(state): State<AppState>, Json(req): Json<EnsureReq>) -> ApiResult {
-    let project = Store::open()?
-        .get_local_project(&req.project_id)?
-        .ok_or_else(|| not_found("project"))?;
-    let status = state.agent.ensure(&project).await.map_err(bad_request)?;
-    Ok(Json(json!(status)))
-}
-
-// --- /opencode/* reverse proxy --------------------------------------------
-
-fn is_hop_by_hop(name: &HeaderName) -> bool {
-    matches!(
-        name.as_str(),
-        "connection"
-            | "keep-alive"
-            | "proxy-authenticate"
-            | "proxy-authorization"
-            | "te"
-            | "trailer"
-            | "trailers"
-            | "transfer-encoding"
-            | "upgrade"
-    )
-}
-
-async fn proxy_opencode(
-    State(state): State<AppState>,
-    Path(path): Path<String>,
-    req: axum::extract::Request,
-) -> Response {
-    let Some(port) = state.agent.proxy_port().await else {
-        return ApiError(
-            StatusCode::BAD_GATEWAY,
-            "agent not running — POST /api/agent/ensure first".to_string(),
-        )
-        .into_response();
-    };
-    let query = req
-        .uri()
-        .query()
-        .map(|q| format!("?{q}"))
-        .unwrap_or_default();
-    let url = format!("http://127.0.0.1:{port}/{path}{query}");
-
-    let (parts, body) = req.into_parts();
-    let mut rb = state.http.request(parts.method.clone(), url);
-    for (name, value) in parts.headers.iter() {
-        // host: reqwest sets it for the target. content-length: the streamed
-        // body goes out chunked, a stale length would corrupt the request.
-        if !is_hop_by_hop(name) && name != header::HOST && name != header::CONTENT_LENGTH {
-            rb = rb.header(name, value);
-        }
-    }
-    if !matches!(parts.method, Method::GET | Method::HEAD) {
-        rb = rb.body(reqwest::Body::wrap_stream(body.into_data_stream()));
-    }
-
-    let upstream = match rb.send().await {
-        Ok(r) => r,
-        Err(err) => {
-            return ApiError(StatusCode::BAD_GATEWAY, format!("opencode proxy: {err}"))
-                .into_response();
-        }
-    };
-
-    let mut builder = Response::builder().status(upstream.status());
-    for (name, value) in upstream.headers().iter() {
-        if !is_hop_by_hop(name) {
-            builder = builder.header(name, value);
-        }
-    }
-    // Stream the body through unbuffered — this is what keeps SSE live.
-    builder
-        .body(Body::from_stream(upstream.bytes_stream()))
-        .unwrap_or_else(|err| {
-            ApiError(StatusCode::BAD_GATEWAY, format!("opencode proxy: {err}")).into_response()
-        })
-}
-
 // --- /api/events SSE ------------------------------------------------------
 
-async fn events() -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
+async fn events(
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
     // Small buffer on purpose: run.log events can carry ~MB payloads, and a
     // stalled client must backpressure the loop, not queue hundreds of MB.
     let (tx, rx) = mpsc::channel::<Event>(16);
-    tokio::spawn(event_loop(tx));
+    tokio::spawn(event_loop(tx.clone()));
+    // Chat events ride the same stream: chat.session / chat.message / chat.busy.
+    let mut chat_rx = state.chat.subscribe();
+    tokio::spawn(async move {
+        loop {
+            match chat_rx.recv().await {
+                Ok((name, data)) => {
+                    if tx.send(json_event(name, &data)).await.is_err() {
+                        return;
+                    }
+                }
+                // Lagged subscriber: drop missed events, keep streaming.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    });
     let stream = futures::stream::unfold(rx, |mut rx| async move {
         rx.recv().await.map(|ev| (Ok(ev), rx))
     });
@@ -765,6 +1388,7 @@ async fn events() -> Sse<impl Stream<Item = std::result::Result<Event, Infallibl
 struct EventCursor {
     projects: HashMap<String, i64>,
     experiments: HashMap<String, i64>,
+    artifacts: HashMap<String, u64>,
     runs: HashMap<String, (String, i64)>,
     log_offsets: HashMap<String, u64>,
 }
@@ -823,6 +1447,16 @@ fn collect_events(cursor: &mut EventCursor, first: bool) -> Result<Vec<Event>> {
             ));
         }
         push_experiment_events(&store, &project.id, cursor, &mut out)?;
+        // Artifacts appear live — anything written into the artifacts dir (by
+        // the agent or the user) pings the UI to refetch the listing.
+        let fp = local::artifacts::fingerprint(&project);
+        if cursor.artifacts.get(&project.id) != Some(&fp) {
+            cursor.artifacts.insert(project.id.clone(), fp);
+            out.push(json_event(
+                "artifacts.updated",
+                &json!({ "projectId": project.id }),
+            ));
+        }
     }
 
     for run in store.list_runs(200)? {
@@ -951,8 +1585,19 @@ fn mime_for(path: &str) -> &'static str {
 }
 
 fn asset_response(path: &str, file: rust_embed::EmbeddedFile) -> Response {
+    // index.html must revalidate every load or browsers heuristically cache it
+    // and keep loading a stale (hashed) bundle; the hashed assets themselves
+    // are immutable by name.
+    let cache = if path == "index.html" {
+        "no-cache"
+    } else {
+        "public, max-age=31536000, immutable"
+    };
     (
-        [(header::CONTENT_TYPE, mime_for(path))],
+        [
+            (header::CONTENT_TYPE, mime_for(path)),
+            (header::CACHE_CONTROL, cache),
+        ],
         file.data.into_owned(),
     )
         .into_response()

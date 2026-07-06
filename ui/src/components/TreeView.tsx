@@ -8,12 +8,14 @@ import {
   type Node,
   type NodeProps,
 } from "@xyflow/react";
+import { GitBranch, Terminal } from "lucide-react";
 import { memo, useMemo } from "react";
 import { timeAgo, type Experiment, type Run } from "../api";
+import type { ExperimentView } from "./DetailDrawer";
 import { StatusBadge } from "./StatusBadge";
 
 const NODE_W = 240;
-const NODE_H = 108;
+const NODE_H = 132;
 const GAP_X = 44;
 const GAP_Y = 72;
 const MAX_SQUARES = 8;
@@ -24,6 +26,7 @@ type ExpNodeData = {
   runs: Run[]; // oldest → newest
   isBaseline: boolean;
   selected: boolean;
+  onOpenView: (id: string, view: ExperimentView) => void;
 };
 type ExpFlowNode = Node<ExpNodeData, "exp">;
 
@@ -66,7 +69,7 @@ function runSquareClass(status: string): string {
 }
 
 const ExpNode = memo(function ExpNode({ data }: NodeProps<ExpFlowNode>) {
-  const { exp, latestRun, runs, isBaseline, selected } = data;
+  const { exp, latestRun, runs, isBaseline, selected, onOpenView } = data;
   const status = latestRun?.status;
   const live = status === "running" || status === "starting";
   const kind = isBaseline ? "BASELINE" : live ? "RUNNING" : "EXPERIMENT";
@@ -98,6 +101,27 @@ const ExpNode = memo(function ExpNode({ data }: NodeProps<ExpFlowNode>) {
         <span style={{ flex: 1 }} />
         {latestRun && <span>{timeAgo(latestRun.createdAt)}</span>}
       </div>
+      {/* Direct view shortcuts — changes always, terminal once there's a run. */}
+      <div className="node-actions" onClick={(e) => e.stopPropagation()}>
+        <button
+          className="node-action"
+          title="Open changes"
+          onClick={() => onOpenView(exp.id, "changes")}
+        >
+          <GitBranch size={13} />
+          Changes
+        </button>
+        {runs.length > 0 && (
+          <button
+            className="node-action"
+            title="Open terminal"
+            onClick={() => onOpenView(exp.id, "terminal")}
+          >
+            <Terminal size={13} />
+            Terminal
+          </button>
+        )}
+      </div>
       <Handle type="source" position={Position.Bottom} />
     </div>
   );
@@ -115,11 +139,14 @@ export function TreeView({
   runs,
   selectedId,
   onSelect,
+  onOpenView,
 }: {
   experiments: Experiment[];
   runs: Run[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
+  /** Open an experiment view as a right-pane tab (card shortcut buttons). */
+  onOpenView: (id: string, view: ExperimentView) => void;
 }) {
   const { nodes, edges } = useMemo(() => {
     const runsByExp = new Map<string, Run[]>();
@@ -146,6 +173,7 @@ export function TreeView({
           runs: expRuns,
           isBaseline: !node.exp.parentExperimentId,
           selected: node.exp.id === selectedId,
+          onOpenView,
         },
       });
       if (node.children.length === 0) return;
@@ -172,7 +200,7 @@ export function TreeView({
       rx += w + GAP_X;
     }
     return { nodes, edges };
-  }, [experiments, runs, selectedId]);
+  }, [experiments, runs, selectedId, onOpenView]);
 
   if (experiments.length === 0) {
     return (

@@ -438,9 +438,21 @@ async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<
     // only mirrors. Everything below this branch is the managed path.
     match args.backend.as_deref() {
         Some("hf") => return launch_hf(creds, args).await,
+        Some("modal") => return launch_modal(creds, args).await,
+        Some("k8s") => {
+            return Err(anyhow!(
+                "--backend k8s is supported for local experiments (`orx up`) only for now."
+            ));
+        }
+        Some("ssh") => {
+            return Err(anyhow!(
+                "--backend ssh is supported for local experiments (`orx up`) only for now."
+            ));
+        }
         Some(other) => {
             return Err(anyhow!(
-                "Unknown --backend '{}'. Supported: hf (Hugging Face Jobs).",
+                "Unknown --backend '{}'. Supported: hf (Hugging Face Jobs), \
+                 modal (Modal serverless GPUs), k8s/ssh (local experiments only).",
                 other
             ));
         }
@@ -448,7 +460,7 @@ async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<
     }
     if args.flavor.is_some() || args.image.is_some() || args.timeout.is_some() {
         return Err(anyhow!(
-            "--flavor/--image/--timeout only apply with --backend hf."
+            "--flavor/--image/--timeout only apply with --backend hf/modal/k8s."
         ));
     }
     // Resolve the target: exactly one of --sandbox, --gpu, or --cpu.
@@ -551,6 +563,7 @@ async fn launch_hf(creds: &crate::config::Credentials, args: ExpRunArgs) -> Resu
         flavor: Some(flavor.clone()),
         image: args.image.clone(),
         url: None,
+        context: None,
     };
     let created =
         create_external_run(creds, &args.exp_id, serde_json::to_value(&descriptor)?).await?;
@@ -641,6 +654,134 @@ async fn launch_hf(creds: &crate::config::Credentials, args: ExpRunArgs) -> Resu
     println!("  run    {run_id}");
     println!("  job    {}/{} ({flavor})", namespace, job.id);
     println!("  watch  {}", descriptor.url.as_deref().unwrap_or(""));
+    println!(
+        "  Follow it with `orx exp wait {}` or `orx logs {run_id}`.",
+        args.exp_id
+    );
+    Ok(())
+}
+
+/// `orx exp run <expId> --backend modal --flavor <flavor>` — run the experiment
+/// as a Modal Sandbox on the user's own Modal account. Same register → submit →
+/// supervise flow as `launch_hf`, with the Modal Python launcher as transport.
+async fn launch_modal(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<()> {
+    use crate::jobs::modal;
+    if args.sandbox.is_some() || args.gpu.is_some() || args.cpu.is_some() {
+        return Err(anyhow!(
+            "--backend modal runs on Modal serverless GPUs; drop --gpu/--cpu/--sandbox \
+             and pass --flavor instead (e.g. --flavor a10g, --flavor a100-80gb, --flavor cpu)."
+        ));
+    }
+    let flavor = args.flavor.clone().ok_or_else(|| {
+        anyhow!(
+            "--backend modal requires --flavor: a Modal GPU (t4, l4, a10g, a100, a100-80gb, \
+             l40s, h100, h200, or e.g. h100:2) — or cpu / cpu-large for CPU-only. \
+             Priced per second on your Modal account."
+        )
+    })?;
+    let resources = modal::resolve_flavor(&flavor);
+    // Fail before registering the run with the api if Modal isn't set up.
+    modal::preflight().await?;
+    let timeout_seconds = match &args.timeout {
+        Some(t) => hf::parse_timeout(t)?,
+        None => 4 * 3600,
+    };
+    const MODAL_APP: &str = "openresearch";
+
+    // Register first: the run must exist in the tree before compute starts,
+    // and the response carries the repo/branch/command orx needs to submit.
+    let mut descriptor = BackendDescriptor {
+        kind: "modal_job".to_string(),
+        namespace: Some(MODAL_APP.to_string()),
+        job_id: None,
+        flavor: Some(flavor.clone()),
+        image: args.image.clone(),
+        url: None,
+        context: None,
+    };
+    let created =
+        create_external_run(creds, &args.exp_id, serde_json::to_value(&descriptor)?).await?;
+    let run_id = created.run.id.clone();
+
+    let image = args
+        .image
+        .clone()
+        .unwrap_or_else(|| modal::default_image(resources.gpu.is_some()));
+    let script = hf_clone_script(
+        &created.branch_name,
+        &created.github_owner,
+        &created.github_repo,
+        &created.run_command,
+    );
+
+    // Same clone-credential precedence as the HF path: explicit GITHUB_TOKEN
+    // (env, then the box's synced env file) overrides the api's repo-scoped
+    // installation token.
+    let mut env = HashMap::new();
+    if let Ok(hf_token) = hf::resolve_token() {
+        env.insert("HF_TOKEN".to_string(), hf_token);
+    }
+    let github_token = std::env::var("GITHUB_TOKEN")
+        .ok()
+        .filter(|t| !t.trim().is_empty())
+        .or_else(|| crate::config::synced_env_var("GITHUB_TOKEN"))
+        .or_else(|| created.github_token.clone());
+    if let Some(gh) = github_token {
+        env.insert("GITHUB_TOKEN".to_string(), gh);
+    }
+    let mut tags = HashMap::new();
+    tags.insert("or_run".to_string(), run_id.clone());
+    tags.insert("or_experiment".to_string(), args.exp_id.clone());
+    tags.insert("or_project".to_string(), created.project_id.clone());
+
+    let sandbox_id = modal::run_job(&modal::ModalJobSpec {
+        script,
+        image: image.clone(),
+        gpu: resources.gpu.clone(),
+        cpu: resources.cpu,
+        memory: resources.memory,
+        env,
+        timeout_seconds,
+        app: MODAL_APP.to_string(),
+        tags,
+    })
+    .await?;
+
+    // Record the sandbox handle: local store (the truth orx serve exposes),
+    // then the api mirror. The local write must not be lost even if PATCH fails.
+    descriptor.job_id = Some(sandbox_id.clone());
+    descriptor.image = Some(image);
+    let store = Store::open()?;
+    store.upsert_run(&StoredRun {
+        id: run_id.clone(),
+        experiment_id: args.exp_id.clone(),
+        project_id: created.project_id.clone(),
+        status: "starting".to_string(),
+        backend_json: descriptor.to_json(),
+        command: created.run_command.clone(),
+        created_at: now_ms(),
+        updated_at: now_ms(),
+        ended_at: None,
+        exit_code: None,
+        commit_sha: None,
+        result_markdown: None,
+        cancel_requested: false,
+    })?;
+    if let Err(err) = crate::client::update_external_run(
+        creds,
+        &run_id,
+        serde_json::json!({ "backend": serde_json::to_value(&descriptor)? }),
+    )
+    .await
+    {
+        eprintln!("warning: could not mirror the sandbox handle to the api: {err}");
+    }
+
+    spawn_detached_supervise(&run_id)?;
+
+    println!("\u{2713} Modal sandbox submitted.");
+    println!("  run     {run_id}");
+    println!("  sandbox {sandbox_id} ({flavor})");
     println!(
         "  Follow it with `orx exp wait {}` or `orx logs {run_id}`.",
         args.exp_id
@@ -773,17 +914,24 @@ async fn local_desc(
     Ok(())
 }
 
-/// Local `exp run`: external backends only — HF Jobs for v1.
+/// Local `exp run`: external backends only — HF Jobs, Modal, or a k8s cluster.
 async fn local_launch(args: ExpRunArgs) -> Result<()> {
     match args.backend.as_deref() {
         Some("hf") => crate::local::hf::launch_local_hf(&args).await,
+        Some("modal") => crate::local::modal::launch_local_modal(&args).await,
+        Some("k8s") => crate::local::k8s::launch_local_k8s(&args).await,
+        Some("ssh") => crate::local::ssh::launch_local_ssh(&args).await,
         Some(other) => Err(anyhow!(
-            "Unknown --backend '{}'. Local experiments support: hf (Hugging Face Jobs).",
+            "Unknown --backend '{}'. Local experiments support: hf (Hugging Face Jobs), \
+             modal (Modal serverless GPUs), k8s (your Kubernetes cluster), ssh (your own box).",
             other
         )),
         None => Err(anyhow!(
             "Local experiments run on external compute only. \
-             Pass `--backend hf --flavor <flavor>` (e.g. --flavor a10g-small)."
+             Pass `--backend hf --flavor <flavor>` (e.g. --flavor a10g-small), \
+             `--backend modal --flavor <flavor>` (e.g. --flavor a10g), \
+             `--backend k8s --flavor <flavor>` (see `orx up` Settings → Compute), \
+             or `--backend ssh --flavor <host>` (an ~/.ssh/config alias)."
         )),
     }
 }

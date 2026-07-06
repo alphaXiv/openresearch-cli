@@ -1,3 +1,4 @@
+import { GitBranch } from "lucide-react";
 import { shortId, timeAgo, type Experiment, type Run } from "../api";
 import { StatusBadge } from "./StatusBadge";
 
@@ -18,11 +19,15 @@ export function RunsTable({
   runs,
   experiments,
   onOpen,
+  onOpenChanges,
   onCancel,
 }: {
   runs: Run[];
   experiments: Experiment[];
+  /** Row click — opens the run's experiment terminal tab. */
   onOpen: (run: Run) => void;
+  /** GitBranch shortcut — opens the experiment's changes tab. */
+  onOpenChanges: (experimentId: string) => void;
   onCancel: (runId: string) => void;
 }) {
   const slugByExp = new Map(experiments.map((e) => [e.id, e.slug]));
@@ -66,17 +71,29 @@ export function RunsTable({
                 <td>{timeAgo(run.createdAt)}</td>
                 <td className="mono">{run.exitCode ?? "—"}</td>
                 <td>
-                  {live && (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
                     <button
-                      className="btn sm danger"
+                      className="icon-btn"
+                      title="Open changes"
                       onClick={(e) => {
                         e.stopPropagation();
-                        onCancel(run.id);
+                        onOpenChanges(run.experimentId);
                       }}
                     >
-                      Cancel
+                      <GitBranch size={14} />
                     </button>
-                  )}
+                    {live && (
+                      <button
+                        className="btn sm danger"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onCancel(run.id);
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </span>
                 </td>
               </tr>
             );

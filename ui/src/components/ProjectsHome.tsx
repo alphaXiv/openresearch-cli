@@ -17,6 +17,9 @@ export function ProjectsHome({
   return (
     <div className="home">
       <div className="home-inner">
+        <div className="home-brand">
+          Open<span>Research</span>
+        </div>
         <div className="home-head">
           <h2>Projects</h2>
           <button className="btn sm" onClick={() => setModalOpen(true)}>

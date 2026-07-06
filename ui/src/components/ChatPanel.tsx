@@ -1,39 +1,66 @@
 import { ArrowUp, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import * as oc from "../opencode";
-import { ClosableTab } from "./ClosableTab";
+import {
+  createChatSession,
+  deleteChatSession,
+  getChatMessages,
+  interruptChat,
+  listChatSessions,
+  sendChatMessage,
+  type ChatMessage,
+  type ChatPart,
+  type ChatSession,
+  type Harness,
+} from "../api";
+import { onChatEvent } from "../events";
 import { Md } from "./Md";
+import { ClosableTab } from "./ClosableTab";
+import {
+  defaultSelection,
+  HARNESS_LABELS,
+  ModelPicker,
+  type ModelSelection,
+} from "./ModelPicker";
+
+const SELECTION_STORAGE_KEY = "orx:agent-selection";
+
+function loadSelection(): ModelSelection | null {
+  try {
+    const raw = localStorage.getItem(SELECTION_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as ModelSelection) : null;
+  } catch {
+    return null;
+  }
+}
 
 // --- chat state --------------------------------------------------------------
 
 interface ChatState {
-  messagesBySession: Record<string, oc.MessageWithParts[]>;
+  messagesBySession: Record<string, ChatMessage[]>;
   busySessions: Set<string>;
 }
 
 type Action =
   | { type: "reset" }
-  | { type: "seed"; sessionId: string; messages: oc.MessageWithParts[] }
-  | { type: "messageUpdated"; sessionId: string; info: oc.MessageInfo }
-  | { type: "partUpdated"; sessionId: string; part: oc.Part }
-  | { type: "partDelta"; sessionId: string; messageId: string; partId: string; field: string; delta: string }
+  | { type: "seed"; sessionId: string; messages: ChatMessage[] }
+  | { type: "upsertMessage"; sessionId: string; message: ChatMessage }
   | { type: "optimisticUser"; sessionId: string; text: string }
   | { type: "busy"; sessionId: string; busy: boolean }
   | { type: "seedBusy"; sessions: string[] };
 
 const LOCAL_PREFIX = "local-";
 
-function upsertMessage(list: oc.MessageWithParts[], info: oc.MessageInfo): oc.MessageWithParts[] {
-  const i = list.findIndex((m) => m.info.id === info.id);
+function upsertMessage(list: ChatMessage[], message: ChatMessage): ChatMessage[] {
+  const i = list.findIndex((m) => m.id === message.id);
   if (i >= 0) {
     const next = list.slice();
-    next[i] = { ...next[i], info };
+    next[i] = message;
     return next;
   }
-  // A real user message replaces any optimistic local one.
+  // The server's copy of the user message replaces the optimistic local one.
   const cleaned =
-    info.role === "user" ? list.filter((m) => !m.info.id.startsWith(LOCAL_PREFIX)) : list;
-  return [...cleaned, { info, parts: [] }];
+    message.role === "user" ? list.filter((m) => !m.id.startsWith(LOCAL_PREFIX)) : list;
+  return [...cleaned, message];
 }
 
 function reducer(state: ChatState, action: Action): ChatState {
@@ -45,66 +72,23 @@ function reducer(state: ChatState, action: Action): ChatState {
         ...state,
         messagesBySession: { ...state.messagesBySession, [action.sessionId]: action.messages },
       };
-    case "messageUpdated": {
+    case "upsertMessage": {
       const list = state.messagesBySession[action.sessionId] ?? [];
       return {
         ...state,
         messagesBySession: {
           ...state.messagesBySession,
-          [action.sessionId]: upsertMessage(list, action.info),
+          [action.sessionId]: upsertMessage(list, action.message),
         },
-      };
-    }
-    case "partUpdated": {
-      const list = state.messagesBySession[action.sessionId] ?? [];
-      const mi = list.findIndex((m) => m.info.id === action.part.messageID);
-      if (mi < 0) return state;
-      const msg = list[mi];
-      const pi = msg.parts.findIndex((p) => p.id === action.part.id);
-      const parts =
-        pi >= 0
-          ? [...msg.parts.slice(0, pi), action.part, ...msg.parts.slice(pi + 1)]
-          : [...msg.parts, action.part];
-      const next = list.slice();
-      next[mi] = { ...msg, parts };
-      return {
-        ...state,
-        messagesBySession: { ...state.messagesBySession, [action.sessionId]: next },
-      };
-    }
-    case "partDelta": {
-      const list = state.messagesBySession[action.sessionId] ?? [];
-      const mi = list.findIndex((m) => m.info.id === action.messageId);
-      if (mi < 0) return state;
-      const msg = list[mi];
-      const pi = msg.parts.findIndex((p) => p.id === action.partId);
-      if (pi < 0) return state;
-      const part = msg.parts[pi];
-      const prev = part[action.field];
-      const updated: oc.Part = {
-        ...part,
-        [action.field]: (typeof prev === "string" ? prev : "") + action.delta,
-      };
-      const parts = [...msg.parts.slice(0, pi), updated, ...msg.parts.slice(pi + 1)];
-      const next = list.slice();
-      next[mi] = { ...msg, parts };
-      return {
-        ...state,
-        messagesBySession: { ...state.messagesBySession, [action.sessionId]: next },
       };
     }
     case "optimisticUser": {
       const list = state.messagesBySession[action.sessionId] ?? [];
-      const msg: oc.MessageWithParts = {
-        info: { id: `${LOCAL_PREFIX}${Date.now()}`, role: "user" },
-        parts: [
-          {
-            id: `${LOCAL_PREFIX}part`,
-            messageID: `${LOCAL_PREFIX}${Date.now()}`,
-            type: "text",
-            text: action.text,
-          },
-        ],
+      const msg: ChatMessage = {
+        id: `${LOCAL_PREFIX}${Date.now()}`,
+        role: "user",
+        parts: [{ id: "p0", type: "text", text: action.text }],
+        createdAt: Date.now(),
       };
       return {
         ...state,
@@ -124,10 +108,38 @@ function reducer(state: ChatState, action: Action): ChatState {
 
 // --- rendering ---------------------------------------------------------------
 
+/** Which detected agent the first message will run on — keeps autodetection
+ * legible at the moment the user first types. */
+function EmptyStateAgentHint({
+  harnesses,
+  selection,
+}: {
+  harnesses: Harness[];
+  selection: ModelSelection | null;
+}) {
+  if (harnesses.length === 0) return null; // still detecting
+  const h = selection ? harnesses.find((x) => x.id === selection.harness) : undefined;
+  if (!h) {
+    return (
+      <p className="chat-empty-hint">
+        No coding agent detected on this machine — install Claude Code, Codex or opencode and
+        sign in, then re-open the model picker below.
+      </p>
+    );
+  }
+  return (
+    <p className="chat-empty-hint">
+      Chatting with {h.name}
+      {h.account ? ` as ${h.account}` : ""} — detected automatically, switch in the model picker
+      below.
+    </p>
+  );
+}
+
 function toolStatusClass(status: string | undefined): string {
   if (status === "error") return "tool-status error";
   if (status === "completed") return "tool-status";
-  return "tool-status running"; // pending/running = in-flight
+  return "tool-status running"; // running = in-flight
 }
 
 function relTime(ts: number | undefined): string {
@@ -141,44 +153,52 @@ function relTime(ts: number | undefined): string {
   return `${Math.floor(h / 24)}d`;
 }
 
-function toolSummary(part: oc.Part): string {
+function toolSummary(part: ChatPart): string {
   const input = part.state?.input;
-  if (input?.command) return input.command;
-  if (input?.filePath) return input.filePath;
-  if (input?.description) return input.description;
+  if (typeof input?.command === "string") return input.command;
+  if (typeof input?.filePath === "string") return input.filePath;
+  if (typeof input?.description === "string") return input.description;
   return part.state?.title ?? "";
 }
 
-function ToolRow({ part }: { part: oc.Part }) {
+function ToolRow({ part, onOpenFile }: { part: ChatPart; onOpenFile?: (path: string) => void }) {
   const state = part.state;
   const output = state?.error || state?.output || "";
-  // todowrite gets its checklist rendered instead of raw output.
-  const todos = part.tool === "todowrite" ? (state?.input?.todos ?? []) : null;
+  const filePath = typeof state?.input?.filePath === "string" ? state.input.filePath : null;
   return (
     <details className="tool-row">
       <summary>
         <span className={toolStatusClass(state?.status)} />
         <span className="tool-name">{part.tool ?? "tool"}</span>
-        <span className="tool-cmd">{toolSummary(part)}</span>
+        {filePath && onOpenFile ? (
+          <button
+            className="tool-cmd file-link"
+            title={`Open ${filePath}`}
+            onClick={(e) => {
+              e.preventDefault(); // keep the <details> from toggling
+              e.stopPropagation();
+              onOpenFile(filePath);
+            }}
+          >
+            {filePath}
+          </button>
+        ) : (
+          <span className="tool-cmd">{toolSummary(part)}</span>
+        )}
       </summary>
-      {todos && todos.length > 0 ? (
-        <div className="tool-output">
-          {todos.map((t, i) => (
-            <div key={i}>
-              {t.status === "completed" ? "[x]" : t.status === "in_progress" ? "[~]" : "[ ]"}{" "}
-              {t.content}
-            </div>
-          ))}
-        </div>
-      ) : output ? (
-        <div className="tool-output">{output.slice(0, 20000)}</div>
-      ) : null}
+      {output ? <div className="tool-output">{output.slice(0, 20000)}</div> : null}
     </details>
   );
 }
 
-function Message({ message }: { message: oc.MessageWithParts }) {
-  if (message.info.role === "user") {
+function Message({
+  message,
+  onOpenFile,
+}: {
+  message: ChatMessage;
+  onOpenFile?: (path: string) => void;
+}) {
+  if (message.role === "user") {
     const text = message.parts
       .filter((p) => p.type === "text")
       .map((p) => p.text ?? "")
@@ -193,7 +213,8 @@ function Message({ message }: { message: oc.MessageWithParts }) {
   return (
     <div className="msg-assistant">
       {message.parts.map((part) => {
-        if (part.type === "text" && part.text) return <Md key={part.id} text={part.text} />;
+        if (part.type === "text" && part.text)
+          return <Md key={part.id} text={part.text} onOpenFile={onOpenFile} />;
         if (part.type === "reasoning" && part.text)
           return (
             <details key={part.id} className="reasoning">
@@ -201,7 +222,8 @@ function Message({ message }: { message: oc.MessageWithParts }) {
               {part.text}
             </details>
           );
-        if (part.type === "tool") return <ToolRow key={part.id} part={part} />;
+        if (part.type === "tool")
+          return <ToolRow key={part.id} part={part} onOpenFile={onOpenFile} />;
         return null;
       })}
     </div>
@@ -212,14 +234,16 @@ function Message({ message }: { message: oc.MessageWithParts }) {
 
 export function ChatPanel({
   projectId,
-  agentRunning,
-  onRetryAgent,
+  railHeader,
+  onOpenFile,
 }: {
   projectId: string;
-  agentRunning: boolean;
-  onRetryAgent: () => void;
+  /** Brand + project switcher block rendered at the top of the agents rail. */
+  railHeader?: React.ReactNode;
+  /** Open a project file in the right pane (chat tool rows are clickable). */
+  onOpenFile?: (path: string) => void;
 }) {
-  const [sessions, setSessions] = useState<oc.Session[]>([]);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   // Sessions open as tabs in the chat header, in strip order. Selecting a
   // session (rail or strip) opens a tab; closing one only removes it here.
@@ -229,11 +253,18 @@ export function ChatPanel({
     messagesBySession: {},
     busySessions: new Set<string>(),
   });
+  const [harnesses, setHarnesses] = useState<Harness[]>([]);
+  const [selection, setSelection] = useState<ModelSelection | null>(loadSelection);
   const loadedSessions = useRef(new Set<string>());
   const threadRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 
-  // Reset everything when the project (and thus the opencode process) changes.
+  const selectModel = (next: ModelSelection) => {
+    setSelection(next);
+    localStorage.setItem(SELECTION_STORAGE_KEY, JSON.stringify(next));
+  };
+
+  // Reset everything when the project changes.
   useEffect(() => {
     setSessions([]);
     setActiveId(null);
@@ -241,6 +272,16 @@ export function ChatPanel({
     setDraft("");
     dispatch({ type: "reset" });
     loadedSessions.current = new Set();
+    listChatSessions(projectId)
+      .then((list) => {
+        setSessions(list);
+        setActiveId((cur) => cur ?? list[0]?.id ?? null);
+        dispatch({
+          type: "seedBusy",
+          sessions: list.filter((s) => s.busy).map((s) => s.id),
+        });
+      })
+      .catch(() => {});
   }, [projectId]);
 
   // Whatever session becomes active always gets a tab — covers the initially
@@ -261,93 +302,42 @@ export function ChatPanel({
     [openTabs],
   );
 
-  const refreshSessions = useCallback(async () => {
-    try {
-      const list = await oc.listSessions();
-      list.sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
-      setSessions(list);
-      setActiveId((cur) => cur ?? list[0]?.id ?? null);
-      const statuses = await oc.getSessionStatuses();
-      dispatch({
-        type: "seedBusy",
-        sessions: Object.entries(statuses)
-          .filter(([, s]) => s.type === "busy" || s.type === "retry")
-          .map(([id]) => id),
-      });
-    } catch {
-      // agent not up yet; caller re-renders when it is
-    }
-  }, []);
-
-  useEffect(() => {
-    if (agentRunning) void refreshSessions();
-  }, [agentRunning, projectId, refreshSessions]);
-
   // Load message history when a session becomes active.
   useEffect(() => {
     if (!activeId || loadedSessions.current.has(activeId)) return;
     loadedSessions.current.add(activeId);
-    oc.getMessages(activeId)
+    getChatMessages(activeId)
       .then((messages) => dispatch({ type: "seed", sessionId: activeId, messages }))
       .catch(() => loadedSessions.current.delete(activeId));
   }, [activeId]);
 
-  // Global opencode event stream → reducer.
+  // Chat events from the shared /api/events stream.
   useEffect(() => {
-    if (!agentRunning) return;
-    const unsubscribe = oc.subscribeEvents((event) => {
-      const p = event.properties;
-      switch (event.type) {
-        case "message.updated":
-          if (p.info?.sessionID)
-            dispatch({ type: "messageUpdated", sessionId: p.info.sessionID, info: p.info });
+    return onChatEvent((ev) => {
+      switch (ev.type) {
+        case "session":
+          if (ev.session.projectId !== projectId) return;
+          setSessions((cur) => {
+            const i = cur.findIndex((s) => s.id === ev.session.id);
+            if (i < 0) return [ev.session, ...cur];
+            const next = cur.slice();
+            next[i] = ev.session;
+            return next;
+          });
           break;
-        case "message.part.updated": {
-          const sid = p.part?.sessionID ?? p.sessionID;
-          if (p.part && sid) dispatch({ type: "partUpdated", sessionId: sid, part: p.part });
+        case "message":
+          dispatch({ type: "upsertMessage", sessionId: ev.sessionId, message: ev.message });
           break;
-        }
-        case "message.part.delta":
-          if (p.sessionID && p.messageID && p.partID && p.field)
-            dispatch({
-              type: "partDelta",
-              sessionId: p.sessionID,
-              messageId: p.messageID,
-              partId: p.partID,
-              field: p.field,
-              delta: p.delta ?? "",
-            });
-          break;
-        case "session.status":
-          if (p.sessionID)
-            dispatch({
-              type: "busy",
-              sessionId: p.sessionID,
-              busy: p.status?.type === "busy" || p.status?.type === "retry",
-            });
-          break;
-        case "session.idle":
-          if (p.sessionID) dispatch({ type: "busy", sessionId: p.sessionID, busy: false });
-          break;
-        case "session.updated":
-          if (p.info) {
-            const info = p.info as unknown as oc.Session;
-            setSessions((cur) => {
-              const i = cur.findIndex((s) => s.id === info.id);
-              if (i < 0) return info.parentID ? cur : [info, ...cur];
-              const next = cur.slice();
-              next[i] = info;
-              return next;
-            });
-          }
+        case "busy":
+          dispatch({ type: "busy", sessionId: ev.sessionId, busy: ev.busy });
           break;
       }
     });
-    return unsubscribe;
-  }, [agentRunning, projectId]);
+  }, [projectId]);
 
   const messages = activeId ? (state.messagesBySession[activeId] ?? []) : [];
   const busy = activeId ? state.busySessions.has(activeId) : false;
+  const activeSession = sessions.find((s) => s.id === activeId);
 
   // Autoscroll while pinned to the bottom.
   useEffect(() => {
@@ -357,12 +347,18 @@ export function ChatPanel({
 
   async function send() {
     const text = draft.trim();
-    if (!text || !agentRunning) return;
+    if (!text || busy) return;
+    const effective = selection ?? defaultSelection(harnesses);
+    if (!effective && !activeId) return; // no harness available at all
     setDraft("");
     let sid = activeId;
     try {
       if (!sid) {
-        const session = await oc.createSession();
+        const session = await createChatSession(
+          projectId,
+          effective!.harness,
+          effective!.model,
+        );
         loadedSessions.current.add(session.id);
         setSessions((cur) => [session, ...cur]);
         setActiveId(session.id);
@@ -371,26 +367,31 @@ export function ChatPanel({
       dispatch({ type: "optimisticUser", sessionId: sid, text });
       dispatch({ type: "busy", sessionId: sid, busy: true });
       stickToBottom.current = true;
-      await oc.sendMessage(sid, text);
+      const current = sessions.find((s) => s.id === sid);
+      // Model overrides only apply within the session's own harness.
+      const model =
+        effective && (!current || current.harness === effective.harness)
+          ? effective.model
+          : undefined;
+      await sendChatMessage(sid, text, model);
     } catch {
-      if (sid) dispatch({ type: "busy", sessionId: sid, busy: false });
-    } finally {
       if (sid) dispatch({ type: "busy", sessionId: sid, busy: false });
     }
   }
 
   function stop() {
-    if (activeId) void oc.abortSession(activeId);
+    if (activeId) void interruptChat(activeId);
   }
 
   async function removeSession(id: string) {
-    await oc.deleteSession(id).catch(() => false);
+    await deleteChatSession(id).catch(() => false);
     setSessions((cur) => cur.filter((s) => s.id !== id));
     closeTab(id);
   }
 
   const rail = (
     <aside className="session-rail">
+      {railHeader}
       <div className="rail-header">
         <div className="rail-title">Agents</div>
         <button
@@ -412,11 +413,12 @@ export function ChatPanel({
           <button
             key={s.id}
             className={`session-row ${s.id === activeId ? "active" : ""}`}
+            title={`${HARNESS_LABELS[s.harness]}${s.model ? ` · ${s.model}` : ""}`}
             onClick={() => setActiveId(s.id)}
           >
             {state.busySessions.has(s.id) && <span className="busy-dot" />}
             <span className="session-title">{s.title?.trim() || "Untitled"}</span>
-            <span className="session-time">{relTime(s.time?.updated)}</span>
+            <span className="session-time">{relTime(s.updatedAt)}</span>
             <span
               className="del"
               title="Delete session"
@@ -432,25 +434,6 @@ export function ChatPanel({
       </div>
     </aside>
   );
-
-  if (!agentRunning) {
-    return (
-      <>
-        {rail}
-        <section className="chat-pane">
-          <div className="chat-empty">
-            <h2>
-              Open<span>Research</span>
-            </h2>
-            <p>The research agent is not running.</p>
-            <button className="btn" onClick={onRetryAgent}>
-              Start agent
-            </button>
-          </div>
-        </section>
-      </>
-    );
-  }
 
   return (
     <>
@@ -496,6 +479,10 @@ export function ChatPanel({
             Open<span>Research</span>
           </h2>
           <p>Ask the agent to explore your codebase, branch experiments, and launch runs.</p>
+          <EmptyStateAgentHint
+            harnesses={harnesses}
+            selection={selection ?? defaultSelection(harnesses)}
+          />
         </div>
       ) : (
         <div
@@ -507,7 +494,7 @@ export function ChatPanel({
           }}
         >
           {messages.map((m) => (
-            <Message key={m.info.id} message={m} />
+            <Message key={m.id} message={m} onOpenFile={onOpenFile} />
           ))}
           {busy && (
             <div className="working">
@@ -521,7 +508,11 @@ export function ChatPanel({
         <div className="composer-box">
           <textarea
             value={draft}
-            placeholder="Ask the research agent…"
+            placeholder={
+              activeSession
+                ? `Message ${HARNESS_LABELS[activeSession.harness]}…`
+                : "Ask the research agent…"
+            }
             rows={2}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -532,6 +523,8 @@ export function ChatPanel({
             }}
           />
           <div className="composer-actions">
+            <ModelPicker value={selection} onSelect={selectModel} onHarnesses={setHarnesses} />
+            <div style={{ flex: 1 }} />
             {busy ? (
               <button className="send-btn stop" title="Stop" aria-label="Stop" onClick={stop}>
                 <X size={16} />

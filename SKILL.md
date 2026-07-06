@@ -514,6 +514,70 @@ Rules and notes:
   `orx exp cancel` reaches the job within a few seconds. A detached
   `orx supervise` process mirrors status and logs; don't kill it.
 
+### Running on Modal — `--backend modal`
+
+**Same rule as HF: managed compute is the default. Use `--backend modal` ONLY
+when the user explicitly asks for Modal** ("run this on Modal", "use my Modal
+account"). Modal runs on the user's own Modal account, billed there per second;
+no OpenResearch balance is spent. It runs the job in a Modal **Sandbox** (an
+ephemeral container that scales to zero when the run ends).
+
+orx auto-provisions a managed `modal` environment on the first Modal launch (no
+pip-install needed). You only need a Modal token — `MODAL_TOKEN_ID` +
+`MODAL_TOKEN_SECRET` in the environment (set them as org or project env vars and
+they sync to the box automatically), or `modal token new`.
+
+```sh
+orx exp run <expId> --backend modal --flavor a10g               # one GPU sandbox
+orx exp run <expId> --backend modal --flavor a100-80gb --timeout 8h
+orx exp run <expId> --backend modal --flavor h100:2             # 2× H100
+orx exp run <expId> --backend modal --flavor cpu --image python:3.12
+```
+
+Rules and notes:
+- **`--flavor` is required** and replaces `--gpu`/`--cpu`/`--sandbox`. It's a
+  Modal GPU: `t4`, `l4`, `a10g`, `a100`, `a100-80gb`, `l40s`, `h100`, `h200`
+  (append `:N` for a count, e.g. `h100:2`); or `cpu` / `cpu-large` for CPU-only.
+  Prefer the smallest flavor that fits.
+- **Set `--timeout` to cover the whole run** (default `4h`). Modal kills the
+  sandbox at the timeout; a killed sandbox reads as a failed run.
+- Same clone contract as HF/managed: the sandbox clones the experiment branch's
+  **GitHub tip** and runs the fixed command — commit and push first. Private
+  repos work automatically via the platform's repo-scoped clone token.
+- `--image` overrides the container (default: a CUDA pytorch image on GPU
+  flavors, `python:3.12` on cpu). Pick one with your deps baked in when
+  pip-install time dominates.
+- Everything downstream is identical (`orx exp wait` / `orx runs` / `orx logs`,
+  cancel from web or `orx exp cancel`). A detached `orx supervise` mirrors
+  status and logs; don't kill it.
+
+### Running on your own box — `--backend ssh`
+
+**Same rule: use `--backend ssh` ONLY when the user explicitly asks to run on
+their own machine/server** ("run this on my box", "use my GPU server"). It runs
+the experiment as a detached background process on a host from your
+`~/.ssh/config`, over `ssh` — no scheduler, no container, the host's own
+environment.
+
+```sh
+orx exp run <expId> --backend ssh --flavor my-gpu-box     # ~/.ssh/config alias
+```
+
+Rules and notes:
+- **`--flavor` is the ssh host alias** (from `~/.ssh/config`), not a hardware
+  shape — a plain server has whatever hardware it has. See `orx up` Settings →
+  Compute → SSH (each host has a "Test" button that checks reachability + git).
+- Auth is your ssh keys/agent — orx never reads a key, it just shells out to
+  `ssh <alias>`. The host needs `git` and `bash`; it clones the experiment
+  branch's GitHub tip (private repos via the `GITHUB_TOKEN` passed in the run's
+  env) and runs the fixed command. Commit and push first, same as the others.
+- No `--image` (the host's environment is used as-is) and no `--timeout` (the
+  process runs until it exits or you cancel).
+- The run lives under `~/.orx/runs/<runId>/` on the host (`run.sh`, `log`,
+  `pid`, `exit_code`). Cancel from the web or `orx exp cancel` kills the remote
+  process group. Everything downstream (`orx exp wait` / `runs` / `logs`) is
+  identical; a detached `orx supervise` polls it over ssh — don't kill it.
+
 ## Spinning up a standalone instance — `orx instance create`
 
 Provision a persistent instance in an **organization**, not tied to any

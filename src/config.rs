@@ -126,6 +126,56 @@ pub fn synced_env_var(key: &str) -> Option<String> {
     None
 }
 
+/// All vars in the synced env file, in file order (same format as
+/// `synced_env_var`). Malformed lines are skipped.
+pub fn list_synced_env() -> Vec<(String, String)> {
+    let Some(path) = dirs::home_dir().map(|h| h.join(".openresearch").join("env")) else {
+        return Vec::new();
+    };
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in content.lines() {
+        let Some(rest) = line.strip_prefix("export ") else {
+            continue;
+        };
+        let Some((key, quoted)) = rest.split_once('=') else {
+            continue;
+        };
+        let Some(escaped) = quoted.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')) else {
+            continue;
+        };
+        let value = escaped.replace(r"'\''", "'").replace(r"\\", r"\");
+        if !key.is_empty() && !value.is_empty() {
+            out.push((key.to_string(), value));
+        }
+    }
+    out
+}
+
+/// Drop `key`'s line from the synced env file. Missing file/key is a no-op.
+pub fn remove_synced_env_var(key: &str) -> Result<()> {
+    let Some(path) = dirs::home_dir().map(|h| h.join(".openresearch").join("env")) else {
+        return Ok(());
+    };
+    let Ok(existing) = std::fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    let prefix = format!("export {key}=");
+    let lines: Vec<&str> = existing
+        .lines()
+        .filter(|l| !l.starts_with(&prefix))
+        .collect();
+    let body = if lines.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", lines.join("\n"))
+    };
+    std::fs::write(&path, body)?;
+    Ok(())
+}
+
 /// Write `export KEY='value'` into `~/.openresearch/env` (the exact format
 /// `synced_env_var` parses), replacing an existing line for `key` and keeping
 /// every other line. File is owner-only (0600) on create and rewrite.

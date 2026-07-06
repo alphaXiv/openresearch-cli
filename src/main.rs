@@ -518,21 +518,28 @@ pub struct ExpRunArgs {
     /// Run on an existing sandbox instead of provisioning. Mutually exclusive with `--gpu`/`--cpu`.
     #[arg(long)]
     pub sandbox: Option<String>,
-    /// External executor instead of managed compute. Currently `hf` (Hugging
-    /// Face Jobs, billed to your HF account): orx submits the job and a
-    /// detached supervisor mirrors status/logs back.
+    /// External executor instead of managed compute: `hf` (Hugging Face Jobs,
+    /// billed to your HF account), `modal` (a Modal Sandbox on your own Modal
+    /// account, billed per second), `k8s` (a Job on your own Kubernetes
+    /// cluster), or `ssh` (a detached process on one of your own boxes). k8s and
+    /// ssh are local experiments only. orx submits the job and a detached
+    /// supervisor mirrors status/logs back.
     #[arg(long)]
     pub backend: Option<String>,
-    /// HF hardware flavor (with `--backend hf`), e.g. t4-small, a10g-small,
-    /// a100-large, h200. Required for HF runs.
+    /// Hardware flavor. With `--backend hf`: t4-small, a10g-small, a100-large,
+    /// h200, … With `--backend modal`: a Modal GPU (t4, l4, a10g, a100,
+    /// a100-80gb, l40s, h100, h200, or e.g. h100:2) or cpu/cpu-large. With
+    /// `--backend k8s`: a detected/custom flavor name from `orx up` Settings →
+    /// Compute. With `--backend ssh`: an ~/.ssh/config host alias to run on.
+    /// Required for external-backend runs.
     #[arg(long)]
     pub flavor: Option<String>,
-    /// Docker image for the job (with `--backend hf`). Defaults to python:3.12
-    /// on cpu-* flavors, a CUDA pytorch image otherwise.
+    /// Docker image for the job (with `--backend hf/modal/k8s`). Defaults to
+    /// python:3.12 on CPU flavors, a CUDA pytorch image otherwise.
     #[arg(long)]
     pub image: Option<String>,
-    /// Job timeout (with `--backend hf`): 90s, 30m, 4h, 1d. Default 4h — HF's
-    /// own default is only 30 minutes.
+    /// Job timeout (with `--backend hf/modal/k8s`): 90s, 30m, 4h, 1d. Default 4h —
+    /// HF's own default is only 30 minutes.
     #[arg(long)]
     pub timeout: Option<String>,
     /// Launch even if the experiment's branch has no changes over its parent

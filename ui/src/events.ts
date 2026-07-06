@@ -3,7 +3,7 @@
 // terminals can subscribe without threading props everywhere.
 
 import { useEffect, useRef } from "react";
-import type { Experiment, Project, Run } from "./api";
+import type { ChatMessage, ChatSession, Experiment, Project, Run } from "./api";
 
 export interface RunLogEvent {
   runId: string;
@@ -31,10 +31,32 @@ function emitRunLog(ev: RunLogEvent) {
   logListeners.get(ev.runId)?.forEach((fn) => fn(ev));
 }
 
+// Chat events fan out the same way so ChatPanel shares the one EventSource.
+export type ChatEvent =
+  | { type: "session"; session: ChatSession }
+  | { type: "message"; sessionId: string; message: ChatMessage }
+  | { type: "busy"; sessionId: string; busy: boolean };
+
+type ChatListener = (ev: ChatEvent) => void;
+const chatListeners = new Set<ChatListener>();
+
+export function onChatEvent(fn: ChatListener): () => void {
+  chatListeners.add(fn);
+  return () => {
+    chatListeners.delete(fn);
+  };
+}
+
+function emitChat(ev: ChatEvent) {
+  chatListeners.forEach((fn) => fn(ev));
+}
+
 export interface OrxEventHandlers {
   onRun: (run: Run) => void;
   onExperiment: (experiment: Experiment) => void;
   onProject: (project: Project) => void;
+  /** The project's artifacts dir changed on disk — refetch the listing. */
+  onArtifacts?: (projectId: string) => void;
 }
 
 export function useOrxEvents(handlers: OrxEventHandlers) {
@@ -62,9 +84,25 @@ export function useOrxEvents(handlers: OrxEventHandlers) {
       const d = parse<{ project: Project }>(e as MessageEvent);
       if (d?.project) ref.current.onProject(d.project);
     });
+    es.addEventListener("artifacts.updated", (e) => {
+      const d = parse<{ projectId: string }>(e as MessageEvent);
+      if (d?.projectId) ref.current.onArtifacts?.(d.projectId);
+    });
     es.addEventListener("run.log", (e) => {
       const d = parse<RunLogEvent>(e as MessageEvent);
       if (d?.runId) emitRunLog(d);
+    });
+    es.addEventListener("chat.session", (e) => {
+      const d = parse<{ session: ChatSession }>(e as MessageEvent);
+      if (d?.session) emitChat({ type: "session", session: d.session });
+    });
+    es.addEventListener("chat.message", (e) => {
+      const d = parse<{ sessionId: string; message: ChatMessage }>(e as MessageEvent);
+      if (d?.message) emitChat({ type: "message", sessionId: d.sessionId, message: d.message });
+    });
+    es.addEventListener("chat.busy", (e) => {
+      const d = parse<{ sessionId: string; busy: boolean }>(e as MessageEvent);
+      if (d?.sessionId) emitChat({ type: "busy", sessionId: d.sessionId, busy: d.busy });
     });
     return () => es.close();
   }, []);

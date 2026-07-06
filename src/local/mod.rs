@@ -6,12 +6,19 @@
 //! in `local_experiments`. CLI commands check the local store FIRST and only
 //! require credentials on the server path.
 
+pub mod artifacts;
+pub mod chat;
 pub mod experiments;
 pub mod git;
+pub mod github;
+pub mod harness;
 pub mod hf;
+pub mod k8s;
+pub mod modal;
 pub mod model;
 pub mod opencode;
 pub mod projects;
+pub mod ssh;
 
 use crate::error::{anyhow, Error, Result};
 use crate::store::{now_ms, Store, StoredRun};

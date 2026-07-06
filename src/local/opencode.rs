@@ -99,12 +99,15 @@ fn opencode_config_json(model: Option<&str>, instructions: &str) -> String {
 /// The local-mode autoresearch playbook: project context + cardinal rules +
 /// the v1 local command surface. Ported from the cloud agent's
 /// `autoresearchMd()`/`projectContextMd()` prompts, adapted for `orx up`
-/// (runs on HF Jobs, analysis via `orx logs`, no artifacts/query/chart/report).
+/// (runs on HF Jobs, analysis via `orx logs`, no artifacts/query/chart).
 fn playbook_md(project: &LocalProject) -> String {
     let id = &project.id;
     let name = &project.name;
     let repo = format!("{}/{}", project.github_owner, project.github_repo);
     let baseline = &project.baseline_branch;
+    let artifacts = super::artifacts::artifacts_dir(project)
+        .to_string_lossy()
+        .into_owned();
     format!(
         r#"# OpenResearch local agent — {name}
 
@@ -116,6 +119,8 @@ the project's repo clone.
 - GitHub repo: `{repo}`
 - Baseline branch: `{baseline}`
 - Compute: Hugging Face Jobs, billed to the user's HF account (`HF_TOKEN`)
+- Artifacts dir: `{artifacts}` — every file in it shows up in the dashboard's
+  Artifacts tab (reports, figures, CSVs)
 
 ## Start here
 
@@ -164,7 +169,7 @@ preferences.
 | `orx logs <runId> [--head] [--bytes <n>] [--range <s>:<e>]` | Read a run's log (tail by default). |
 
 NOT available in local mode: `experiments`, `artifacts`, `artifact`, `query`,
-`chart`, `report`, `env`, `search-logs`, `wandb`, `exp cmd`. Do not reach for
+`chart`, `env`, `search-logs`, `wandb`, `exp cmd`, `report`. Do not reach for
 them — analysis happens through `orx logs`.
 
 `orx lit "<query>"` and `orx paper <id|url>` (literature search) still work —
@@ -185,10 +190,27 @@ Carry one goal across many runs:
 6. **Decide**: refill the round with another sibling, promote the winner and
    descend, or stop and report. Write what you learned into `orx exp desc`.
 
+When a line of work concludes (or the user asks for a write-up), write a
+report **directly into the artifacts dir**: a subfolder holding a `report.md`
+(first `# ` heading becomes its title) plus an `images/` subfolder for any
+figures it references by relative path — e.g.
+`{artifacts}/<slug>/report.md`. There is no upload step; anything under
+`{artifacts}` (reports, figures, data files) appears in the dashboard's
+Artifacts tab immediately.
+
 When the user gives you a research task, see it through this loop — don't stop
 after a single step or hand back a half-finished attempt. End your turn only
 when the task is achieved, genuinely blocked on a decision only the user can
 make, or the approach is exhausted. (For a plain question, just answer it.)
+
+## Referencing files
+
+When you point the reader at a repo source file in chat, wrap it so they can
+open it in the dashboard's file viewer: `<file path="relative/path.py" />`, or
+with a line target `<file path="relative/path.py" lines="20-40" />`. Use
+repo-relative paths (from the clone root), not absolute paths. Reach for this
+whenever you'd otherwise write a bare file path or a markdown link to a file —
+the file you edited, the entrypoint you're describing, the config you changed.
 
 ## Where runs execute
 
@@ -259,15 +281,11 @@ fn exclude_agent_files(repo: &Path) {
         .and_then(|mut f| std::io::Write::write_all(&mut f, block.as_bytes()));
 }
 
-/// Write the opencode config + the playbook into the project's clone
-/// (self-healing it via `ensure_clone` if the cache was wiped). Returns the
-/// clone path plus, when the repo tracks its own `opencode.json` (which we
-/// must never clobber — the agent commits and pushes from this clone), the
-/// path of our config to pass via `OPENCODE_CONFIG` instead.
-fn write_agent_files(
-    project: &LocalProject,
-    model: Option<&str>,
-) -> Result<(PathBuf, Option<PathBuf>)> {
+/// Ensure the project's clone exists and the shared autoresearch playbook is
+/// written into it. Every harness adapter injects this same file (opencode via
+/// config `instructions`, Claude Code via `--append-system-prompt`, Codex via
+/// first-turn context). Returns `(repo, playbook)` paths.
+pub fn ensure_playbook(project: &LocalProject) -> Result<(PathBuf, PathBuf)> {
     let repo = git::ensure_clone(
         &project.github_owner,
         &project.github_repo,
@@ -280,6 +298,22 @@ fn write_agent_files(
     }
     std::fs::write(&playbook, playbook_md(project))
         .map_err(|e| anyhow!("Could not write {}: {}", playbook.display(), e))?;
+    exclude_agent_files(&repo);
+    // The playbook points the agent at the artifacts dir — make sure it exists.
+    let _ = super::artifacts::ensure_dir(project);
+    Ok((repo, playbook))
+}
+
+/// Write the opencode config + the playbook into the project's clone
+/// (self-healing it via `ensure_clone` if the cache was wiped). Returns the
+/// clone path plus, when the repo tracks its own `opencode.json` (which we
+/// must never clobber — the agent commits and pushes from this clone), the
+/// path of our config to pass via `OPENCODE_CONFIG` instead.
+fn write_agent_files(
+    project: &LocalProject,
+    model: Option<&str>,
+) -> Result<(PathBuf, Option<PathBuf>)> {
+    let (repo, playbook) = ensure_playbook(project)?;
     let config_override = if git::is_tracked(&repo, "opencode.json") {
         // Out-of-root config: absolute instructions path (no root to anchor it).
         let path = repo
@@ -431,6 +465,13 @@ async fn spawn_agent(project: &LocalProject, model: Option<&str>) -> Result<Agen
                 _ => {}
             }
             cmd.env("PATH", path);
+        }
+    }
+    // Vars saved in the dashboard's Environment tab reach the agent too;
+    // the real process env still wins on conflicts.
+    for (key, value) in crate::config::list_synced_env() {
+        if std::env::var_os(&key).is_none() {
+            cmd.env(key, value);
         }
     }
     if let Some(config) = &config_override {
