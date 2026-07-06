@@ -73,6 +73,12 @@ const post = <T>(url: string, body?: unknown) =>
     headers: body === undefined ? {} : { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }).then((r) => json<T>(r));
+const patch = <T>(url: string, body: unknown) =>
+  fetch(url, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<T>(r));
 
 export const listProjects = () =>
   get<{ projects: Project[] }>("/api/projects").then((r) => r.projects);
@@ -87,6 +93,9 @@ export interface NewProject {
 
 export const createProject = (body: NewProject) =>
   post<{ project: Project }>("/api/projects", body).then((r) => r.project);
+
+export const updateProject = (projectId: string, body: { runCommand?: string; name?: string }) =>
+  patch<{ project: Project }>(`/api/projects/${projectId}`, body).then((r) => r.project);
 
 export const listExperiments = (projectId: string) =>
   get<{ experiments: Experiment[] }>(`/api/projects/${projectId}/experiments`).then(
@@ -122,6 +131,21 @@ export interface LogChunk {
 
 export const fetchLog = (runId: string, offset: number) =>
   get<LogChunk>(`/api/runs/${runId}/log?offset=${offset}`);
+
+export type HfTokenSource = "env" | "openresearchEnv" | "hfCache";
+
+export interface HfSettings {
+  configured: boolean;
+  source: HfTokenSource | null;
+  maskedToken: string | null;
+  valid: boolean;
+  username: string | null;
+  jobsWrite: boolean | null;
+}
+
+export const getHfSettings = () => get<HfSettings>("/api/settings/hf");
+
+export const saveHfToken = (token: string) => post<HfSettings>("/api/settings/hf", { token });
 
 export const getAgentStatus = () => get<AgentStatus>("/api/agent/status");
 

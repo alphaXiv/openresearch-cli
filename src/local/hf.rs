@@ -60,12 +60,24 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
     let project = store
         .get_local_project(&exp.project_id)?
         .ok_or_else(|| anyhow!("Local project {} not found.", exp.project_id))?;
-    if exp.run_command.trim().is_empty() {
-        return Err(anyhow!(
-            "No run command set for this experiment. Set one when creating it \
-             or edit it in the dashboard."
-        ));
-    }
+    // Experiment command, else the project default.
+    let run_command = Some(exp.run_command.clone())
+        .filter(|c| !c.trim().is_empty())
+        .or_else(|| {
+            project
+                .run_command
+                .clone()
+                .filter(|c| !c.trim().is_empty())
+        })
+        .ok_or_else(|| {
+            anyhow!(
+                "No run command set for this experiment or its project. Set the project \
+                 default with `orx project edit {} --run-command '<cmd>'`, pass \
+                 `--run-command '<cmd>'` to `orx create-experiment`, or set it in the \
+                 dashboard — then relaunch.",
+                project.id
+            )
+        })?;
 
     // One run in flight per experiment unless the caller deliberately forces
     // a concurrent launch — the double-click / double-submit guard.
@@ -118,7 +130,7 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         &exp.branch_name,
         &project.github_owner,
         &project.github_repo,
-        &exp.run_command,
+        &run_command,
     );
 
     // Tokens travel as job secrets only — the command line stays tokenless.
@@ -161,7 +173,7 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         project_id: project.id.clone(),
         status: "starting".to_string(),
         backend_json: descriptor.to_json(),
-        command: exp.run_command.clone(),
+        command: run_command,
         created_at: now_ms(),
         updated_at: now_ms(),
         ended_at: None,

@@ -125,3 +125,53 @@ pub fn synced_env_var(key: &str) -> Option<String> {
     }
     None
 }
+
+/// Write `export KEY='value'` into `~/.openresearch/env` (the exact format
+/// `synced_env_var` parses), replacing an existing line for `key` and keeping
+/// every other line. File is owner-only (0600) on create and rewrite.
+pub fn write_synced_env_var(key: &str, value: &str) -> Result<()> {
+    use anyhow::anyhow;
+    let dir = dirs::home_dir()
+        .ok_or_else(|| anyhow!("no home directory"))?
+        .join(".openresearch");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("env");
+    // Inverse of synced_env_var's unescaping: backslashes first, then quotes.
+    let escaped = value.replace('\\', r"\\").replace('\'', r"'\''");
+    let new_line = format!("export {key}='{escaped}'");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let prefix = format!("export {key}=");
+    let mut lines: Vec<&str> = Vec::new();
+    let mut replaced = false;
+    for line in existing.lines() {
+        if line.starts_with(&prefix) {
+            if !replaced {
+                lines.push(&new_line);
+                replaced = true;
+            }
+        } else {
+            lines.push(line);
+        }
+    }
+    if !replaced {
+        lines.push(&new_line);
+    }
+    let body = format!("{}\n", lines.join("\n"));
+    {
+        use std::io::Write;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600); // applies on create only
+        }
+        opts.open(&path)?.write_all(body.as_bytes())?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}

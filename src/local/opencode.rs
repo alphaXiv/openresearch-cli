@@ -135,23 +135,26 @@ preferences.
    every variant is measured against. To try an idea, **branch a child**
    (`orx create-experiment … --parent <expId>`) and edit the child's branch.
 2. **The run command and the environment are a fixed contract — identical on
-   every node.** Children inherit it verbatim. In local mode the run command is
-   set when the project is created and there is no `orx exp cmd`; if a node has
-   no command, ask the user to set the project's run command in the dashboard.
-   Never vary behavior through env vars or env-prefixed commands.
+   every node.** Children inherit it verbatim. If the project has no run
+   command, set the default once with `orx project edit {id} --run-command
+   '<cmd>'` (or pass `--run-command` when creating the first experiment) —
+   children inherit it from then on. Never vary behavior through env vars or
+   env-prefixed commands.
 3. **Vary code, not knobs-in-the-command.** Encode hyperparameters in committed
    code/config and branch a child per variant. Every node runs the *same*
    command over *different code*, so results stay comparable.
 4. **Grow the tree downward, not sideways.** Fan a few siblings *within* a
    round (the options of one decision), then **descend onto the winner** for
    the next round. A root with a long flat row of children is the failure mode.
+5. **Launch all compute via `orx exp run` — never `hf jobs` or the HF CLI directly.** Direct jobs are unsupervised and invisible to the dashboard.
 
 ## Command surface (local mode)
 
 | Command | What it does |
 |---|---|
 | `orx projects` | List projects; local ones are tagged `(local)`. |
-| `orx create-experiment {id} --title "<t>" [--description "<d>"] [--parent <expId>]` | New node. With `--parent`: branches `orx/<slug>` off the parent's tip and pushes it to GitHub. |
+| `orx create-experiment {id} --title "<t>" [--description "<d>"] [--parent <expId>] [--run-command "<cmd>"]` | New node, branched `orx/<slug>` off the parent's tip (project root when `--parent` is omitted) and pushed to GitHub. |
+| `orx project view {id}` / `orx project edit {id} --run-command "<cmd>"` | Inspect the project / set its default run command. |
 | `orx exp status <expId>` | Node's branch, command, and latest run. |
 | `orx exp desc <expId> [--set "<text>" \| --stdin]` | Read/overwrite the node's notes. Record findings here. |
 | `orx exp run <expId> --backend hf --flavor <flavor> [--timeout 4h] [--image <img>]` | Launch the node's run as an HF Job. |
@@ -412,6 +415,21 @@ async fn spawn_agent(project: &LocalProject, model: Option<&str>) -> Result<Agen
         .stderr(Stdio::from(log))
         // Dies with `orx up` when the runtime drops the handle (Ctrl-C, exit).
         .kill_on_drop(true);
+    // The agent shells out to plain `orx`; prepend this binary's dir so it
+    // resolves to THIS orx (with local mode), not an older install on PATH.
+    if let Ok(exe) = std::env::current_exe().and_then(|p| p.canonicalize()) {
+        if let Some(dir) = exe.parent() {
+            let mut path = std::ffi::OsString::from(dir);
+            match std::env::var_os("PATH") {
+                Some(existing) if !existing.is_empty() => {
+                    path.push(":");
+                    path.push(existing);
+                }
+                _ => {}
+            }
+            cmd.env("PATH", path);
+        }
+    }
     if let Some(config) = &config_override {
         // The repo tracks its own opencode.json; ours rides OPENCODE_CONFIG.
         // Project configs load after OPENCODE_CONFIG and would override our

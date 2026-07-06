@@ -63,6 +63,8 @@ pub async fn run(args: UpArgs) -> Result<()> {
         }
     }
 
+    spawn_hf_preflight();
+
     let app = router(state);
     let url = format!("http://127.0.0.1:{port}");
     eprintln!("orx up: dashboard on {url}");
@@ -90,7 +92,7 @@ fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/projects", get(list_projects).post(create_project))
-        .route("/api/projects/{id}", get(get_project))
+        .route("/api/projects/{id}", get(get_project).patch(update_project))
         .route(
             "/api/projects/{id}/experiments",
             get(list_experiments).post(create_experiment),
@@ -100,6 +102,7 @@ fn router(state: AppState) -> Router {
         .route("/api/runs/{id}/cancel", post(cancel_run))
         .route("/api/runs/{id}/log", get(run_log))
         .route("/api/events", get(events))
+        .route("/api/settings/hf", get(hf_settings).post(set_hf_token))
         .route("/api/agent/status", get(agent_status))
         .route("/api/agent/ensure", post(agent_ensure))
         .route("/opencode/{*path}", any(proxy_opencode))
@@ -234,6 +237,48 @@ async fn get_project(Path(id): Path<String>) -> ApiResult {
     Ok(Json(json!({ "project": project })))
 }
 
+/// Present-vs-absent for PATCH fields: absent = leave, null = clear.
+fn double_option<'de, D>(d: D) -> std::result::Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(d).map(Some)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProjectReq {
+    name: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    run_command: Option<Option<String>>,
+}
+
+async fn update_project(Path(id): Path<String>, Json(req): Json<UpdateProjectReq>) -> ApiResult {
+    if req.name.is_none() && req.run_command.is_none() {
+        return Err(bad_request("nothing to update: pass name and/or runCommand"));
+    }
+    let store = Store::open()?;
+    let mut project = store
+        .get_local_project(&id)?
+        .ok_or_else(|| not_found("project"))?;
+    if let Some(name) = req.name {
+        if name.trim().is_empty() {
+            return Err(bad_request("name cannot be empty"));
+        }
+        project.name = name.trim().to_string();
+    }
+    if let Some(cmd) = req.run_command {
+        project.run_command = cmd.filter(|c| !c.trim().is_empty());
+    }
+    store.update_local_project(&project)?;
+    // Re-read: update bumps updated_at, which is also what fires the SSE
+    // project.updated diff.
+    let project = store
+        .get_local_project(&id)?
+        .ok_or_else(|| not_found("project"))?;
+    Ok(Json(json!({ "project": project })))
+}
+
 async fn list_experiments(Path(id): Path<String>) -> ApiResult {
     let store = Store::open()?;
     store
@@ -282,7 +327,8 @@ async fn create_experiment(
                     .get_local_experiment(pid)?
                     .ok_or_else(|| not_found("parent experiment"))?,
             ),
-            None => None,
+            // No parent -> the project root; never a second root.
+            None => local::experiments::project_root(&store, &project.id)?,
         };
         local::experiments::create_experiment(
             &store,
@@ -361,6 +407,108 @@ async fn run_log(Path(id): Path<String>, Query(q): Query<LogQuery>) -> ApiResult
         "nextOffset": next_offset,
         "eof": next_offset >= log_size(&id),
     })))
+}
+
+// --- HF token settings ------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HfSettings {
+    configured: bool,
+    source: Option<&'static str>,
+    masked_token: Option<String>,
+    valid: bool,
+    username: Option<String>,
+    jobs_write: Option<bool>,
+}
+
+/// Never the full token: first 3 chars + ellipsis + last 4.
+fn mask_token(token: &str) -> String {
+    let chars: Vec<char> = token.chars().collect();
+    if chars.len() < 8 {
+        return "…".to_string();
+    }
+    format!(
+        "{}…{}",
+        chars[..3].iter().collect::<String>(),
+        chars[chars.len() - 4..].iter().collect::<String>()
+    )
+}
+
+/// Re-resolve the token and check it against whoami-v2. Uncached — cheap, and
+/// the UI calls it rarely.
+async fn hf_token_status() -> HfSettings {
+    use crate::jobs::huggingface::{self, TokenSource};
+    let Ok((token, source)) = huggingface::resolve_token_with_source() else {
+        return HfSettings {
+            configured: false,
+            source: None,
+            masked_token: None,
+            valid: false,
+            username: None,
+            jobs_write: None,
+        };
+    };
+    let source = match source {
+        TokenSource::Env => "env",
+        TokenSource::OpenresearchEnv => "openresearchEnv",
+        TokenSource::HfCache => "hfCache",
+    };
+    let details = huggingface::whoami_details(&token).await.ok();
+    HfSettings {
+        configured: true,
+        source: Some(source),
+        masked_token: Some(mask_token(&token)),
+        valid: details.is_some(),
+        username: details.as_ref().map(|d| d.name.clone()),
+        jobs_write: details.and_then(|d| d.jobs_write),
+    }
+}
+
+async fn hf_settings() -> Json<Value> {
+    Json(json!(hf_token_status().await))
+}
+
+#[derive(Deserialize)]
+struct SetHfTokenReq {
+    token: String,
+}
+
+async fn set_hf_token(Json(req): Json<SetHfTokenReq>) -> ApiResult {
+    let token = req.token.trim().to_string();
+    if token.is_empty() {
+        return Err(bad_request("token is required"));
+    }
+    crate::jobs::huggingface::whoami_details(&token)
+        .await
+        .map_err(bad_request)?;
+    tokio::task::spawn_blocking(move || crate::config::write_synced_env_var("HF_TOKEN", &token))
+        .await
+        .map_err(|e| anyhow!("env write task failed: {e}"))??;
+    // Freshly re-resolved: if HF_TOKEN is set in this process env, env still
+    // wins over the file — source says "env" and the UI explains it.
+    Ok(Json(json!(hf_token_status().await)))
+}
+
+/// Startup warning when HF Jobs can't launch as-is. Never blocks startup.
+fn spawn_hf_preflight() {
+    tokio::spawn(async {
+        let s = hf_token_status().await;
+        let fix = "run `hf auth login` with a Jobs-write token, or set one in the dashboard Settings page";
+        if !s.configured {
+            eprintln!("orx up: warning: no Hugging Face token found — runs can't launch; {fix}.");
+        } else if !s.valid {
+            eprintln!(
+                "orx up: warning: the Hugging Face token ({}) was rejected by huggingface.co; {fix}.",
+                s.source.unwrap_or("unknown source")
+            );
+        } else if s.jobs_write == Some(false) {
+            eprintln!(
+                "orx up: warning: the Hugging Face token ({}) lacks Jobs write access — launches will fail; {fix}.",
+                s.source.unwrap_or("unknown source")
+            );
+        }
+    });
 }
 
 // --- agent ----------------------------------------------------------------

@@ -31,6 +31,16 @@ fn unique_slug(store: &Store, project_id: &str, base: &str) -> Result<String> {
     }
 }
 
+/// The project's root experiment (parent NULL) — oldest first when several
+/// exist. CLI/API creates without a parent attach here instead of adding roots.
+pub fn project_root(store: &Store, project_id: &str) -> Result<Option<LocalExperiment>> {
+    // list is ordered created_at ASC, so `find` picks the oldest root.
+    Ok(store
+        .list_experiments_by_project(project_id)?
+        .into_iter()
+        .find(|e| e.parent_experiment_id.is_none()))
+}
+
 /// Create a local experiment. With a parent: branch `orx/<slug>` off the
 /// parent's tip and push it to origin. Without: a baseline/root row that rides
 /// the project's baseline branch (no new branch).

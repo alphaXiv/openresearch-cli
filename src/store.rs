@@ -301,7 +301,6 @@ impl Store {
     }
 
     /// Full-row update by id (name / run_command / branch edits).
-    #[allow(dead_code)]
     pub fn update_local_project(&self, p: &LocalProject) -> Result<()> {
         self.conn.execute(
             "UPDATE local_projects SET name = ?2, slug = ?3, github_owner = ?4, github_repo = ?5,

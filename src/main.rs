@@ -178,12 +178,16 @@ pub enum ProjectCommand {
     View { project_id: String },
 
     /// Edit a project's metadata. Pass at least one of `--name` / `--description`
-    /// / `--public` / `--private`.
+    /// / `--public` / `--private` / `--run-command`.
     Edit {
         project_id: String,
         /// Rename the project.
         #[arg(long)]
         name: Option<String>,
+        /// Set the project's default run command (local projects only).
+        /// New experiments inherit it; pass '' to clear.
+        #[arg(long = "run-command")]
+        run_command: Option<String>,
         /// Overwrite the project's description with this value.
         #[arg(long)]
         description: Option<String>,
@@ -323,9 +327,13 @@ pub struct CreateExperimentArgs {
     #[arg(long)]
     pub description: Option<String>,
     /// Parent experiment id -> create a child. Omit to create a baseline on the
-    /// project's bound repo.
+    /// project's bound repo (local projects: a child of the project root).
     #[arg(long)]
     pub parent: Option<String>,
+    /// Run command for the node (local projects only). Omit to inherit from
+    /// the parent / project default.
+    #[arg(long = "run-command")]
+    pub run_command: Option<String>,
 }
 
 #[derive(Args, Debug)]

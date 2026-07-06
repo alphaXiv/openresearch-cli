@@ -3,11 +3,13 @@ import {
   cancelRun,
   ensureAgent,
   getAgentStatus,
+  getHfSettings,
   listExperiments,
   listProjects,
   listRuns,
   type AgentStatus,
   type Experiment,
+  type HfSettings,
   type Project,
   type Run,
 } from "./api";
@@ -37,6 +39,8 @@ export default function App() {
   const [tab, setTab] = useState<"tree" | "runs">("tree");
   const [selectedExpId, setSelectedExpId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [hfSettings, setHfSettings] = useState<HfSettings | null>(null);
+  const [hfLoading, setHfLoading] = useState(true);
 
   const projectIdRef = useRef(projectId);
   projectIdRef.current = projectId;
@@ -49,6 +53,14 @@ export default function App() {
         setProjectId((cur) => cur ?? list[0]?.id ?? null);
       })
       .catch(() => setProjects([]));
+  }, []);
+
+  // HF token status, once on load; refetched via onHfSettingsUpdated after save.
+  useEffect(() => {
+    getHfSettings()
+      .then(setHfSettings)
+      .catch(() => {})
+      .finally(() => setHfLoading(false));
   }, []);
 
   const kickAgent = useCallback((pid: string) => {
@@ -149,6 +161,10 @@ export default function App() {
         onProjectCreated={onProjectCreated}
         agent={agent}
         agentPending={agentPending}
+        hfSettings={hfSettings}
+        hfLoading={hfLoading}
+        onHfSettingsUpdated={setHfSettings}
+        onProjectUpdated={(p) => setProjects((cur) => (cur ? upsert(cur, p) : [p]))}
       />
       <div className="app-body">
         {projectId && (
