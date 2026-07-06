@@ -307,8 +307,15 @@ impl Store {
                     baseline_branch = ?6, repo_path = ?7, run_command = ?8, updated_at = ?9
              WHERE id = ?1",
             params![
-                p.id, p.name, p.slug, p.github_owner, p.github_repo,
-                p.baseline_branch, p.repo_path, p.run_command, now_ms(),
+                p.id,
+                p.name,
+                p.slug,
+                p.github_owner,
+                p.github_repo,
+                p.baseline_branch,
+                p.repo_path,
+                p.run_command,
+                now_ms(),
             ],
         )?;
         Ok(())

@@ -34,9 +34,7 @@ pub fn is_terminal(status: &str) -> bool {
 /// HF runs also live in the runs table, so membership there is not enough.
 pub fn local_run(store: &Store, run_id: &str) -> Result<Option<StoredRun>> {
     match store.get_run(run_id)? {
-        Some(run) => Ok(store
-            .get_local_experiment(&run.experiment_id)?
-            .map(|_| run)),
+        Some(run) => Ok(store.get_local_experiment(&run.experiment_id)?.map(|_| run)),
         None => Ok(None),
     }
 }

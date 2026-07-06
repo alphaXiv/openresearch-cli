@@ -55,7 +55,7 @@ pub async fn run(args: crate::ProjectsArgs) -> Result<()> {
         let creds = creds.as_ref();
         for org in &orgs {
             let creds = creds.expect("orgs imply credentials");
-            let projects = list_projects(&creds, &org.id).await?.projects;
+            let projects = list_projects(creds, &org.id).await?.projects;
             for p in projects.iter().filter(|p| args.all || !p.archived) {
                 let repo = if p.github_owner.is_empty() {
                     None
@@ -81,7 +81,11 @@ pub async fn run(args: crate::ProjectsArgs) -> Result<()> {
     // command surface (create-experiment, exp, runs, logs), not the api.
     if !local.is_empty() {
         println!("\nLocal (orx up)");
-        let id_width = local.iter().map(|p| p.id.chars().count()).max().unwrap_or(0);
+        let id_width = local
+            .iter()
+            .map(|p| p.id.chars().count())
+            .max()
+            .unwrap_or(0);
         for p in &local {
             let pad = id_width.saturating_sub(p.id.chars().count());
             println!(

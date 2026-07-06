@@ -128,7 +128,10 @@ pub fn create_experiment_branch(
     };
     // -f: a stale local branch is residue from an earlier failed attempt (a
     // live branch would have an experiment row and its slug never re-picked).
-    git(Some(repo_path), &["branch", "--no-track", "-f", new_branch, &base])?;
+    git(
+        Some(repo_path),
+        &["branch", "--no-track", "-f", new_branch, &base],
+    )?;
     if let Err(err) = git(Some(repo_path), &["push", "-u", "origin", new_branch]) {
         // Leave nothing behind — a retry re-picks the same slug.
         let _ = git(Some(repo_path), &["branch", "-D", new_branch]);
@@ -149,16 +152,17 @@ pub fn branch_head_sha(repo_path: &Path, branch: &str) -> Result<String> {
 
 /// Whether origin already has the branch (a cheap network check).
 pub fn branch_on_remote(repo_path: &Path, branch: &str) -> Result<bool> {
-    let out = git(
-        Some(repo_path),
-        &["ls-remote", "--heads", "origin", branch],
-    )?;
+    let out = git(Some(repo_path), &["ls-remote", "--heads", "origin", branch])?;
     Ok(!out.is_empty())
 }
 
 /// Whether the repo tracks `path` (local check, no network).
 pub fn is_tracked(repo_path: &Path, path: &str) -> bool {
-    git(Some(repo_path), &["ls-files", "--error-unmatch", "--", path]).is_ok()
+    git(
+        Some(repo_path),
+        &["ls-files", "--error-unmatch", "--", path],
+    )
+    .is_ok()
 }
 
 pub fn push_branch(repo_path: &Path, branch: &str) -> Result<()> {

@@ -81,7 +81,10 @@ pub async fn run(args: crate::ProjectArgs) -> Result<()> {
 
 /// Local `orx project view`: the project row, its default run command, and a
 /// flat experiment list (there is no local `orx experiments`).
-fn view_local(store: &crate::store::Store, project: &crate::local::model::LocalProject) -> Result<()> {
+fn view_local(
+    store: &crate::store::Store,
+    project: &crate::local::model::LocalProject,
+) -> Result<()> {
     println!("{} (local)", project.name);
     println!("  id:      {}", project.id);
     println!(
@@ -89,7 +92,11 @@ fn view_local(store: &crate::store::Store, project: &crate::local::model::LocalP
         project.github_owner, project.github_repo, project.baseline_branch
     );
     println!("  clone:   {}", project.repo_path);
-    match project.run_command.as_deref().filter(|c| !c.trim().is_empty()) {
+    match project
+        .run_command
+        .as_deref()
+        .filter(|c| !c.trim().is_empty())
+    {
         Some(cmd) => println!("  command: {}", cmd),
         None => println!(
             "  command: — (not set — `orx project edit {} --run-command '<cmd>'`)",
@@ -108,7 +115,13 @@ fn view_local(store: &crate::store::Store, project: &crate::local::model::LocalP
             } else {
                 ""
             };
-            println!("  {}  {}{}  ({})", e.id, e.display_name(), root, e.branch_name);
+            println!(
+                "  {}  {}{}  ({})",
+                e.id,
+                e.display_name(),
+                root,
+                e.branch_name
+            );
         }
     }
     Ok(())

@@ -63,12 +63,7 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
     // Experiment command, else the project default.
     let run_command = Some(exp.run_command.clone())
         .filter(|c| !c.trim().is_empty())
-        .or_else(|| {
-            project
-                .run_command
-                .clone()
-                .filter(|c| !c.trim().is_empty())
-        })
+        .or_else(|| project.run_command.clone().filter(|c| !c.trim().is_empty()))
         .ok_or_else(|| {
             anyhow!(
                 "No run command set for this experiment or its project. Set the project \

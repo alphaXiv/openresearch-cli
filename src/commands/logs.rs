@@ -164,7 +164,10 @@ fn run_local(
     } else {
         format!(" ({})", more.join(", "))
     };
-    eprintln!("[local file] bytes {}–{} of {}{}", start, end, total, more_str);
+    eprintln!(
+        "[local file] bytes {}–{} of {}{}",
+        start, end, total, more_str
+    );
 
     Ok(())
 }

@@ -28,8 +28,8 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use crate::error::{anyhow, Result};
-use crate::local::opencode::AgentHost;
 use crate::local;
+use crate::local::opencode::AgentHost;
 use crate::store::{log_path, Store, StoredRun};
 use crate::{browser, UpArgs};
 
@@ -255,7 +255,9 @@ struct UpdateProjectReq {
 
 async fn update_project(Path(id): Path<String>, Json(req): Json<UpdateProjectReq>) -> ApiResult {
     if req.name.is_none() && req.run_command.is_none() {
-        return Err(bad_request("nothing to update: pass name and/or runCommand"));
+        return Err(bad_request(
+            "nothing to update: pass name and/or runCommand",
+        ));
     }
     let store = Store::open()?;
     let mut project = store
@@ -376,7 +378,9 @@ async fn run_experiment(Path(id): Path<String>, body: Bytes) -> ApiResult {
         force: false,
     };
     // Same code path as CLI `orx exp run --backend hf` on a local experiment.
-    let run = local::hf::submit_local_hf(&args).await.map_err(bad_request)?;
+    let run = local::hf::submit_local_hf(&args)
+        .await
+        .map_err(bad_request)?;
     Ok(Json(json!({ "run": ApiRun::from(&run) })))
 }
 
@@ -669,8 +673,13 @@ fn collect_events(cursor: &mut EventCursor, first: bool) -> Result<Vec<Event>> {
 
     for project in store.list_local_projects()? {
         if cursor.projects.get(&project.id) != Some(&project.updated_at) {
-            cursor.projects.insert(project.id.clone(), project.updated_at);
-            out.push(json_event("project.updated", &json!({ "project": project })));
+            cursor
+                .projects
+                .insert(project.id.clone(), project.updated_at);
+            out.push(json_event(
+                "project.updated",
+                &json!({ "project": project }),
+            ));
         }
         push_experiment_events(&store, &project.id, cursor, &mut out)?;
     }
@@ -723,7 +732,12 @@ fn push_experiment_events(
     Ok(())
 }
 
-fn push_log_delta(run: &StoredRun, cursor: &mut EventCursor, out: &mut Vec<Event>, budget: &mut u64) {
+fn push_log_delta(
+    run: &StoredRun,
+    cursor: &mut EventCursor,
+    out: &mut Vec<Event>,
+    budget: &mut u64,
+) {
     let offset = *cursor.log_offsets.entry(run.id.clone()).or_insert(0);
     let size = log_size(&run.id);
     if size <= offset || *budget == 0 {

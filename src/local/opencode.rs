@@ -282,7 +282,10 @@ fn write_agent_files(
         .map_err(|e| anyhow!("Could not write {}: {}", playbook.display(), e))?;
     let config_override = if git::is_tracked(&repo, "opencode.json") {
         // Out-of-root config: absolute instructions path (no root to anchor it).
-        let path = repo.join(".openresearch").join("agent").join("opencode.json");
+        let path = repo
+            .join(".openresearch")
+            .join("agent")
+            .join("opencode.json");
         std::fs::write(
             &path,
             opencode_config_json(model, &playbook.to_string_lossy()),
