@@ -86,7 +86,16 @@ async fn handle(mut stream: TcpStream) -> Result<()> {
         .collect();
 
     match path {
-        "/health" => respond(&mut stream, 200, "application/json", b"{\"ok\":true}").await,
+        // Version-stamped so the api can detect a stale daemon: a serve
+        // process outlives binary updates, and an old process speaking an old
+        // event format would otherwise pass a bare liveness probe forever.
+        "/health" => {
+            let body = format!(
+                "{{\"ok\":true,\"version\":\"{}\"}}",
+                env!("CARGO_PKG_VERSION")
+            );
+            respond(&mut stream, 200, "application/json", body.as_bytes()).await
+        }
         "/runs" => {
             let runs = Store::open()?.list_runs(200)?;
             let body = serde_json::to_vec(&serde_json::json!({ "runs": runs }))?;
