@@ -2,7 +2,6 @@ import {
   Background,
   BackgroundVariant,
   Handle,
-  MarkerType,
   Position,
   ReactFlow,
   type Edge,
@@ -10,17 +9,19 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import { memo, useMemo } from "react";
-import { statusColor, timeAgo, type Experiment, type Run } from "../api";
+import { timeAgo, type Experiment, type Run } from "../api";
+import { StatusBadge } from "./StatusBadge";
 
-const NODE_W = 220;
-const NODE_H = 96;
+const NODE_W = 240;
+const NODE_H = 108;
 const GAP_X = 44;
 const GAP_Y = 72;
+const MAX_SQUARES = 8;
 
 type ExpNodeData = {
   exp: Experiment;
   latestRun: Run | null;
-  runCount: number;
+  runs: Run[]; // oldest → newest
   isBaseline: boolean;
   selected: boolean;
 };
@@ -57,28 +58,44 @@ function subtreeWidth(node: TreeNode): number {
   return Math.max(NODE_W, cw);
 }
 
+function runSquareClass(status: string): string {
+  if (status === "done") return "pass";
+  if (status === "failed") return "fail";
+  if (status === "running" || status === "starting") return "live";
+  return "other";
+}
+
 const ExpNode = memo(function ExpNode({ data }: NodeProps<ExpFlowNode>) {
-  const { exp, latestRun, runCount, isBaseline, selected } = data;
+  const { exp, latestRun, runs, isBaseline, selected } = data;
   const status = latestRun?.status;
   const live = status === "running" || status === "starting";
+  const kind = isBaseline ? "BASELINE" : live ? "RUNNING" : "EXPERIMENT";
+  const squares = runs.slice(-MAX_SQUARES);
   return (
     <div className={`exp-node ${selected ? "selected" : ""} ${live ? "live" : ""}`}>
       <Handle type="target" position={Position.Top} />
+      <div className="node-eyebrow">
+        <span>{kind}</span>
+        <StatusBadge status={status ?? "idle"} />
+      </div>
       <div className="node-head">
-        <span
-          className="node-status"
-          style={{ background: status ? statusColor(status) : "var(--border-strong)" }}
-          title={status ?? "never run"}
-        />
         <span className="node-slug">{exp.slug}</span>
-        {isBaseline && <span className="baseline-chip">baseline</span>}
       </div>
       {(exp.title || exp.description) && (
         <div className="node-title">{exp.title || exp.description}</div>
       )}
       <div className="node-meta">
-        <span>{runCount === 1 ? "1 run" : `${runCount} runs`}</span>
-        {latestRun && <span>{latestRun.status}</span>}
+        <span>RUNS</span>
+        {squares.length > 0 ? (
+          <span className="run-squares">
+            {squares.map((run) => (
+              <span key={run.id} className={`run-sq ${runSquareClass(run.status)}`} title={run.status} />
+            ))}
+          </span>
+        ) : (
+          <span>no runs</span>
+        )}
+        <span style={{ flex: 1 }} />
         {latestRun && <span>{timeAgo(latestRun.createdAt)}</span>}
       </div>
       <Handle type="source" position={Position.Bottom} />
@@ -89,8 +106,8 @@ const ExpNode = memo(function ExpNode({ data }: NodeProps<ExpFlowNode>) {
 const nodeTypes = { exp: ExpNode };
 
 const defaultEdgeOptions = {
-  style: { stroke: "var(--border-strong)", strokeWidth: 1.5 },
-  markerEnd: { type: MarkerType.ArrowClosed, color: "var(--muted)", width: 16, height: 16 },
+  type: "default", // bezier
+  style: { stroke: "var(--text)", strokeWidth: 1.5, opacity: 0.3 },
 };
 
 export function TreeView({
@@ -105,27 +122,28 @@ export function TreeView({
   onSelect: (id: string | null) => void;
 }) {
   const { nodes, edges } = useMemo(() => {
-    const latestByExp = new Map<string, Run>();
-    const countByExp = new Map<string, number>();
+    const runsByExp = new Map<string, Run[]>();
     for (const run of runs) {
-      countByExp.set(run.experimentId, (countByExp.get(run.experimentId) ?? 0) + 1);
-      const cur = latestByExp.get(run.experimentId);
-      if (!cur || run.createdAt > cur.createdAt) latestByExp.set(run.experimentId, run);
+      const list = runsByExp.get(run.experimentId);
+      if (list) list.push(run);
+      else runsByExp.set(run.experimentId, [run]);
     }
+    for (const list of runsByExp.values()) list.sort((a, b) => a.createdAt - b.createdAt);
 
     const nodes: ExpFlowNode[] = [];
     const edges: Edge[] = [];
     const roots = buildForest(experiments);
 
     function layout(node: TreeNode, cx: number, y: number) {
+      const expRuns = runsByExp.get(node.exp.id) ?? [];
       nodes.push({
         id: node.exp.id,
         type: "exp",
         position: { x: cx - NODE_W / 2, y },
         data: {
           exp: node.exp,
-          latestRun: latestByExp.get(node.exp.id) ?? null,
-          runCount: countByExp.get(node.exp.id) ?? 0,
+          latestRun: expRuns[expRuns.length - 1] ?? null,
+          runs: expRuns,
           isBaseline: !node.exp.parentExperimentId,
           selected: node.exp.id === selectedId,
         },
@@ -177,10 +195,8 @@ export function TreeView({
       fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
       onNodeClick={(_, node) => onSelect(node.id)}
       onPaneClick={() => onSelect(null)}
-      colorMode="dark"
-      style={{ background: "var(--bg-canvas)" }}
     >
-      <Background variant={BackgroundVariant.Dots} color="#242b35" gap={28} size={1.6} />
+      <Background variant={BackgroundVariant.Dots} color="var(--dots-strong)" gap={28} size={1.6} />
     </ReactFlow>
   );
 }

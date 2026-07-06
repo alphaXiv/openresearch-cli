@@ -13,7 +13,7 @@ function JobsBadge({ settings }: { settings: HfSettings }) {
   if (settings.jobsWrite === true) return <span className="badge ok">jobs: write OK</span>;
   if (settings.jobsWrite === false)
     return <span className="badge err">no job.write permission</span>;
-  return <span className="badge neutral">jobs permission unknown</span>;
+  return <span className="badge">jobs permission unknown</span>;
 }
 
 function ProjectSection({

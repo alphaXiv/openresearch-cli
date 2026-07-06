@@ -101,6 +101,13 @@ fn router(state: AppState) -> Router {
         .route("/api/experiments/{id}/run", post(run_experiment))
         .route("/api/runs/{id}/cancel", post(cancel_run))
         .route("/api/runs/{id}/log", get(run_log))
+        .route("/api/runs/{id}/diff", get(run_diff))
+        .route("/api/experiments/{id}/commits", get(experiment_commits))
+        .route(
+            "/api/experiments/{id}/commits/{sha}/diff",
+            get(experiment_commit_diff),
+        )
+        .route("/api/projects/{id}/working-tree", get(project_working_tree))
         .route("/api/events", get(events))
         .route("/api/settings/hf", get(hf_settings).post(set_hf_token))
         .route("/api/agent/status", get(agent_status))
@@ -411,6 +418,140 @@ async fn run_log(Path(id): Path<String>, Query(q): Query<LogQuery>) -> ApiResult
         "nextOffset": next_offset,
         "eof": next_offset >= log_size(&id),
     })))
+}
+
+// --- diffs ------------------------------------------------------------------
+//
+// Same payload shape as the OpenResearch api diff endpoints:
+// `{diff, truncated, bytesRead, byteLimit}` with the raw unified-diff text.
+// All of these shell out to git against the project's local clone, so they
+// run on the blocking pool.
+
+fn diff_json(d: local::git::DiffPayload) -> Value {
+    json!({
+        "diff": d.diff,
+        "truncated": d.truncated,
+        "bytesRead": d.bytes_read,
+        "byteLimit": local::git::MAX_DIFF_BYTES,
+    })
+}
+
+/// Off-worker helper for git-backed handlers.
+async fn blocking_api<F>(f: F) -> ApiResult
+where
+    F: FnOnce() -> std::result::Result<Json<Value>, ApiError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| ApiError::from(anyhow!("git task failed: {e}")))?
+}
+
+/// Cumulative diff of a run's commit vs its experiment's parent branch —
+/// "everything this experiment changed as of this run".
+async fn run_diff(Path(id): Path<String>) -> ApiResult {
+    blocking_api(move || {
+        let store = Store::open()?;
+        let run = store.get_run(&id)?.ok_or_else(|| not_found("run"))?;
+        let sha = run
+            .commit_sha
+            .clone()
+            .ok_or_else(|| bad_request("run has no commit to diff"))?;
+        let exp = store
+            .get_local_experiment(&run.experiment_id)?
+            .ok_or_else(|| not_found("experiment"))?;
+        let parent_id = exp.parent_experiment_id.ok_or_else(|| {
+            bad_request("baseline runs have no parent branch to diff against")
+        })?;
+        let parent = store
+            .get_local_experiment(&parent_id)?
+            .ok_or_else(|| not_found("parent experiment"))?;
+        let project = store
+            .get_local_project(&exp.project_id)?
+            .ok_or_else(|| not_found("project"))?;
+        let repo = std::path::Path::new(&project.repo_path);
+        let payload = local::git::diff_range(repo, &parent.branch_name, &sha)?;
+        Ok(Json(diff_json(payload)))
+    })
+    .await
+}
+
+/// Commits on the experiment branch: child experiments list `parent..branch`,
+/// the baseline lists the branch's recent history.
+async fn experiment_commits(Path(id): Path<String>) -> ApiResult {
+    blocking_api(move || {
+        let store = Store::open()?;
+        let exp = store
+            .get_local_experiment(&id)?
+            .ok_or_else(|| not_found("experiment"))?;
+        let project = store
+            .get_local_project(&exp.project_id)?
+            .ok_or_else(|| not_found("project"))?;
+        let repo = std::path::Path::new(&project.repo_path);
+        let commits = match &exp.parent_experiment_id {
+            Some(pid) => {
+                let parent = store
+                    .get_local_experiment(pid)?
+                    .ok_or_else(|| not_found("parent experiment"))?;
+                local::git::list_commits_between(repo, &parent.branch_name, &exp.branch_name, 100)?
+            }
+            None => local::git::list_commits(repo, &exp.branch_name, 25)?,
+        };
+        let commits: Vec<Value> = commits
+            .iter()
+            .map(|c| {
+                json!({ "sha": c.sha, "subject": c.subject, "committedAt": c.committed_at })
+            })
+            .collect();
+        Ok(Json(json!({ "commits": commits })))
+    })
+    .await
+}
+
+async fn experiment_commit_diff(Path((id, sha)): Path<(String, String)>) -> ApiResult {
+    if !sha.chars().all(|c| c.is_ascii_hexdigit()) || sha.len() < 7 || sha.len() > 64 {
+        return Err(bad_request("invalid commit sha"));
+    }
+    blocking_api(move || {
+        let store = Store::open()?;
+        let exp = store
+            .get_local_experiment(&id)?
+            .ok_or_else(|| not_found("experiment"))?;
+        let project = store
+            .get_local_project(&exp.project_id)?
+            .ok_or_else(|| not_found("project"))?;
+        let repo = std::path::Path::new(&project.repo_path);
+        let payload = local::git::commit_diff(repo, &sha)?;
+        Ok(Json(diff_json(payload)))
+    })
+    .await
+}
+
+/// Live uncommitted changes in the project's clone (the agent's working
+/// tree), mapped back to the experiment whose branch is checked out.
+async fn project_working_tree(Path(id): Path<String>) -> ApiResult {
+    blocking_api(move || {
+        let store = Store::open()?;
+        let project = store
+            .get_local_project(&id)?
+            .ok_or_else(|| not_found("project"))?;
+        let repo = std::path::Path::new(&project.repo_path);
+        let (branch, payload) = local::git::working_tree_diff(repo)?;
+        let experiment_id = match &branch {
+            Some(b) => store
+                .list_experiments_by_project(&project.id)?
+                .into_iter()
+                .find(|e| &e.branch_name == b)
+                .map(|e| e.id),
+            None => None,
+        };
+        Ok(Json(json!({
+            "branch": branch,
+            "experimentId": experiment_id,
+            "diff": payload.diff,
+            "truncated": payload.truncated,
+        })))
+    })
+    .await
 }
 
 // --- HF token settings ------------------------------------------------------

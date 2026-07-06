@@ -1,12 +1,9 @@
-import { statusColor, shortId, timeAgo, type Experiment, type Run } from "../api";
+import { shortId, timeAgo, type Experiment, type Run } from "../api";
+import { StatusBadge } from "./StatusBadge";
 
+// Legacy alias kept for external imports; StatusBadge owns the styling.
 export function StatusChip({ status }: { status: string }) {
-  return (
-    <span className="status-chip" style={{ color: statusColor(status) }}>
-      <span className="dot" style={{ background: statusColor(status) }} />
-      {status}
-    </span>
-  );
+  return <StatusBadge status={status} />;
 }
 
 function backendLabel(run: Run): string {
@@ -62,7 +59,7 @@ export function RunsTable({
                 <td className="mono">{shortId(run.id)}</td>
                 <td className="mono">{slugByExp.get(run.experimentId) ?? shortId(run.experimentId)}</td>
                 <td>
-                  <StatusChip status={run.status} />
+                  <StatusBadge status={run.status} />
                 </td>
                 <td className="mono">{backendLabel(run)}</td>
                 <td className="mono">{run.commitSha ? run.commitSha.slice(0, 7) : "—"}</td>

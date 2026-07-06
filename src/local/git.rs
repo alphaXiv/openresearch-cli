@@ -169,3 +169,165 @@ pub fn push_branch(repo_path: &Path, branch: &str) -> Result<()> {
     git(Some(repo_path), &["push", "-u", "origin", branch])?;
     Ok(())
 }
+
+// --- diffs ------------------------------------------------------------------
+
+/// Whole-diff cap, mirroring the OpenResearch api's MAX_DIFF_BYTES.
+pub const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
+
+pub struct DiffPayload {
+    pub diff: String,
+    pub truncated: bool,
+    pub bytes_read: usize,
+}
+
+pub struct CommitInfo {
+    pub sha: String,
+    pub subject: String,
+    /// Unix seconds.
+    pub committed_at: i64,
+}
+
+/// Like `git` but raw stdout bytes, no trim, and extra tolerated exit codes
+/// (`git diff --no-index` exits 1 when the files differ).
+fn git_bytes(dir: &Path, args: &[&str], ok_codes: &[i32]) -> Result<Vec<u8>> {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(dir);
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    let out = cmd
+        .args(args)
+        .output()
+        .map_err(|e| anyhow!("Could not run git: {}", e))?;
+    let code = out.status.code().unwrap_or(-1);
+    if !out.status.success() && !ok_codes.contains(&code) {
+        return Err(anyhow!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(out.stdout)
+}
+
+fn cap_diff(mut bytes: Vec<u8>) -> DiffPayload {
+    let truncated = bytes.len() > MAX_DIFF_BYTES;
+    if truncated {
+        bytes.truncate(MAX_DIFF_BYTES);
+    }
+    let bytes_read = bytes.len();
+    // lossy: the cap can land mid multibyte char
+    DiffPayload {
+        diff: String::from_utf8_lossy(&bytes).into_owned(),
+        truncated,
+        bytes_read,
+    }
+}
+
+/// Resolve a branch name or sha to something git can diff. Prefers the local
+/// ref (where the agent works) and falls back to origin.
+fn resolve_commitish(repo: &Path, name: &str) -> Result<String> {
+    for cand in [name.to_string(), format!("refs/remotes/origin/{name}")] {
+        let probe = format!("{cand}^{{commit}}");
+        if git(Some(repo), &["rev-parse", "--verify", "--quiet", &probe]).is_ok() {
+            return Ok(cand);
+        }
+    }
+    Err(anyhow!("unknown git ref: {name}"))
+}
+
+/// Cumulative diff `base...head` (merge-base semantics, same as the cloud
+/// compare endpoint).
+pub fn diff_range(repo: &Path, base: &str, head: &str) -> Result<DiffPayload> {
+    let base = resolve_commitish(repo, base)?;
+    let head = resolve_commitish(repo, head)?;
+    let range = format!("{base}...{head}");
+    Ok(cap_diff(git_bytes(
+        repo,
+        &["--no-pager", "diff", &range],
+        &[],
+    )?))
+}
+
+/// Single-commit diff. `git show` handles root commits, unlike `sha~1..sha`.
+pub fn commit_diff(repo: &Path, sha: &str) -> Result<DiffPayload> {
+    Ok(cap_diff(git_bytes(
+        repo,
+        &["--no-pager", "show", "--format=", "--patch", sha],
+        &[],
+    )?))
+}
+
+fn parse_commit_lines(out: &str) -> Vec<CommitInfo> {
+    out.lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\u{1f}');
+            Some(CommitInfo {
+                sha: parts.next()?.to_string(),
+                subject: parts.next()?.to_string(),
+                committed_at: parts.next()?.parse().ok()?,
+            })
+        })
+        .collect()
+}
+
+/// Commits on `head` that aren't on `base`, newest first.
+pub fn list_commits_between(
+    repo: &Path,
+    base: &str,
+    head: &str,
+    limit: usize,
+) -> Result<Vec<CommitInfo>> {
+    let base = resolve_commitish(repo, base)?;
+    let head = resolve_commitish(repo, head)?;
+    let range = format!("{base}..{head}");
+    let out = git(
+        Some(repo),
+        &[
+            "log",
+            "--format=%H%x1f%s%x1f%ct",
+            "-n",
+            &limit.to_string(),
+            &range,
+        ],
+    )?;
+    Ok(parse_commit_lines(&out))
+}
+
+/// Latest commits on a branch, newest first.
+pub fn list_commits(repo: &Path, branch: &str, limit: usize) -> Result<Vec<CommitInfo>> {
+    let branch = resolve_commitish(repo, branch)?;
+    let out = git(
+        Some(repo),
+        &[
+            "log",
+            "--format=%H%x1f%s%x1f%ct",
+            "-n",
+            &limit.to_string(),
+            &branch,
+        ],
+    )?;
+    Ok(parse_commit_lines(&out))
+}
+
+/// Uncommitted changes in the clone: tracked edits vs HEAD plus untracked
+/// files rendered as new-file diffs. Returns (current branch, diff).
+pub fn working_tree_diff(repo: &Path) -> Result<(Option<String>, DiffPayload)> {
+    let branch = git(Some(repo), &["rev-parse", "--abbrev-ref", "HEAD"])
+        .ok()
+        .filter(|b| b != "HEAD");
+    let mut bytes = git_bytes(repo, &["--no-pager", "diff", "HEAD"], &[1])?;
+    let untracked = git(Some(repo), &["ls-files", "--others", "--exclude-standard"])?;
+    for f in untracked.lines().filter(|l| !l.is_empty()) {
+        if bytes.len() > MAX_DIFF_BYTES {
+            break;
+        }
+        if let Ok(chunk) = git_bytes(
+            repo,
+            &["--no-pager", "diff", "--no-index", "--", "/dev/null", f],
+            &[1],
+        ) {
+            bytes.extend_from_slice(&chunk);
+        }
+    }
+    Ok((branch, cap_diff(bytes)))
+}

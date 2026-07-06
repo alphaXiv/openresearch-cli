@@ -132,6 +132,39 @@ export interface LogChunk {
 export const fetchLog = (runId: string, offset: number) =>
   get<LogChunk>(`/api/runs/${runId}/log?offset=${offset}`);
 
+export interface DiffPayload {
+  diff: string;
+  truncated: boolean;
+  bytesRead: number;
+  byteLimit: number;
+}
+
+export interface CommitInfo {
+  sha: string;
+  subject: string;
+  committedAt: number; // unix seconds
+}
+
+export interface WorkingTree {
+  branch: string | null;
+  experimentId: string | null;
+  diff: string;
+  truncated: boolean;
+}
+
+export const getRunDiff = (runId: string) => get<DiffPayload>(`/api/runs/${runId}/diff`);
+
+export const listExperimentCommits = (experimentId: string) =>
+  get<{ commits: CommitInfo[] }>(`/api/experiments/${experimentId}/commits`).then(
+    (r) => r.commits,
+  );
+
+export const getCommitDiff = (experimentId: string, sha: string) =>
+  get<DiffPayload>(`/api/experiments/${experimentId}/commits/${sha}/diff`);
+
+export const getWorkingTree = (projectId: string) =>
+  get<WorkingTree>(`/api/projects/${projectId}/working-tree`);
+
 export type HfTokenSource = "env" | "openresearchEnv" | "hfCache";
 
 export interface HfSettings {

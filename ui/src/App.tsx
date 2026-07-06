@@ -1,3 +1,4 @@
+import { GitBranch } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   cancelRun,
@@ -14,9 +15,11 @@ import {
   type Run,
 } from "./api";
 import { ChatPanel } from "./components/ChatPanel";
+import { ClosableTab } from "./components/ClosableTab";
 import { DetailDrawer } from "./components/DetailDrawer";
 import { Header } from "./components/Header";
 import { NewProjectForm } from "./components/NewProjectForm";
+import { ProjectsHome } from "./components/ProjectsHome";
 import { RunsTable } from "./components/RunsTable";
 import { TreeView } from "./components/TreeView";
 import { useOrxEvents } from "./events";
@@ -36,9 +39,14 @@ export default function App() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [agent, setAgent] = useState<AgentStatus | null>(null);
   const [agentPending, setAgentPending] = useState(false);
-  const [tab, setTab] = useState<"tree" | "runs">("tree");
+  const [view, setView] = useState<"tree" | "table">("tree");
   const [selectedExpId, setSelectedExpId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  // Right-pane tab strip: the static Log tab plus a closable tab per opened
+  // experiment (its detail view renders as tab content, not an overlay).
+  const [rightTab, setRightTab] = useState<"log" | string>("log");
+  const [expTabs, setExpTabs] = useState<string[]>([]);
+  const [homeOpen, setHomeOpen] = useState(false);
   const [hfSettings, setHfSettings] = useState<HfSettings | null>(null);
   const [hfLoading, setHfLoading] = useState(true);
 
@@ -80,6 +88,8 @@ export default function App() {
     setRuns([]);
     setSelectedExpId(null);
     setSelectedRunId(null);
+    setExpTabs([]);
+    setRightTab("log");
     listExperiments(projectId).then(setExperiments).catch(() => {});
     listRuns(projectId).then(setRuns).catch(() => {});
     kickAgent(projectId);
@@ -114,9 +124,28 @@ export default function App() {
     },
   });
 
+  // Open an experiment's detail view as a right-pane tab (creating it if
+  // needed) and focus it.
+  const openExperimentTab = useCallback((id: string) => {
+    setSelectedExpId(id);
+    setExpTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    setRightTab(id);
+  }, []);
+
+  const closeExperimentTab = useCallback(
+    (id: string) => {
+      const idx = expTabs.indexOf(id);
+      const next = expTabs.filter((t) => t !== id);
+      setExpTabs(next);
+      if (rightTab === id) setRightTab(next[Math.min(idx, next.length - 1)] ?? "log");
+    },
+    [expTabs, rightTab],
+  );
+
   const onProjectCreated = (project: Project) => {
     setProjects((cur) => (cur ? upsert(cur, project) : [project]));
     setProjectId(project.id);
+    setHomeOpen(false);
   };
 
   const selectedExperiment = experiments.find((e) => e.id === selectedExpId) ?? null;
@@ -139,7 +168,7 @@ export default function App() {
         <div className="empty-state">
           <div className="center-card">
             <h2>
-              Welcome to or<span style={{ color: "var(--accent)" }}>x</span>
+              Open<span>Research</span>
             </h2>
             <p className="sub">
               Point at a GitHub repo to start local autoresearch. The repo is cloned locally;
@@ -157,8 +186,12 @@ export default function App() {
       <Header
         projects={projects}
         projectId={projectId}
-        onSelectProject={setProjectId}
+        onSelectProject={(id) => {
+          setProjectId(id);
+          setHomeOpen(false);
+        }}
         onProjectCreated={onProjectCreated}
+        onHome={() => setHomeOpen(true)}
         agent={agent}
         agentPending={agentPending}
         hfSettings={hfSettings}
@@ -166,6 +199,16 @@ export default function App() {
         onHfSettingsUpdated={setHfSettings}
         onProjectUpdated={(p) => setProjects((cur) => (cur ? upsert(cur, p) : [p]))}
       />
+      {homeOpen ? (
+        <ProjectsHome
+          projects={projects}
+          onOpen={(id) => {
+            setProjectId(id);
+            setHomeOpen(false);
+          }}
+          onCreated={onProjectCreated}
+        />
+      ) : (
       <div className="app-body">
         {projectId && (
           <ChatPanel
@@ -176,15 +219,30 @@ export default function App() {
         )}
         <div className="right-pane">
           <div className="tabs">
-            <button className={`tab ${tab === "tree" ? "active" : ""}`} onClick={() => setTab("tree")}>
-              Tree
-            </button>
-            <button className={`tab ${tab === "runs" ? "active" : ""}`} onClick={() => setTab("runs")}>
-              Runs
-            </button>
+            <button className="tab active">Log</button>
+            <div className="spacer" style={{ flex: 1 }} />
+            <div style={{ fontSize: 13, fontWeight: 700 }}>
+              {projects.find((p) => p.id === projectId)?.name ?? ""}
+            </div>
           </div>
           <div className="tab-body">
-            {tab === "tree" ? (
+            <div className="seg-float">
+              <div className="seg">
+                <button
+                  className={view === "tree" ? "active" : ""}
+                  onClick={() => setView("tree")}
+                >
+                  Tree
+                </button>
+                <button
+                  className={view === "table" ? "active" : ""}
+                  onClick={() => setView("table")}
+                >
+                  Table
+                </button>
+              </div>
+            </div>
+            {view === "tree" ? (
               <TreeView
                 experiments={experiments}
                 runs={runs}
@@ -205,21 +263,22 @@ export default function App() {
                 onCancel={(runId) => void cancelRun(runId).catch(() => {})}
               />
             )}
-            {selectedExperiment && (
-              <DetailDrawer
-                experiment={selectedExperiment}
-                runs={runs}
-                selectedRunId={selectedRunId}
-                onSelectRun={setSelectedRunId}
-                onClose={() => {
-                  setSelectedExpId(null);
-                  setSelectedRunId(null);
-                }}
-              />
-            )}
           </div>
+          {selectedExperiment && (
+            <DetailDrawer
+              experiment={selectedExperiment}
+              runs={runs}
+              selectedRunId={selectedRunId}
+              onSelectRun={setSelectedRunId}
+              onClose={() => {
+                setSelectedExpId(null);
+                setSelectedRunId(null);
+              }}
+            />
+          )}
         </div>
       </div>
+      )}
     </div>
   );
 }

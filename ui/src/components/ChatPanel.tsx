@@ -1,5 +1,7 @@
+import { ArrowUp, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import * as oc from "../opencode";
+import { ClosableTab } from "./ClosableTab";
 import { Md } from "./Md";
 
 // --- chat state --------------------------------------------------------------
@@ -122,17 +124,21 @@ function reducer(state: ChatState, action: Action): ChatState {
 
 // --- rendering ---------------------------------------------------------------
 
-function toolStatusColor(status: string | undefined): string {
-  switch (status) {
-    case "completed":
-      return "var(--green)";
-    case "error":
-      return "var(--red)";
-    case "running":
-      return "var(--teal)";
-    default:
-      return "var(--amber)";
-  }
+function toolStatusClass(status: string | undefined): string {
+  if (status === "error") return "tool-status error";
+  if (status === "completed") return "tool-status";
+  return "tool-status running"; // pending/running = in-flight
+}
+
+function relTime(ts: number | undefined): string {
+  if (!ts) return "";
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (s < 60) return "now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
 }
 
 function toolSummary(part: oc.Part): string {
@@ -151,7 +157,7 @@ function ToolRow({ part }: { part: oc.Part }) {
   return (
     <details className="tool-row">
       <summary>
-        <span className="tool-status" style={{ background: toolStatusColor(state?.status) }} />
+        <span className={toolStatusClass(state?.status)} />
         <span className="tool-name">{part.tool ?? "tool"}</span>
         <span className="tool-cmd">{toolSummary(part)}</span>
       </summary>
@@ -177,7 +183,12 @@ function Message({ message }: { message: oc.MessageWithParts }) {
       .filter((p) => p.type === "text")
       .map((p) => p.text ?? "")
       .join("\n");
-    return <div className="msg-user">{text}</div>;
+    return (
+      <div className="msg-user">
+        <span className="eyebrow">You</span>
+        {text}
+      </div>
+    );
   }
   return (
     <div className="msg-assistant">
@@ -210,7 +221,9 @@ export function ChatPanel({
 }) {
   const [sessions, setSessions] = useState<oc.Session[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [listOpen, setListOpen] = useState(false);
+  // Sessions open as tabs in the chat header, in strip order. Selecting a
+  // session (rail or strip) opens a tab; closing one only removes it here.
+  const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
   const [state, dispatch] = useReducer(reducer, {
     messagesBySession: {},
@@ -224,10 +237,29 @@ export function ChatPanel({
   useEffect(() => {
     setSessions([]);
     setActiveId(null);
+    setOpenTabs([]);
     setDraft("");
     dispatch({ type: "reset" });
     loadedSessions.current = new Set();
   }, [projectId]);
+
+  // Whatever session becomes active always gets a tab — covers the initially
+  // auto-selected session and drafts that materialize on first send.
+  useEffect(() => {
+    if (!activeId) return;
+    setOpenTabs((prev) => (prev.includes(activeId) ? prev : [...prev, activeId]));
+  }, [activeId]);
+
+  const closeTab = useCallback(
+    (id: string) => {
+      const idx = openTabs.indexOf(id);
+      const next = openTabs.filter((t) => t !== id);
+      setOpenTabs(next);
+      // Closing the active tab falls back to a neighbor, else the draft page.
+      setActiveId((cur) => (cur === id ? (next[Math.min(idx, next.length - 1)] ?? null) : cur));
+    },
+    [openTabs],
+  );
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -354,82 +386,109 @@ export function ChatPanel({
   async function removeSession(id: string) {
     await oc.deleteSession(id).catch(() => false);
     setSessions((cur) => cur.filter((s) => s.id !== id));
-    setActiveId((cur) => (cur === id ? null : cur));
+    closeTab(id);
   }
 
-  const activeSession = sessions.find((s) => s.id === activeId);
+  const rail = (
+    <aside className="session-rail">
+      <div className="rail-header">
+        <div className="rail-title">Agents</div>
+        <button
+          className="icon-btn"
+          title="New session"
+          aria-label="New session"
+          onClick={() => setActiveId(null)}
+        >
+          <Plus size={14} />
+        </button>
+      </div>
+      <div className="rail-body">
+        {sessions.length === 0 && (
+          <div style={{ padding: "10px 12px", fontSize: 12, color: "var(--muted)" }}>
+            No sessions yet
+          </div>
+        )}
+        {sessions.map((s) => (
+          <button
+            key={s.id}
+            className={`session-row ${s.id === activeId ? "active" : ""}`}
+            onClick={() => setActiveId(s.id)}
+          >
+            {state.busySessions.has(s.id) && <span className="busy-dot" />}
+            <span className="session-title">{s.title?.trim() || "Untitled"}</span>
+            <span className="session-time">{relTime(s.time?.updated)}</span>
+            <span
+              className="del"
+              title="Delete session"
+              onClick={(e) => {
+                e.stopPropagation();
+                void removeSession(s.id);
+              }}
+            >
+              ×
+            </span>
+          </button>
+        ))}
+      </div>
+    </aside>
+  );
 
   if (!agentRunning) {
     return (
-      <div className="chat-pane">
-        <div className="chat-empty">
-          <h2>
-            Open<span>Research</span>
-          </h2>
-          <p>The research agent is not running.</p>
-          <button className="btn" onClick={onRetryAgent}>
-            Start agent
-          </button>
-        </div>
-      </div>
+      <>
+        {rail}
+        <section className="chat-pane">
+          <div className="chat-empty">
+            <h2>
+              Open<span>Research</span>
+            </h2>
+            <p>The research agent is not running.</p>
+            <button className="btn" onClick={onRetryAgent}>
+              Start agent
+            </button>
+          </div>
+        </section>
+      </>
     );
   }
 
   return (
-    <div className="chat-pane">
+    <>
+      {rail}
+      <section className="chat-pane">
+      {/* Header — browser-style tab strip of the open sessions. */}
       <div className="chat-header">
-        <button
-          className="btn ghost sm"
-          onClick={() => setListOpen((v) => !v)}
-          title="Sessions"
-        >
-          {listOpen ? "▾" : "▸"} Sessions ({sessions.length})
-        </button>
-        <div className="title">{activeSession?.title?.trim() || (activeId ? "Untitled" : "New agent")}</div>
-        <button
-          className="btn ghost sm"
-          title="New session"
-          onClick={() => {
-            setActiveId(null);
-            setListOpen(false);
-          }}
-        >
-          +
-        </button>
-      </div>
-
-      {listOpen && (
-        <div className="session-list">
-          {sessions.length === 0 && (
-            <div style={{ padding: "10px 12px", fontSize: 12, color: "var(--muted)" }}>
-              No sessions yet
-            </div>
-          )}
-          {sessions.map((s) => (
-            <button
-              key={s.id}
-              className={`session-row ${s.id === activeId ? "active" : ""}`}
-              onClick={() => {
-                setActiveId(s.id);
-                setListOpen(false);
-              }}
-            >
-              {state.busySessions.has(s.id) && <span className="busy-dot" />}
-              <span className="session-title">{s.title?.trim() || "Untitled"}</span>
-              <span
-                className="del"
-                title="Delete session"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void removeSession(s.id);
-                }}
-              >
-                ×
-              </span>
+        <div className="tab-strip">
+          {openTabs.map((id) => {
+            const session = sessions.find((s) => s.id === id);
+            return (
+              <ClosableTab
+                key={id}
+                active={id === activeId}
+                label={session?.title?.trim() || "Untitled"}
+                icon={state.busySessions.has(id) ? <span className="busy-dot" /> : undefined}
+                onSelect={() => setActiveId(id)}
+                onClose={() => closeTab(id)}
+              />
+            );
+          })}
+          {/* Draft tab: the blank page has no session yet, so it can't be
+              closed — selecting any other tab discards it. */}
+          {activeId === null && (
+            <button className="tab closable active" onClick={() => {}}>
+              <span className="tab-label">New agent</span>
             </button>
-          ))}
+          )}
+          <button
+            className="icon-btn"
+            title="New agent"
+            aria-label="New agent"
+            onClick={() => setActiveId(null)}
+          >
+            <Plus size={14} />
+          </button>
         </div>
-      )}
+      </div>
 
       {messages.length === 0 && !busy ? (
         <div className="chat-empty">
@@ -473,17 +532,25 @@ export function ChatPanel({
             }}
           />
           <div className="composer-actions">
-            {busy && (
-              <button className="btn sm danger" onClick={stop}>
-                Stop
+            {busy ? (
+              <button className="send-btn stop" title="Stop" aria-label="Stop" onClick={stop}>
+                <X size={16} />
+              </button>
+            ) : (
+              <button
+                className="send-btn"
+                title="Send"
+                aria-label="Send"
+                onClick={() => void send()}
+                disabled={!draft.trim()}
+              >
+                <ArrowUp size={16} />
               </button>
             )}
-            <button className="btn sm primary" onClick={() => void send()} disabled={!draft.trim()}>
-              Send
-            </button>
           </div>
         </div>
       </div>
-    </div>
+      </section>
+    </>
   );
 }

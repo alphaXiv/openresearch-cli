@@ -1,22 +1,15 @@
+import { Home, Settings } from "lucide-react";
 import { useState } from "react";
 import type { AgentStatus, HfSettings, Project } from "../api";
 import { NewProjectForm } from "./NewProjectForm";
 import { SettingsModal } from "./SettingsModal";
-
-function GearIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-      <path d="M8 5.25A2.75 2.75 0 1 0 8 10.75 2.75 2.75 0 0 0 8 5.25Zm0 4.25A1.5 1.5 0 1 1 8 6.5a1.5 1.5 0 0 1 0 3Z" />
-      <path d="M9.09 1.5c.42 0 .78.29.87.7l.24 1.06c.34.13.66.32.96.55l1.04-.33a.9.9 0 0 1 1.05.4l1.09 1.87a.9.9 0 0 1-.18 1.11l-.8.73a4.9 4.9 0 0 1 0 1.11l.8.73c.31.28.38.74.18 1.11l-1.09 1.88a.9.9 0 0 1-1.05.4l-1.04-.34c-.3.23-.62.42-.96.55l-.24 1.07a.9.9 0 0 1-.87.7H6.91a.9.9 0 0 1-.87-.7L5.8 13.03a4.94 4.94 0 0 1-.96-.55l-1.04.34a.9.9 0 0 1-1.05-.4L1.66 10.54a.9.9 0 0 1 .18-1.11l.8-.73a4.9 4.9 0 0 1 0-1.11l-.8-.73a.9.9 0 0 1-.18-1.11l1.09-1.87a.9.9 0 0 1 1.05-.4l1.04.33c.3-.23.62-.42.96-.55l.24-1.06a.9.9 0 0 1 .87-.7h2.18ZM8 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z" />
-    </svg>
-  );
-}
 
 export function Header({
   projects,
   projectId,
   onSelectProject,
   onProjectCreated,
+  onHome,
   agent,
   agentPending,
   hfSettings,
@@ -28,6 +21,7 @@ export function Header({
   projectId: string | null;
   onSelectProject: (id: string) => void;
   onProjectCreated: (project: Project) => void;
+  onHome: () => void;
   agent: AgentStatus | null;
   agentPending: boolean;
   hfSettings: HfSettings | null;
@@ -54,9 +48,24 @@ export function Header({
 
   return (
     <header className="header">
-      <div className="brand">
-        or<span>x</span>
-      </div>
+      <button className="icon-btn" title="Projects" aria-label="Projects" onClick={onHome}>
+        <Home size={15} />
+      </button>
+      <button className="brand" onClick={onHome} title="Projects">
+        Open<span>Research</span>
+      </button>
+      <span
+        style={{
+          fontFamily: "var(--mono)",
+          fontSize: 10,
+          color: "var(--muted)",
+          border: "1px solid var(--border)",
+          padding: "0 4px",
+          textTransform: "uppercase",
+        }}
+      >
+        orx
+      </span>
       {projects.length > 0 && (
         <select value={projectId ?? ""} onChange={(e) => onSelectProject(e.target.value)}>
           {projects.map((p) => (
@@ -80,7 +89,7 @@ export function Header({
         aria-label="Settings"
         onClick={() => setSettingsOpen(true)}
       >
-        <GearIcon />
+        <Settings size={15} />
         {hfWarning && <span className="warn-dot" />}
       </button>
 

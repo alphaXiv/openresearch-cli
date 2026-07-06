@@ -31,9 +31,9 @@ export function LogTerminal({ runId }: { runId: string }) {
       fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
       scrollback: 20000,
       theme: {
-        background: "#0b0e12",
-        foreground: "#d4dae3",
-        cursor: "#0b0e12",
+        background: "#1a1a1a",
+        foreground: "#e6e1e0",
+        cursor: "#1a1a1a",
         selectionBackground: "#2c3441",
       },
     });
