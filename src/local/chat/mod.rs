@@ -432,11 +432,13 @@ pub async fn watch_runs(chat: Arc<ChatHost>) {
         tokio::time::sleep(Duration::from_secs(3)).await;
         // Store hiccups (locked db) just skip a tick.
         let Ok(store) = Store::open() else { continue };
-        let Ok(runs) = store.list_runs(200) else { continue };
+        let Ok(runs) = store.list_runs(200) else {
+            continue;
+        };
         for run in runs {
             let prev = seen.insert(run.id.clone(), run.status.clone());
-            let newly_terminal = is_terminal(&run.status)
-                && !matches!(prev.as_deref(), Some(s) if is_terminal(s));
+            let newly_terminal =
+                is_terminal(&run.status) && !matches!(prev.as_deref(), Some(s) if is_terminal(s));
             if first || !newly_terminal {
                 continue;
             }
