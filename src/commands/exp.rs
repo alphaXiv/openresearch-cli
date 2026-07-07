@@ -52,6 +52,7 @@ pub async fn run(args: crate::ExpArgs) -> Result<()> {
             desc(&creds, &exp_id, set, stdin).await
         }
         ExpCommand::Run(run_args) => {
+            let run_args = *run_args;
             if store.get_local_experiment(&run_args.exp_id)?.is_some() {
                 return local_launch(run_args).await;
             }

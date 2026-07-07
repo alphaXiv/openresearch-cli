@@ -425,7 +425,7 @@ pub enum ExpCommand {
     },
 
     /// Launch a run on new (`--gpu`) or existing (`--sandbox`) compute.
-    Run(ExpRunArgs),
+    Run(Box<ExpRunArgs>),
 
     /// Cancel the in-flight run.
     Cancel { exp_id: String },
