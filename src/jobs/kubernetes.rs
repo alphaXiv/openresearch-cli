@@ -1,12 +1,27 @@
-//! Kubernetes Jobs backend — the user's own cluster via kubectl shell-outs.
+//! Kubernetes backend — the user's own cluster via kubectl shell-outs.
 //!
 //! Everything goes through the `kubectl` binary rather than a client crate:
 //! it inherits the user's kubeconfig auth verbatim (including exec plugins,
 //! which managed clusters like CoreWeave/EKS/GKE rely on) at zero dependency
-//! cost. A run is a batch/v1 Job: `backoffLimit: 0` (a failed run fails, no
-//! silent retries), `activeDeadlineSeconds` for the timeout, and a 24h
-//! `ttlSecondsAfterFinished` so finished Jobs clean themselves up after the
-//! supervisor has drained logs.
+//! cost.
+//!
+//! There is deliberately no resource abstraction (no flavors, no topology
+//! knobs): a run is a **manifest committed on the experiment branch**, so
+//! compute shape is versioned, diffable code like everything else in the
+//! tree. orx owns only the run contract, not the shape:
+//!
+//! - the manifest must contain exactly one Job (or mark one of several with
+//!   the `orx-primary: "true"` label) — its completion/failure is the run's;
+//! - the Job's container command must reference `$ORX_SCRIPT`, the injected
+//!   env var holding the clone-and-run script (the run command stays the
+//!   experiment's fixed contract);
+//! - orx injects run labels, the `orx-env` Secret ref, and defaults for
+//!   `activeDeadlineSeconds` / `ttlSecondsAfterFinished` / `backoffLimit`
+//!   when the manifest doesn't set them;
+//! - `{{ORX_RUN}}` in the manifest text is replaced with a run-unique,
+//!   DNS-safe id — use it in resource names so re-runs don't collide;
+//! - every applied resource is recorded on the run, and cancel deletes
+//!   exactly that list.
 //!
 //! Job stages are mapped onto the HF stage vocabulary (SCHEDULING/RUNNING/
 //! COMPLETED/ERROR/CANCELED/DELETED) so `stage_to_run_status` and
@@ -23,16 +38,21 @@ use tokio::process::Command;
 
 use crate::error::{anyhow, Result};
 
-/// Env vars land in this namespace-local Secret; jobs mount it via `envFrom`
-/// (`optional: true`, so an empty env file is fine). Re-synced on every
-/// launch; pods read it once at start.
-const ENV_SECRET: &str = "orx-env";
+/// Env vars land in this namespace-local Secret; the primary Job gets an
+/// `envFrom` ref injected (`optional: true`, so an empty env file is fine);
+/// auxiliary resources reference it themselves if they need the keys.
+/// Re-synced on every launch; pods read it once at start.
+pub const ENV_SECRET: &str = "orx-env";
+
+/// Label that picks the primary Job when a manifest contains several.
+const PRIMARY_LABEL: &str = "orx-primary";
 
 // --- settings ---------------------------------------------------------------
 
 /// User-tunable k8s settings, stored at
 /// `$XDG_CONFIG_HOME/openresearch/k8s.json`. No secrets in here — kubectl
-/// holds all auth.
+/// holds all auth. (Older files may carry extra fields like `flavors`; they
+/// parse fine and are dropped on the next save.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct K8sSettings {
@@ -41,18 +61,6 @@ pub struct K8sSettings {
     pub context: Option<String>,
     #[serde(default = "default_namespace")]
     pub namespace: String,
-    /// Default docker image; `None` = per-flavor default (CUDA pytorch on
-    /// GPU flavors, plain python otherwise).
-    #[serde(default)]
-    pub default_image: Option<String>,
-    /// Auto-detected from node shapes; refreshed via settings "detect".
-    #[serde(default)]
-    pub flavors: Vec<Flavor>,
-    /// User-defined flavors; win over detected ones on name clash.
-    #[serde(default)]
-    pub custom_flavors: Vec<Flavor>,
-    #[serde(default)]
-    pub detected_at: Option<i64>,
 }
 
 fn default_namespace() -> String {
@@ -64,41 +72,8 @@ impl Default for K8sSettings {
         Self {
             context: None,
             namespace: default_namespace(),
-            default_image: None,
-            flavors: Vec::new(),
-            custom_flavors: Vec::new(),
-            detected_at: None,
         }
     }
-}
-
-impl K8sSettings {
-    /// Custom flavors first (they win on clash), then detected.
-    pub fn all_flavors(&self) -> Vec<Flavor> {
-        let mut out = self.custom_flavors.clone();
-        for f in &self.flavors {
-            if !out.iter().any(|c| c.name == f.name) {
-                out.push(f.clone());
-            }
-        }
-        out
-    }
-
-    pub fn resolve_flavor(&self, name: &str) -> Option<Flavor> {
-        self.all_flavors().into_iter().find(|f| f.name == name)
-    }
-}
-
-/// A launchable resource shape: the k8s analog of an HF flavor.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Flavor {
-    pub name: String,
-    pub gpu: u64,
-    /// k8s CPU quantity, e.g. "14" or "500m".
-    pub cpu: String,
-    /// k8s memory quantity, e.g. "118Gi".
-    pub memory: String,
 }
 
 fn settings_path() -> std::path::PathBuf {
@@ -250,164 +225,38 @@ pub async fn preflight(context: Option<&str>, namespace: &str) -> Preflight {
     }
 }
 
-// --- flavor detection ---------------------------------------------------------
+// --- manifest submission --------------------------------------------------------
 
-/// Millicores from a k8s CPU quantity ("128", "127960m").
-fn parse_cpu_millis(q: &str) -> u64 {
-    let q = q.trim();
-    if let Some(m) = q.strip_suffix('m') {
-        m.parse().unwrap_or(0)
-    } else {
-        q.parse::<f64>().map(|c| (c * 1000.0) as u64).unwrap_or(0)
-    }
-}
-
-/// KiB from a k8s memory quantity ("1055333312Ki", "1Ti", "16Gi", bytes).
-fn parse_mem_kib(q: &str) -> u64 {
-    let q = q.trim();
-    let (num, mul): (&str, u64) = if let Some(n) = q.strip_suffix("Ki") {
-        (n, 1)
-    } else if let Some(n) = q.strip_suffix("Mi") {
-        (n, 1024)
-    } else if let Some(n) = q.strip_suffix("Gi") {
-        (n, 1024 * 1024)
-    } else if let Some(n) = q.strip_suffix("Ti") {
-        (n, 1024 * 1024 * 1024)
-    } else if let Some(n) = q.strip_suffix('K') {
-        (n, 1)
-    } else if let Some(n) = q.strip_suffix('M') {
-        (n, 1000)
-    } else if let Some(n) = q.strip_suffix('G') {
-        (n, 1_000_000)
-    } else {
-        return q.parse::<u64>().map(|b| b / 1024).unwrap_or(0);
-    };
-    num.parse::<f64>()
-        .map(|n| (n * mul as f64) as u64)
-        .unwrap_or(0)
-}
-
-fn fmt_cpu(millis: u64) -> String {
-    if millis >= 1000 {
-        format!("{}", millis / 1000)
-    } else {
-        format!("{}m", millis.max(100))
-    }
-}
-
-fn fmt_mem(kib: u64) -> String {
-    let gib = kib / (1024 * 1024);
-    if gib >= 1 {
-        format!("{gib}Gi")
-    } else {
-        format!("{}Mi", (kib / 1024).max(256))
-    }
-}
-
-/// Short flavor prefix from the GPU product label: lowercase alnum segments
-/// up to and including the first one with a digit — "NVIDIA-H100-80GB-HBM3"
-/// → "h100", "NVIDIA-RTX-PRO-6000-Blackwell-…" → "rtxpro6000".
-fn short_gpu_name(product: &str) -> String {
-    let mut out = String::new();
-    for seg in product.split(['-', '_', ' ']) {
-        let seg: String = seg
-            .chars()
-            .filter(char::is_ascii_alphanumeric)
-            .flat_map(char::to_lowercase)
-            .collect();
-        if seg.is_empty() || seg == "nvidia" {
-            continue;
-        }
-        let has_digit = seg.chars().any(|c| c.is_ascii_digit());
-        out.push_str(&seg);
-        if has_digit {
-            break;
-        }
-    }
-    if out.is_empty() {
-        "gpu".to_string()
-    } else {
-        out
-    }
-}
-
-/// Derive flavors from live node shapes: for each (GPU product, GPU count)
-/// family, power-of-two GPU slices with a proportional share of the family's
-/// smallest node's CPU/memory × 0.9 headroom (daemonsets nibble at
-/// allocatable, and a zero-headroom full-node pod would never schedule).
-pub async fn detect_flavors(context: Option<&str>) -> Result<Vec<Flavor>> {
-    let raw = kubectl(context, &["get", "nodes", "-o", "json"], None).await?;
-    let nodes: Value = serde_json::from_str(&raw)?;
-
-    // family key → (gpu, min cpu millis, min mem kib)
-    let mut families: HashMap<String, (u64, u64, u64)> = HashMap::new();
-    for node in nodes["items"].as_array().unwrap_or(&Vec::new()) {
-        let alloc = &node["status"]["allocatable"];
-        let gpu: u64 = alloc["nvidia.com/gpu"]
-            .as_str()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        if gpu == 0 {
-            continue;
-        }
-        let cpu_m = parse_cpu_millis(alloc["cpu"].as_str().unwrap_or("0"));
-        let mem_ki = parse_mem_kib(alloc["memory"].as_str().unwrap_or("0"));
-        let product = node["metadata"]["labels"]["nvidia.com/gpu.product"]
-            .as_str()
-            .unwrap_or("");
-        let key = format!("{}/{}", short_gpu_name(product), gpu);
-        let entry = families.entry(key).or_insert((gpu, u64::MAX, u64::MAX));
-        entry.1 = entry.1.min(cpu_m);
-        entry.2 = entry.2.min(mem_ki);
-    }
-
-    let mut flavors = Vec::new();
-    let mut keys: Vec<&String> = families.keys().collect();
-    keys.sort();
-    for key in keys {
-        let (gpus, cpu_m, mem_ki) = families[key];
-        let base = key.split('/').next().unwrap_or("gpu");
-        let mut n = 1u64;
-        let mut slices = Vec::new();
-        while n < gpus {
-            slices.push(n);
-            n *= 2;
-        }
-        slices.push(gpus);
-        for n in slices {
-            flavors.push(Flavor {
-                name: format!("{base}x{n}"),
-                gpu: n,
-                cpu: fmt_cpu(cpu_m * n * 9 / (gpus * 10)),
-                memory: fmt_mem(mem_ki * n * 9 / (gpus * 10)),
-            });
-        }
-    }
-    // A small CPU-only flavor is always offered; overridable in settings.
-    flavors.push(Flavor {
-        name: "cpu-small".to_string(),
-        gpu: 0,
-        cpu: "4".to_string(),
-        memory: "16Gi".to_string(),
-    });
-    Ok(flavors)
-}
-
-// --- job lifecycle ------------------------------------------------------------
-
-pub struct K8sJobSpec {
-    /// `bash -c` payload (the shared clone-and-run script).
+pub struct ManifestSpec {
+    /// Raw manifest text as committed on the experiment branch (YAML or JSON,
+    /// multi-document fine).
+    pub manifest: String,
+    /// Clone-and-run script; injected as the `ORX_SCRIPT` env var on the
+    /// primary Job's containers.
     pub script: String,
-    pub image: String,
-    pub flavor: Flavor,
-    /// Synced into the `orx-env` Secret and exposed to the pod via envFrom.
+    /// Run-unique DNS-safe token substituted for `{{ORX_RUN}}`.
+    pub run_token: String,
+    /// Synced into the `orx-env` Secret.
     pub env: HashMap<String, String>,
+    /// Injected as `activeDeadlineSeconds` when the manifest doesn't set one.
     pub timeout_seconds: u64,
     pub labels: HashMap<String, String>,
 }
 
-/// Sync the env Secret, then create the Job. Returns the generated job name.
-pub async fn run_job(context: Option<&str>, namespace: &str, spec: &K8sJobSpec) -> Result<String> {
+pub struct Submitted {
+    /// The primary Job's name (post-`{{ORX_RUN}}` substitution).
+    pub job_name: String,
+    /// Everything created, as `kind/name`, in creation order.
+    pub resources: Vec<String>,
+}
+
+/// Sync the env Secret, then validate and create the manifest's resources.
+/// On a partial failure everything already created is rolled back.
+pub async fn run_manifest(
+    context: Option<&str>,
+    namespace: &str,
+    spec: &ManifestSpec,
+) -> Result<Submitted> {
     if !spec.env.is_empty() {
         // stringData via stdin — values never appear on a command line.
         let secret = json!({
@@ -421,53 +270,235 @@ pub async fn run_job(context: Option<&str>, namespace: &str, spec: &K8sJobSpec) 
         kubectl(context, &["apply", "-f", "-"], Some(&secret.to_string())).await?;
     }
 
-    // cpu/memory are requests-only (limits would throttle and OOM-kill);
-    // the GPU count must appear in limits — that's what the device plugin reads.
-    let mut requests = json!({ "cpu": spec.flavor.cpu, "memory": spec.flavor.memory });
-    let mut limits = json!({});
-    if spec.flavor.gpu > 0 {
-        requests["nvidia.com/gpu"] = json!(spec.flavor.gpu.to_string());
-        limits["nvidia.com/gpu"] = json!(spec.flavor.gpu.to_string());
-    }
-    let manifest = json!({
-        "apiVersion": "batch/v1",
-        "kind": "Job",
-        "metadata": {
-            "generateName": "orx-",
-            "namespace": namespace,
-            "labels": spec.labels,
-        },
-        "spec": {
-            "backoffLimit": 0,
-            "ttlSecondsAfterFinished": 86400,
-            "activeDeadlineSeconds": spec.timeout_seconds,
-            "template": {
-                "metadata": { "labels": spec.labels },
-                "spec": {
-                    "restartPolicy": "Never",
-                    "containers": [{
-                        "name": "run",
-                        "image": spec.image,
-                        "command": ["bash", "-c", spec.script],
-                        "resources": { "requests": requests, "limits": limits },
-                        "envFrom": [{ "secretRef": { "name": ENV_SECRET, "optional": true } }],
-                    }],
-                },
-            },
-        },
-    });
-    let name = kubectl(
+    let rendered = spec.manifest.replace("{{ORX_RUN}}", &spec.run_token);
+    // YAML → JSON plus schema sanity in one step, without touching the
+    // cluster and without a YAML dependency.
+    let converted = kubectl(
         context,
-        &["create", "-f", "-", "-o", "jsonpath={.metadata.name}"],
-        Some(&manifest.to_string()),
+        &[
+            "create",
+            "--dry-run=client",
+            "-n",
+            namespace,
+            "-f",
+            "-",
+            "-o",
+            "json",
+        ],
+        Some(&rendered),
     )
-    .await?;
-    let name = name.trim().to_string();
-    if name.is_empty() {
-        return Err(anyhow!("kubectl create returned no job name"));
+    .await
+    .map_err(|e| anyhow!("manifest failed client-side validation: {e}"))?;
+    // Multi-doc manifests come back as *concatenated* JSON objects, not a
+    // List — read the stream.
+    let mut converted_docs: Vec<Value> = Vec::new();
+    for v in serde_json::Deserializer::from_str(&converted).into_iter::<Value>() {
+        converted_docs.push(v?);
     }
-    Ok(name)
+
+    let (docs, job_name) = prepare_docs(
+        converted_docs,
+        namespace,
+        &spec.script,
+        spec.timeout_seconds,
+        &spec.labels,
+    )?;
+
+    // Create one resource at a time so a failure can roll back exactly what
+    // exists so far (a multi-doc `kubectl create` stops mid-way but doesn't
+    // undo).
+    let mut created: Vec<String> = Vec::new();
+    for doc in &docs {
+        let handle = resource_handle(doc);
+        if let Err(e) = kubectl(context, &["create", "-f", "-"], Some(&doc.to_string())).await {
+            for r in created.iter().rev() {
+                let _ = delete_resources(context, namespace, std::slice::from_ref(r)).await;
+            }
+            return Err(anyhow!("could not create {handle}: {e}"));
+        }
+        created.push(handle);
+    }
+    Ok(Submitted {
+        job_name,
+        resources: created,
+    })
 }
+
+fn resource_handle(doc: &Value) -> String {
+    format!(
+        "{}/{}",
+        doc["kind"].as_str().unwrap_or("").to_lowercase(),
+        doc["metadata"]["name"].as_str().unwrap_or("")
+    )
+}
+
+/// Lint the converted manifest and inject the orx-owned pieces. Returns the
+/// docs ready to create plus the primary Job's name.
+///
+/// Lint rules (submit-time, loud): at least one doc; every doc named (no
+/// generateName — orx must know what it created); no foreign namespace;
+/// exactly one Job, or exactly one labelled `orx-primary: "true"`; the
+/// primary Job's containers must reference `$ORX_SCRIPT`.
+///
+/// Injections: run labels on every doc (and the primary Job's pod template);
+/// `ORX_SCRIPT` env + `orx-env` envFrom on the primary Job's containers;
+/// `activeDeadlineSeconds` / `ttlSecondsAfterFinished` / `backoffLimit`
+/// defaults on the primary Job when absent.
+fn prepare_docs(
+    converted: Vec<Value>,
+    namespace: &str,
+    script: &str,
+    timeout_seconds: u64,
+    labels: &HashMap<String, String>,
+) -> Result<(Vec<Value>, String)> {
+    // Flatten kubectl's shapes: a stream of objects, any of which may itself
+    // be a v1 List.
+    let mut docs: Vec<Value> = Vec::new();
+    for v in converted {
+        if v["kind"] == "List" {
+            docs.extend(v["items"].as_array().cloned().unwrap_or_default());
+        } else {
+            docs.push(v);
+        }
+    }
+    if docs.is_empty() {
+        return Err(anyhow!("the manifest contains no resources"));
+    }
+
+    for doc in &docs {
+        let kind = doc["kind"].as_str().unwrap_or("");
+        if doc["metadata"]["name"].as_str().unwrap_or("").is_empty() {
+            return Err(anyhow!(
+                "every resource needs metadata.name (generateName isn't supported — orx \
+                 records what it created for cancel/cleanup); a {} is missing one. \
+                 Use {{{{ORX_RUN}}}} in names to keep re-runs collision-free.",
+                if kind.is_empty() { "resource" } else { kind }
+            ));
+        }
+        if let Some(ns) = doc["metadata"]["namespace"].as_str() {
+            if ns != namespace {
+                return Err(anyhow!(
+                    "{} sets namespace '{}' but runs go to the configured namespace '{}' — \
+                     drop metadata.namespace from the manifest.",
+                    resource_handle(doc),
+                    ns,
+                    namespace
+                ));
+            }
+        }
+    }
+
+    let job_indices: Vec<usize> = docs
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| d["kind"] == "Job")
+        .map(|(i, _)| i)
+        .collect();
+    let primary = match job_indices.as_slice() {
+        [] => {
+            return Err(anyhow!(
+                "the manifest needs a Job — its completion/failure is the run's outcome"
+            ))
+        }
+        [one] => *one,
+        many => {
+            let marked: Vec<usize> = many
+                .iter()
+                .copied()
+                .filter(|i| docs[*i]["metadata"]["labels"][PRIMARY_LABEL] == "true")
+                .collect();
+            match marked.as_slice() {
+                [one] => *one,
+                _ => {
+                    return Err(anyhow!(
+                        "the manifest has {} Jobs — label exactly one with `{}: \"true\"` \
+                         so orx knows whose completion is the run's",
+                        many.len(),
+                        PRIMARY_LABEL
+                    ))
+                }
+            }
+        }
+    };
+
+    let label_map = |v: &mut Value| {
+        if !v.is_object() {
+            *v = json!({});
+        }
+        for (k, val) in labels {
+            v[k] = json!(val);
+        }
+    };
+    for doc in &mut docs {
+        doc["metadata"]["namespace"] = json!(namespace);
+        label_map(&mut doc["metadata"]["labels"]);
+    }
+
+    let job = &mut docs[primary];
+    let job_name = job["metadata"]["name"].as_str().unwrap_or("").to_string();
+    label_map(&mut job["spec"]["template"]["metadata"]["labels"]);
+    if job["spec"]["activeDeadlineSeconds"].is_null() {
+        job["spec"]["activeDeadlineSeconds"] = json!(timeout_seconds);
+    }
+    if job["spec"]["ttlSecondsAfterFinished"].is_null() {
+        job["spec"]["ttlSecondsAfterFinished"] = json!(86400);
+    }
+    if job["spec"]["backoffLimit"].is_null() {
+        // Silent retries would splice two attempts into one run log.
+        job["spec"]["backoffLimit"] = json!(0);
+    }
+
+    let containers = job["spec"]["template"]["spec"]["containers"]
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("the Job has no containers"))?;
+    let mut references_script = false;
+    for c in containers.iter_mut() {
+        for field in ["command", "args"] {
+            if let Some(items) = c[field].as_array() {
+                if items
+                    .iter()
+                    .any(|a| a.as_str().is_some_and(|s| s.contains("ORX_SCRIPT")))
+                {
+                    references_script = true;
+                }
+            }
+        }
+        let env = c["env"]
+            .as_array_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
+        let mut env: Vec<Value> = env
+            .into_iter()
+            .filter(|e| e["name"] != "ORX_SCRIPT")
+            .collect();
+        env.push(json!({ "name": "ORX_SCRIPT", "value": script }));
+        c["env"] = json!(env);
+        let env_from = c["envFrom"]
+            .as_array_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
+        let mut env_from: Vec<Value> = env_from;
+        if !env_from
+            .iter()
+            .any(|e| e["secretRef"]["name"] == ENV_SECRET)
+        {
+            env_from.push(json!({ "secretRef": { "name": ENV_SECRET, "optional": true } }));
+        }
+        c["envFrom"] = json!(env_from);
+    }
+    if !references_script {
+        return Err(anyhow!(
+            "no container in Job '{}' runs the experiment: reference the injected script, \
+             e.g. command: [\"bash\", \"-c\", \"$ORX_SCRIPT\"] — it clones the branch tip \
+             and runs the experiment's fixed run command",
+            job_name
+        ));
+    }
+
+    Ok((docs, job_name))
+}
+
+// --- job lifecycle ------------------------------------------------------------
 
 /// Job state in the shared stage vocabulary.
 #[derive(Debug, Clone)]
@@ -497,6 +528,8 @@ pub async fn inspect_job(context: Option<&str>, namespace: &str, name: &str) -> 
     };
     let job: Value = serde_json::from_str(&raw)?;
     let status = &job["status"];
+    // 1 for plain jobs; the pod count for Indexed jobs.
+    let completions = job["spec"]["completions"].as_u64().unwrap_or(1).max(1);
 
     let empty = Vec::new();
     let conditions = status["conditions"].as_array().unwrap_or(&empty);
@@ -505,7 +538,7 @@ pub async fn inspect_job(context: Option<&str>, namespace: &str, name: &str) -> 
             .iter()
             .find(|c| c["type"] == ty && c["status"] == "True")
     };
-    if condition("Complete").is_some() || status["succeeded"].as_u64().unwrap_or(0) > 0 {
+    if condition("Complete").is_some() || status["succeeded"].as_u64().unwrap_or(0) >= completions {
         return Ok(JobState {
             stage: "COMPLETED".to_string(),
             message: None,
@@ -524,8 +557,9 @@ pub async fn inspect_job(context: Option<&str>, namespace: &str, name: &str) -> 
         });
     }
 
-    // Live: RUNNING once a pod runs, SCHEDULING before that (surfacing pod
-    // waiting reasons like ImagePullBackOff so "stuck" is diagnosable).
+    // Live: RUNNING once every expected pod runs (the whole gang for Indexed
+    // jobs), SCHEDULING before that (surfacing pod waiting reasons like
+    // ImagePullBackOff so "stuck" is diagnosable).
     let pods_raw = kubectl(
         context,
         &[
@@ -544,14 +578,10 @@ pub async fn inspect_job(context: Option<&str>, namespace: &str, name: &str) -> 
     .unwrap_or_default();
     let pods: Value = serde_json::from_str(&pods_raw).unwrap_or_else(|_| json!({"items": []}));
     let mut waiting_msg = None;
+    let mut live = 0u64;
     for pod in pods["items"].as_array().unwrap_or(&empty) {
         match pod["status"]["phase"].as_str() {
-            Some("Running") | Some("Succeeded") => {
-                return Ok(JobState {
-                    stage: "RUNNING".to_string(),
-                    message: None,
-                })
-            }
+            Some("Running") | Some("Succeeded") => live += 1,
             _ => {}
         }
         for cs in pod["status"]["containerStatuses"]
@@ -563,34 +593,90 @@ pub async fn inspect_job(context: Option<&str>, namespace: &str, name: &str) -> 
             }
         }
     }
+    if live >= completions {
+        return Ok(JobState {
+            stage: "RUNNING".to_string(),
+            message: None,
+        });
+    }
     Ok(JobState {
         stage: "SCHEDULING".to_string(),
         message: waiting_msg,
     })
 }
 
-/// Cancel = delete the Job (cascades to its pod). Missing job → already gone.
-pub async fn cancel_job(context: Option<&str>, namespace: &str, name: &str) -> Result<()> {
-    match kubectl(
+/// Cancel/cleanup = delete the run's recorded resources (`kind/name` handles,
+/// newest-first so dependents go before the Job). Missing → already gone.
+pub async fn delete_resources(
+    context: Option<&str>,
+    namespace: &str,
+    resources: &[String],
+) -> Result<()> {
+    for r in resources.iter().rev() {
+        match kubectl(
+            context,
+            &["delete", r, "-n", namespace, "--wait=false"],
+            None,
+        )
+        .await
+        {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("NotFound") => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// The pod whose stdout is the run log: the completion-index-0 pod for
+/// Indexed jobs (the annotation exists on any cluster with Indexed jobs),
+/// else the job's first pod by name. `None` while no pod exists yet.
+async fn leader_pod(context: Option<&str>, namespace: &str, job_name: &str) -> Option<String> {
+    let raw = kubectl(
         context,
-        &["delete", "job", name, "-n", namespace, "--wait=false"],
+        &[
+            "get",
+            "pods",
+            "-n",
+            namespace,
+            "-l",
+            &format!("job-name={job_name}"),
+            "-o",
+            "json",
+        ],
         None,
     )
     .await
-    {
-        Ok(_) => Ok(()),
-        Err(e) if e.to_string().contains("NotFound") => Ok(()),
-        Err(e) => Err(e),
+    .ok()?;
+    let pods: Value = serde_json::from_str(&raw).ok()?;
+    let mut names: Vec<&str> = Vec::new();
+    for pod in pods["items"].as_array()? {
+        let name = pod["metadata"]["name"].as_str()?;
+        let index = pod["metadata"]["annotations"]["batch.kubernetes.io/job-completion-index"]
+            .as_str()
+            .unwrap_or("");
+        if index == "0" {
+            return Some(name.to_string());
+        }
+        names.push(name);
     }
+    names.sort_unstable();
+    names.first().map(|n| n.to_string())
 }
 
-/// One pass over `kubectl logs -f`, invoking `sink` per line past `skip`.
+/// One pass over `kubectl logs -f` on the job's leader pod, invoking `sink`
+/// per line past `skip`.
 ///
 /// Same replay/dedup contract as `hf::stream_logs`: kubectl replays the log
 /// from the start on each (re)connect, so the caller passes how many lines it
 /// has consumed and gets the new total back. Ends when kubectl exits (pod
-/// gone/finished, or not yet started — it errors fast) or after `idle`
-/// silence; the supervisor re-checks job state and reconnects if still live.
+/// gone/finished) or after `idle` silence; the supervisor re-checks job state
+/// and reconnects if still live.
+///
+/// Only the leader pod is captured: a stable single stream keeps the
+/// line-count dedup sound (interleaving N pods would reorder across
+/// reconnects), and the leader is where the driver's output lives. Other
+/// pods stay reachable via `kubectl logs`.
 pub async fn stream_logs(
     context: Option<&str>,
     namespace: &str,
@@ -601,19 +687,18 @@ pub async fn stream_logs(
 ) -> Result<u64> {
     use tokio::io::{AsyncBufReadExt as _, BufReader};
 
+    let target = match leader_pod(context, namespace, job_name).await {
+        Some(pod) => format!("pod/{pod}"),
+        // Not scheduled yet — let the supervisor's retry loop come back.
+        None => return Ok(skip),
+    };
+
     let mut cmd = Command::new("kubectl");
     if let Some(ctx) = context {
         cmd.arg("--context").arg(ctx);
     }
     let mut child = cmd
-        .args([
-            "logs",
-            "-f",
-            &format!("job/{job_name}"),
-            "-n",
-            namespace,
-            "--tail=-1",
-        ])
+        .args(["logs", "-f", &target, "-n", namespace, "--tail=-1"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null()) // "waiting to start" noise; state comes from inspect
@@ -638,4 +723,158 @@ pub async fn stream_logs(
     }
     let _ = child.kill().await;
     Ok(seen.max(skip))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job(name: &str) -> Value {
+        json!({
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": { "name": name },
+            "spec": {
+                "template": {
+                    "spec": {
+                        "restartPolicy": "Never",
+                        "containers": [{
+                            "name": "run",
+                            "image": "python:3.12",
+                            "command": ["bash", "-c", "$ORX_SCRIPT"],
+                        }],
+                    },
+                },
+            },
+        })
+    }
+
+    fn labels() -> HashMap<String, String> {
+        HashMap::from([("or_run".to_string(), "r1".to_string())])
+    }
+
+    fn prepare(v: Value) -> Result<(Vec<Value>, String)> {
+        prepare_docs(vec![v], "default", "echo hi", 14400, &labels())
+    }
+
+    #[test]
+    fn single_job_gets_defaults_labels_script_and_secret() {
+        let (docs, name) = prepare(job("train-r1")).unwrap();
+        assert_eq!(name, "train-r1");
+        let j = &docs[0];
+        assert_eq!(j["metadata"]["namespace"], "default");
+        assert_eq!(j["metadata"]["labels"]["or_run"], "r1");
+        assert_eq!(j["spec"]["template"]["metadata"]["labels"]["or_run"], "r1");
+        assert_eq!(j["spec"]["activeDeadlineSeconds"], 14400);
+        assert_eq!(j["spec"]["ttlSecondsAfterFinished"], 86400);
+        assert_eq!(j["spec"]["backoffLimit"], 0);
+        let c = &j["spec"]["template"]["spec"]["containers"][0];
+        assert_eq!(c["env"][0]["name"], "ORX_SCRIPT");
+        assert_eq!(c["env"][0]["value"], "echo hi");
+        assert_eq!(c["envFrom"][0]["secretRef"]["name"], ENV_SECRET);
+    }
+
+    #[test]
+    fn author_settings_win_over_defaults() {
+        let mut j = job("train");
+        j["spec"]["activeDeadlineSeconds"] = json!(60);
+        j["spec"]["backoffLimit"] = json!(2);
+        let (docs, _) = prepare(j).unwrap();
+        assert_eq!(docs[0]["spec"]["activeDeadlineSeconds"], 60);
+        assert_eq!(docs[0]["spec"]["backoffLimit"], 2);
+    }
+
+    #[test]
+    fn list_with_aux_service_keeps_order_and_finds_the_job() {
+        let svc = json!({
+            "apiVersion": "v1", "kind": "Service",
+            "metadata": { "name": "rendezvous" },
+            "spec": { "clusterIP": "None" },
+        });
+        let list = json!({ "kind": "List", "items": [svc, job("train")] });
+        let (docs, name) = prepare(list).unwrap();
+        assert_eq!(name, "train");
+        assert_eq!(docs.len(), 2);
+        assert_eq!(docs[0]["kind"], "Service");
+        assert_eq!(docs[0]["metadata"]["labels"]["or_run"], "r1");
+    }
+
+    #[test]
+    fn multi_doc_stream_as_separate_values_works() {
+        // kubectl -o json emits concatenated objects for multi-doc input.
+        let svc = json!({ "kind": "Service", "metadata": { "name": "rendezvous" } });
+        let (docs, name) = prepare_docs(
+            vec![svc, job("train")],
+            "default",
+            "echo hi",
+            14400,
+            &labels(),
+        )
+        .unwrap();
+        assert_eq!(docs.len(), 2);
+        assert_eq!(name, "train");
+    }
+
+    #[test]
+    fn no_job_is_an_error() {
+        let svc = json!({ "kind": "Service", "metadata": { "name": "s" } });
+        assert!(prepare(svc)
+            .unwrap_err()
+            .to_string()
+            .contains("needs a Job"));
+    }
+
+    #[test]
+    fn two_jobs_need_a_primary_label() {
+        let list = json!({ "kind": "List", "items": [job("a"), job("b")] });
+        assert!(prepare(list)
+            .unwrap_err()
+            .to_string()
+            .contains("orx-primary"));
+
+        let mut marked = job("b");
+        marked["metadata"]["labels"] = json!({ "orx-primary": "true" });
+        let list = json!({ "kind": "List", "items": [job("a"), marked] });
+        let (_, name) = prepare(list).unwrap();
+        assert_eq!(name, "b");
+    }
+
+    #[test]
+    fn job_must_reference_the_script() {
+        let mut j = job("train");
+        j["spec"]["template"]["spec"]["containers"][0]["command"] = json!(["python", "train.py"]);
+        assert!(prepare(j).unwrap_err().to_string().contains("ORX_SCRIPT"));
+    }
+
+    #[test]
+    fn generate_name_and_foreign_namespace_are_errors() {
+        let mut j = job("");
+        j["metadata"] = json!({ "generateName": "train-" });
+        assert!(prepare(j)
+            .unwrap_err()
+            .to_string()
+            .contains("metadata.name"));
+
+        let mut j = job("train");
+        j["metadata"]["namespace"] = json!("other");
+        assert!(prepare(j).unwrap_err().to_string().contains("namespace"));
+    }
+
+    #[test]
+    fn author_orx_script_env_is_replaced_and_secret_not_duplicated() {
+        let mut j = job("train");
+        j["spec"]["template"]["spec"]["containers"][0]["env"] =
+            json!([{ "name": "ORX_SCRIPT", "value": "evil" }, { "name": "FOO", "value": "1" }]);
+        j["spec"]["template"]["spec"]["containers"][0]["envFrom"] =
+            json!([{ "secretRef": { "name": ENV_SECRET } }]);
+        let (docs, _) = prepare(j).unwrap();
+        let c = &docs[0]["spec"]["template"]["spec"]["containers"][0];
+        let env = c["env"].as_array().unwrap();
+        assert_eq!(env.len(), 2);
+        assert!(env.iter().any(|e| e["name"] == "FOO"));
+        assert!(env
+            .iter()
+            .any(|e| e["name"] == "ORX_SCRIPT" && e["value"] == "echo hi"));
+        assert_eq!(c["envFrom"].as_array().unwrap().len(), 1);
+    }
 }

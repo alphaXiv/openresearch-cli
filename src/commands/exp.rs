@@ -436,6 +436,12 @@ async fn desc(
 async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<()> {
     // External backends: orx submits and supervises the job itself; the api
     // only mirrors. Everything below this branch is the managed path.
+    if args.manifest.is_some() && args.backend.as_deref() != Some("k8s") {
+        return Err(anyhow!("--manifest only applies with --backend k8s."));
+    }
+    if args.host.is_some() && args.backend.as_deref() != Some("ssh") {
+        return Err(anyhow!("--host only applies with --backend ssh."));
+    }
     match args.backend.as_deref() {
         Some("hf") => return launch_hf(creds, args).await,
         Some("modal") => return launch_modal(creds, args).await,
@@ -460,8 +466,11 @@ async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<
     }
     if args.flavor.is_some() || args.image.is_some() || args.timeout.is_some() {
         return Err(anyhow!(
-            "--flavor/--image/--timeout only apply with --backend hf/modal/k8s."
+            "--flavor/--image/--timeout only apply with an external --backend."
         ));
+    }
+    if args.manifest.is_some() {
+        return Err(anyhow!("--manifest only applies with --backend k8s."));
     }
     // Resolve the target: exactly one of --sandbox, --gpu, or --cpu.
     let selectors = [
@@ -564,6 +573,8 @@ async fn launch_hf(creds: &crate::config::Credentials, args: ExpRunArgs) -> Resu
         image: args.image.clone(),
         url: None,
         context: None,
+        manifest: None,
+        resources: None,
     };
     let created =
         create_external_run(creds, &args.exp_id, serde_json::to_value(&descriptor)?).await?;
@@ -698,6 +709,8 @@ async fn launch_modal(creds: &crate::config::Credentials, args: ExpRunArgs) -> R
         image: args.image.clone(),
         url: None,
         context: None,
+        manifest: None,
+        resources: None,
     };
     let created =
         create_external_run(creds, &args.exp_id, serde_json::to_value(&descriptor)?).await?;
@@ -916,6 +929,12 @@ async fn local_desc(
 
 /// Local `exp run`: external backends only — HF Jobs, Modal, or a k8s cluster.
 async fn local_launch(args: ExpRunArgs) -> Result<()> {
+    if args.manifest.is_some() && args.backend.as_deref() != Some("k8s") {
+        return Err(anyhow!("--manifest only applies with --backend k8s."));
+    }
+    if args.host.is_some() && args.backend.as_deref() != Some("ssh") {
+        return Err(anyhow!("--host only applies with --backend ssh."));
+    }
     match args.backend.as_deref() {
         Some("hf") => crate::local::hf::launch_local_hf(&args).await,
         Some("modal") => crate::local::modal::launch_local_modal(&args).await,
@@ -930,8 +949,9 @@ async fn local_launch(args: ExpRunArgs) -> Result<()> {
             "Local experiments run on external compute only. \
              Pass `--backend hf --flavor <flavor>` (e.g. --flavor a10g-small), \
              `--backend modal --flavor <flavor>` (e.g. --flavor a10g), \
-             `--backend k8s --flavor <flavor>` (see `orx up` Settings → Compute), \
-             or `--backend ssh --flavor <host>` (an ~/.ssh/config alias)."
+             `--backend k8s` (runs the manifest committed on the branch — \
+             default .orx/k8s.yaml, or --manifest <path>), \
+             or `--backend ssh --host <alias>` (an ~/.ssh/config alias)."
         )),
     }
 }

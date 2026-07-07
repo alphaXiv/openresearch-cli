@@ -528,18 +528,27 @@ pub struct ExpRunArgs {
     pub backend: Option<String>,
     /// Hardware flavor. With `--backend hf`: t4-small, a10g-small, a100-large,
     /// h200, … With `--backend modal`: a Modal GPU (t4, l4, a10g, a100,
-    /// a100-80gb, l40s, h100, h200, or e.g. h100:2) or cpu/cpu-large. With
-    /// `--backend k8s`: a detected/custom flavor name from `orx up` Settings →
-    /// Compute. With `--backend ssh`: an ~/.ssh/config host alias to run on.
-    /// Required for external-backend runs.
+    /// a100-80gb, l40s, h100, h200, or e.g. h100:2) or cpu/cpu-large. Not used
+    /// by k8s (see --manifest) or ssh (see --host).
     #[arg(long)]
     pub flavor: Option<String>,
-    /// Docker image for the job (with `--backend hf/modal/k8s`). Defaults to
-    /// python:3.12 on CPU flavors, a CUDA pytorch image otherwise.
+    /// The ~/.ssh/config host alias to run on (with `--backend ssh`).
+    #[arg(long)]
+    pub host: Option<String>,
+    /// Repo-relative path to the k8s manifest on the experiment branch (with
+    /// `--backend k8s`; default .orx/k8s.yaml). The manifest declares the run's
+    /// resources — image, GPUs, topology — and orx injects the run script, env
+    /// Secret, labels, and a default timeout. See `orx skill` for the contract.
+    #[arg(long)]
+    pub manifest: Option<String>,
+    /// Docker image for the job (with `--backend hf/modal`). Defaults to
+    /// python:3.12 on CPU flavors, a CUDA pytorch image otherwise. With
+    /// `--backend k8s`, set the image in the manifest instead.
     #[arg(long)]
     pub image: Option<String>,
     /// Job timeout (with `--backend hf/modal/k8s`): 90s, 30m, 4h, 1d. Default 4h —
-    /// HF's own default is only 30 minutes.
+    /// HF's own default is only 30 minutes. With `--backend k8s` it becomes
+    /// activeDeadlineSeconds unless the manifest sets its own.
     #[arg(long)]
     pub timeout: Option<String>,
     /// Launch even if the experiment's branch has no changes over its parent

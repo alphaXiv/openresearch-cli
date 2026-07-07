@@ -1424,7 +1424,7 @@ select:focus {
   background: var(--base);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 16px 18px;
+  padding: 18px 20px;
 }
 .onb-card-head {
   display: flex;
@@ -1461,6 +1461,93 @@ select:focus {
   color: var(--subtext);
   font-size: 13px;
   padding: 8px 0;
+}
+.onb-gh-options {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-variant);
+}
+.onb-gh-option {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.onb-gh-option-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--subtext);
+}
+.onb-gh-option-body {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.onb-gh-cmd {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border-variant);
+  border-radius: 5px;
+  padding: 3px 8px;
+}
+.onb-gh-hint {
+  font-size: 12px;
+  color: var(--subtext);
+}
+.onb-gh-hint code {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.onb-gh-or {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.onb-gh-or::before,
+.onb-gh-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-variant);
+}
+.onb-gh-option .onb-token-form {
+  flex: 1;
+  min-width: 0;
+  margin-top: 0;
+}
+.onb-token-form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.onb-token-form input {
+  flex: 1;
+  min-width: 220px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.onb-token-form a {
+  font-size: 12px;
+  color: var(--subtext);
+  white-space: nowrap;
+}
+.onb-token-form .error {
+  flex-basis: 100%;
+  color: var(--accent-red);
+  font-size: 12.5px;
+  white-space: pre-wrap;
 }
 .onb-actions {
   display: flex;

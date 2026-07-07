@@ -293,6 +293,12 @@ async fn run_k8s(
     let namespace = namespace.to_string();
     let job_name = job_name.to_string();
     let context = descriptor.context.clone();
+    // What cancel deletes: the manifest's recorded resources, or just the Job
+    // for runs from before resource recording existed.
+    let resources = descriptor
+        .resources
+        .clone()
+        .unwrap_or_else(|| vec![format!("job/{job_name}")]);
 
     eprintln!("supervise {run_id}: watching k8s job {namespace}/{job_name}");
 
@@ -381,7 +387,7 @@ async fn run_k8s(
                 cancel_k8s(
                     context.as_deref(),
                     &namespace,
-                    &job_name,
+                    &resources,
                     &run_id,
                     &mut cancel_sent,
                 )
@@ -399,7 +405,7 @@ async fn run_k8s(
                 cancel_k8s(
                     context.as_deref(),
                     &namespace,
-                    &job_name,
+                    &resources,
                     &run_id,
                     &mut cancel_sent,
                 )
@@ -412,7 +418,8 @@ async fn run_k8s(
 }
 
 /// k8s twin of `tail_logs` — `kubectl logs -f` replays from the pod's start on
-/// each reconnect, so the same truncate-and-dedup contract applies.
+/// each reconnect, so the same truncate-and-dedup contract applies. Tails the
+/// primary Job's leader pod (index 0 for Indexed jobs).
 async fn tail_logs_k8s(
     context: Option<String>,
     namespace: String,
@@ -465,12 +472,12 @@ async fn tail_logs_k8s(
 async fn cancel_k8s(
     context: Option<&str>,
     namespace: &str,
-    job_name: &str,
+    resources: &[String],
     run_id: &str,
     cancel_sent: &mut bool,
 ) {
-    eprintln!("supervise {run_id}: cancel requested — deleting k8s job");
-    match k8s::cancel_job(context, namespace, job_name).await {
+    eprintln!("supervise {run_id}: cancel requested — deleting the run's k8s resources");
+    match k8s::delete_resources(context, namespace, resources).await {
         Ok(()) => *cancel_sent = true,
         Err(err) => eprintln!("supervise {run_id}: k8s cancel failed (will retry): {err}"),
     }

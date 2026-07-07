@@ -10,7 +10,6 @@ import {
 import { useEffect, useState } from "react";
 import {
   deleteEnvVar,
-  detectK8sFlavors,
   getEnvVars,
   getGitSettings,
   getHarnesses,
@@ -18,6 +17,7 @@ import {
   getModalSettings,
   getSshHosts,
   provisionModal,
+  removeGitToken,
   saveGitSettings,
   saveHfToken,
   saveK8sSettings,
@@ -36,6 +36,7 @@ import {
   type SshPreflight,
   modelLabel,
 } from "../api";
+import { GitTokenForm } from "./GitTokenForm";
 
 type Tab = "harnesses" | "compute" | "environment" | "git";
 
@@ -162,16 +163,13 @@ function K8sSection() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [context, setContext] = useState("");
   const [namespace, setNamespace] = useState("");
-  const [image, setImage] = useState("");
   const [saving, setSaving] = useState(false);
-  const [detecting, setDetecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const apply = (s: K8sSettings) => {
     setSettings(s);
     setContext(s.context ?? "");
     setNamespace(s.namespace);
-    setImage(s.defaultImage ?? "");
   };
 
   useEffect(() => {
@@ -183,8 +181,7 @@ function K8sSection() {
   const unchanged =
     settings !== null &&
     context === (settings.context ?? "") &&
-    namespace.trim() === settings.namespace &&
-    image.trim() === (settings.defaultImage ?? "");
+    namespace.trim() === settings.namespace;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -192,7 +189,7 @@ function K8sSection() {
     setSaving(true);
     setError(null);
     try {
-      apply(await saveK8sSettings({ context, namespace: namespace.trim(), defaultImage: image.trim() }));
+      apply(await saveK8sSettings({ context, namespace: namespace.trim() }));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -200,25 +197,13 @@ function K8sSection() {
     }
   }
 
-  async function detect() {
-    if (detecting) return;
-    setDetecting(true);
-    setError(null);
-    try {
-      apply(await detectK8sFlavors());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setDetecting(false);
-    }
-  }
-
   return (
     <>
       <p className="settings-sub">
-        <strong>Kubernetes</strong> — run Jobs on your own cluster with{" "}
-        <code>--backend k8s --flavor &lt;name&gt;</code>. Auth comes from your kubeconfig; nothing
-        is stored here but the context and namespace.
+        <strong>Kubernetes</strong> — run on your own cluster with <code>--backend k8s</code>.
+        The run&apos;s resources (image, GPUs, topology) come from a manifest committed on the
+        experiment branch (default <code>.orx/k8s.yaml</code>); only the cluster context and
+        namespace live here. Auth comes from your kubeconfig.
       </p>
       {loadError ? (
         <div className="settings-card">
@@ -267,18 +252,6 @@ function K8sSection() {
                   />
                 </label>
               </div>
-              <label>
-                Default image (optional)
-                <input
-                  className="mono"
-                  type="text"
-                  value={image}
-                  onChange={(e) => setImage(e.target.value)}
-                  placeholder="pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </label>
               {error && <div className="error">{error}</div>}
               <div className="actions">
                 <button type="submit" className="btn primary" disabled={saving || unchanged}>
@@ -289,42 +262,18 @@ function K8sSection() {
           </div>
           <div className="settings-card">
             <div className="settings-card-head">
-              <h3>Flavors</h3>
-              <div className="spacer" style={{ flex: 1 }} />
-              <button className="btn sm" onClick={() => void detect()} disabled={detecting}>
-                <RefreshCw size={12} className={detecting ? "spin" : ""} /> Re-detect
-              </button>
+              <h3>Run manifest</h3>
             </div>
             <p className="settings-sub">
-              Auto-detected from node shapes (with 10% headroom for system pods). Launch with{" "}
-              <code>--flavor &lt;name&gt;</code>.
+              Each run applies the manifest committed on its experiment branch — default{" "}
+              <code>.orx/k8s.yaml</code>, or <code>--manifest &lt;path&gt;</code>. It declares
+              whatever the run needs (image, GPU requests, an Indexed Job across nodes, extra
+              Services, …); orx injects the run script as <code>$ORX_SCRIPT</code>, the{" "}
+              <code>orx-env</code> Secret, run labels, and a default timeout, and requires
+              exactly one Job (or one labelled <code>orx-primary: &quot;true&quot;</code>) whose
+              completion is the run&apos;s. Logs follow that Job&apos;s leader pod. Use{" "}
+              <code>{"{{ORX_RUN}}"}</code> in resource names to keep re-runs collision-free.
             </p>
-            {settings.flavors.length === 0 ? (
-              <p className="settings-empty">
-                No flavors yet — save a cluster above to detect them.
-              </p>
-            ) : (
-              <table className="flavor-table">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>GPUs</th>
-                    <th>CPU</th>
-                    <th>Memory</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {settings.flavors.map((f) => (
-                    <tr key={f.name}>
-                      <td className="mono">{f.name}</td>
-                      <td className="mono muted">{f.gpu}</td>
-                      <td className="mono muted">{f.cpu}</td>
-                      <td className="mono muted">{f.memory}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
           </div>
         </>
       )}
@@ -473,7 +422,7 @@ function SshSection() {
       <h3>SSH hosts</h3>
       <p className="settings-sub">
         Run experiments directly on your own boxes with{" "}
-        <code>--backend ssh --flavor &lt;host&gt;</code>. Hosts come from{" "}
+        <code>--backend ssh --host &lt;alias&gt;</code>. Hosts come from{" "}
         <code>~/.ssh/config</code>; auth uses your keys/agent (orx never reads a key). The host
         just needs <code>git</code> and <code>bash</code>.
       </p>
@@ -889,16 +838,33 @@ function GitTab() {
               <span className="v">
                 {settings.githubTokenSource === "env"
                   ? "GITHUB_TOKEN env var"
-                  : settings.githubTokenSource === "gh"
-                    ? "gh CLI (gh auth token)"
-                    : "none found"}
+                  : settings.githubTokenSource === "stored"
+                    ? "token saved in orx"
+                    : settings.githubTokenSource === "gh"
+                      ? "gh CLI (gh auth token)"
+                      : "none found"}
               </span>
             </div>
             {!settings.githubTokenSource && (
-              <p className="settings-note">
-                No GitHub token found — private repo clones and branch pushes will fail. Run
-                `gh auth login` or set GITHUB_TOKEN.
-              </p>
+              <>
+                <p className="settings-note">
+                  No GitHub token found — private repo clones and branch pushes will fail. Run{" "}
+                  <code>gh auth login</code>, or paste a personal access token:
+                </p>
+                <GitTokenForm onSaved={setSettings} />
+              </>
+            )}
+            {settings.githubTokenSource === "stored" && (
+              <div className="actions">
+                <button
+                  className="btn"
+                  onClick={() => {
+                    void removeGitToken().then(setSettings).catch(() => {});
+                  }}
+                >
+                  Remove saved token
+                </button>
+              </div>
             )}
           </div>
         </>

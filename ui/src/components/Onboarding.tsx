@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Check, RefreshCw } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Copy, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   getGitSettings,
@@ -7,6 +7,7 @@ import {
   type GitSettings,
   type Harness,
 } from "../api";
+import { GitTokenForm } from "./GitTokenForm";
 
 /** First-run walkthrough: the detected coding agents, then the git/GitHub
  * model, then hand off to the (empty) projects page. Purely informative —
@@ -70,11 +71,14 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               clone it from there.
             </p>
             <div className="onb-cards">
-              <GitCard git={git} />
+              <GitCard git={git} onUpdate={setGit} />
             </div>
             <div className="onb-actions">
               <button className="btn ghost" onClick={() => setStep(0)}>
                 <ArrowLeft size={12} /> Back
+              </button>
+              <button className="btn ghost" onClick={() => load(false)} disabled={checking}>
+                <RefreshCw size={12} className={checking ? "spin" : ""} /> Re-check
               </button>
               <div style={{ flex: 1 }} />
               <button className="btn primary" onClick={onDone}>
@@ -132,7 +136,20 @@ function AgentCard({ h }: { h: Harness }) {
   );
 }
 
-function GitCard({ git }: { git: GitSettings | null }) {
+function GitCard({
+  git,
+  onUpdate,
+}: {
+  git: GitSettings | null;
+  onUpdate: (g: GitSettings) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const copyCmd = () => {
+    void navigator.clipboard.writeText("gh auth login").then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
   if (git === null) {
     return (
       <div className="onb-loading">
@@ -174,9 +191,11 @@ function GitCard({ git }: { git: GitSettings | null }) {
         <span className="onb-card-detail mono">
           {git.githubTokenSource === "env"
             ? "token from GITHUB_TOKEN"
-            : git.githubTokenSource === "gh"
-              ? "signed in via gh CLI"
-              : "no gh login or GITHUB_TOKEN"}
+            : git.githubTokenSource === "stored"
+              ? "token saved in orx"
+              : git.githubTokenSource === "gh"
+                ? "signed in via gh CLI"
+                : "not connected"}
         </span>
         <span className={`status-badge ${git.githubTokenSource ? "st-done" : "st-starting"}`}>
           {git.githubTokenSource ? <Check size={12} strokeWidth={3} /> : <span className="dot" />}
@@ -189,9 +208,35 @@ function GitCard({ git }: { git: GitSettings | null }) {
         </div>
       )}
       {!git.githubTokenSource && (
-        <div className="onb-card-meta">
-          Private repos and branch pushes need GitHub access — run <code>gh auth login</code> or
-          set <code>GITHUB_TOKEN</code>. SSH keys for github.com also work.
+        <div className="onb-gh-options">
+          <div className="onb-card-meta">
+            GitHub access is used to clone your repos and push experiment branches. Connect
+            either way:
+          </div>
+          <div className="onb-gh-option">
+            <span className="onb-gh-option-label">GitHub CLI</span>
+            <div className="onb-gh-option-body">
+              {git.ghInstalled ? (
+                <>
+                  <code className="onb-gh-cmd">gh auth login</code>
+                  <button className="btn ghost" onClick={copyCmd}>
+                    {copied ? <Check size={12} strokeWidth={3} /> : <Copy size={12} />}
+                    {copied ? "Copied" : "Copy"}
+                  </button>
+                  <span className="onb-gh-hint">run in a terminal, then Re-check</span>
+                </>
+              ) : (
+                <span className="onb-gh-hint">
+                  install the GitHub CLI, run <code>gh auth login</code>, then Re-check
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="onb-gh-or">or</div>
+          <div className="onb-gh-option">
+            <span className="onb-gh-option-label">Paste a token</span>
+            <GitTokenForm onSaved={onUpdate} />
+          </div>
         </div>
       )}
     </div>

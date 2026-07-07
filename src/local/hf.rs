@@ -162,6 +162,8 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         image: Some(image),
         url: Some(hf::job_url(&namespace, &job.id)),
         context: None,
+        manifest: None,
+        resources: None,
     };
     let run = StoredRun {
         id: run_id.clone(),

@@ -99,7 +99,8 @@ fn opencode_config_json(model: Option<&str>, instructions: &str) -> String {
 /// The local-mode autoresearch playbook: project context + cardinal rules +
 /// the v1 local command surface. Ported from the cloud agent's
 /// `autoresearchMd()`/`projectContextMd()` prompts, adapted for `orx up`
-/// (runs on HF Jobs, analysis via `orx logs`, no artifacts/query/chart).
+/// (external backends via `--backend`, analysis via `orx logs`, no
+/// artifacts/query/chart).
 fn playbook_md(project: &LocalProject) -> String {
     let id = &project.id;
     let name = &project.name;
@@ -118,7 +119,8 @@ the project's repo clone.
 - Project id: `{id}`
 - GitHub repo: `{repo}`
 - Baseline branch: `{baseline}`
-- Compute: Hugging Face Jobs, billed to the user's HF account (`HF_TOKEN`)
+- Compute: external backends — `hf`, `modal`, `k8s`, or `ssh` — chosen by the
+  user per run; **there is no default backend** (see "Compute backends")
 - Artifacts dir: `{artifacts}` — every file in it shows up in the dashboard's
   Artifacts tab (reports, figures, CSVs)
 
@@ -151,7 +153,7 @@ preferences.
 4. **Grow the tree downward, not sideways.** Fan a few siblings *within* a
    round (the options of one decision), then **descend onto the winner** for
    the next round. A root with a long flat row of children is the failure mode.
-5. **Launch all compute via `orx exp run` — never `hf jobs` or the HF CLI directly.** Direct jobs are unsupervised and invisible to the dashboard.
+5. **Launch all compute via `orx exp run` — never `hf jobs`, `modal`, `kubectl`, or raw `ssh` directly.** Direct jobs are unsupervised and invisible to the dashboard.
 
 ## Command surface (local mode)
 
@@ -162,7 +164,9 @@ preferences.
 | `orx project view {id}` / `orx project edit {id} --run-command "<cmd>"` | Inspect the project / set its default run command. |
 | `orx exp status <expId>` | Node's branch, command, and latest run. |
 | `orx exp desc <expId> [--set "<text>" \| --stdin]` | Read/overwrite the node's notes. Record findings here. |
-| `orx exp run <expId> --backend hf --flavor <flavor> [--timeout 4h] [--image <img>]` | Launch the node's run as an HF Job. |
+| `orx exp run <expId> --backend <hf\|modal> --flavor <flavor> [--timeout 4h] [--image <img>]` | Launch the node's run on managed-SKU compute (see "Compute backends"). |
+| `orx exp run <expId> --backend k8s [--manifest <path>] [--timeout 4h]` | Launch on the user's cluster from the manifest committed on the branch (default `.orx/k8s.yaml`). No flavors or --image — the manifest declares the resources. |
+| `orx exp run <expId> --backend ssh --host <alias>` | Launch as a detached process on the user's own box (an `~/.ssh/config` alias). |
 | `orx exp cancel <expId>` | Cancel the in-flight run. |
 | `orx exp wait <expId>` / `orx exp wait --project {id}` | Block until a run finishes (project form returns on the first completion). |
 | `orx runs {id} [--experiment <expId>]` | Run table, newest first. Run ids come from here. |
@@ -184,7 +188,8 @@ Carry one goal across many runs:
 2. **Edit** in this clone: `git fetch origin && git checkout <branch>`, change
    the code, commit, and `git push`. The job clones from GitHub, so
    **unpushed work never runs**.
-3. **Launch**: `orx exp run <expId> --backend hf --flavor <flavor>`.
+3. **Launch**: `orx exp run <expId> --backend <backend>` (`--flavor` for
+   hf/modal, `--host` for ssh; k8s reads the committed manifest).
 4. **Wait**: `orx exp wait <expId>` (or `--project` when several are in flight).
 5. **Analyze**: `orx logs <runId>` — read the metrics the run printed.
 6. **Decide**: refill the round with another sibling, promote the winner and
@@ -216,16 +221,73 @@ the file you edited, the entrypoint you're describing, the config you changed.
 
 **Never train or evaluate on this machine.** This machine is the edit box:
 git, reading and writing code, and `orx` orchestration happen here. The run
-itself — anything that trains, evaluates, or produces results — goes to a
-Hugging Face Job via `orx exp run --backend hf`, always. A run that needs no
-GPU still goes to an HF Job on a CPU flavor; lightweight editor-side checks
-(`git`, `orx`, a quick `python -c "import x"`) are all that stay local.
+itself — anything that trains, evaluates, or produces results — goes to
+external compute via `orx exp run`, always. A run that needs no GPU still
+goes out on a CPU flavor; lightweight editor-side checks (`git`, `orx`, a
+quick `python -c "import x"`) are all that stay local.
+
+## Compute backends
+
+`orx exp run` requires an explicit `--backend` — **there is no default**.
+Which backend to use is the user's decision: if the task doesn't name one and
+the user hasn't already picked one in this conversation, ask before launching.
+All four share the same contract — the job clones the experiment branch's
+GitHub tip and runs the fixed run command, and everything downstream
+(`orx exp wait` / `orx runs` / `orx logs` / `orx exp cancel`) works
+identically. A detached `orx supervise` mirrors status and logs; don't kill it.
+
+| Backend | Runs on | Shape comes from |
+|---|---|---|
+| `hf` | Hugging Face Jobs — billed per minute to the user's HF account (`HF_TOKEN`) | `--flavor`: `cpu-basic` / `cpu-upgrade` (CPU-only), `t4-small`, `t4-medium`, `l4x1`, `l4x4`, `l40sx1`, `a10g-small`, `a10g-large`, `a100-large`, `h100`, `h200`, … |
+| `modal` | Modal Sandboxes — billed per second to the user's Modal account (`MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` or `~/.modal.toml`) | `--flavor`: a Modal GPU (`t4`, `l4`, `a10g`, `a100`, `a100-80gb`, `l40s`, `h100`, `h200`; append `:N` for a count, e.g. `h100:2`) or `cpu` / `cpu-large` |
+| `k8s` | the user's own Kubernetes cluster — auth from their kubeconfig; context/namespace in Settings → Compute | a **manifest you commit on the experiment branch** (default `.orx/k8s.yaml`, or `--manifest <path>`) — see below |
+| `ssh` | a detached process on the user's own box — no scheduler, no container, the host's environment as-is | `--host`: an `~/.ssh/config` host alias |
+
+- `--timeout` (default `4h`) applies to `hf`/`modal`/`k8s`; set it to cover
+  the whole run — a job killed at the timeout reads as a failed run. Doesn't
+  apply to `ssh` (the process runs until it exits or is cancelled). On k8s a
+  manifest-set `activeDeadlineSeconds` wins over the flag.
+- `--image` overrides the container on `hf`/`modal` (default: CUDA pytorch on
+  GPU flavors, `python:3.12` on CPU). Doesn't apply to `ssh` or `k8s` (the
+  manifest sets the image).
+
+### The k8s manifest contract
+
+There are no flavors or topology flags: **you write plain Kubernetes YAML**,
+commit it on the experiment branch, and orx applies it. Inspect the cluster
+yourself (`kubectl get nodes`, allocatable resources, GPU products) and write
+whatever the run needs — a single-pod 4-GPU Job, an Indexed Job spanning
+nodes with a headless Service and downward-API rank env, an auxiliary
+inference Deployment. The manifest inherits through the tree like all code,
+and changing it is a commit — visible in the diff like any experimental
+variable.
+
+Rules orx enforces at submit (loud, before anything runs):
+
+- **Exactly one Job** — its completion/failure is the run's outcome. With
+  several Jobs, label the primary `orx-primary: "true"`.
+- **Some container of that Job must run the injected script**: set
+  `command: ["bash", "-c", "$ORX_SCRIPT"]`. The `ORX_SCRIPT` env var (added
+  by orx) clones the branch tip and runs the experiment's fixed run command —
+  the run command stays the contract; the manifest only shapes where it runs.
+- Every resource needs `metadata.name` (no `generateName`) and no foreign
+  `metadata.namespace`. Put `{{{{ORX_RUN}}}}` in names — orx substitutes a
+  run-unique token so re-runs don't collide.
+
+orx injects the rest: run labels, the `orx-env` Secret (`envFrom`, holds the
+synced API keys + `HF_TOKEN`/`GITHUB_TOKEN`) on the primary Job, and defaults
+for `activeDeadlineSeconds`/`ttlSecondsAfterFinished`/`backoffLimit: 0` when
+unset. Auxiliary resources that need the env reference the `orx-env` Secret
+themselves. Cancel deletes exactly what the manifest created.
+
+The run log follows the primary Job's **leader pod** (completion index 0 for
+Indexed Jobs, else its sole pod) — print everything you'll need to analyze
+from there; other pods stay reachable via `kubectl logs`. Cross-node traffic
+rides the pod network — fine for loosely-coupled work (async RL,
+parameter-server); tightly-coupled per-step all-reduce wants a fast fabric
+the cluster may not have.
 
 ## Sizing compute
-
-Flavors (priced per minute on the user's HF account): `cpu-basic` /
-`cpu-upgrade` (CPU-only), `t4-small`, `t4-medium`, `l4x1`, `l4x4`, `l40sx1`,
-`a10g-small`, `a10g-large`, `a100-large`, `h100`, `h200`, …
 
 - **Decide GPU vs CPU first.** API-driven evals, data prep, and CPU-bound
   papers run fine (and far cheaper) on a CPU flavor.
@@ -233,8 +295,7 @@ Flavors (priced per minute on the user's HF account): `cpu-basic` /
   reflexively grab the biggest.
 - **Let a real failure escalate you.** OOM or hopelessly-slow → move up a
   tier. That's expected, not a mistake.
-- Default `--timeout` is 4h; raise it (`--timeout 1d`) only for genuinely long
-  runs.
+- Raise `--timeout` (`--timeout 1d`) only for genuinely long runs.
 
 ## Analyzing results
 

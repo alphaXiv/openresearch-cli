@@ -1,7 +1,13 @@
 //! Local Kubernetes launch — the k8s twin of `local/hf.rs`: the run row comes
 //! from and goes to the local store only, and the detached `orx supervise`
-//! watches the Job via kubectl. Cluster/namespace/flavors come from the
-//! settings file (`orx up` Settings → Compute, or `~/.config/openresearch/k8s.json`).
+//! watches the Job via kubectl. Cluster/namespace come from the settings file
+//! (`orx up` Settings → Compute, or `~/.config/openresearch/k8s.json`).
+//!
+//! There are no flavors: the run's shape is a **manifest committed on the
+//! experiment branch** (default `.orx/k8s.yaml`, or `--manifest <path>`),
+//! read at the branch tip — the same commit the job clones — so unpushed
+//! manifest edits never run. See `jobs/kubernetes.rs` for the contract orx
+//! enforces on it.
 
 use std::collections::HashMap;
 
@@ -11,42 +17,62 @@ use crate::jobs::{huggingface as hf, kubernetes as k8s, BackendDescriptor};
 use crate::local::git;
 use crate::store::{now_ms, Store, StoredRun};
 
+/// Manifest path on the experiment branch when `--manifest` is omitted.
+const DEFAULT_MANIFEST: &str = ".orx/k8s.yaml";
+
 /// CLI wrapper around `submit_local_k8s`: submit, then print the summary.
 pub async fn launch_local_k8s(args: &crate::ExpRunArgs) -> Result<()> {
     let run = submit_local_k8s(args).await?;
     let backend = BackendDescriptor::parse(&run.backend_json)?;
-    println!("\u{2713} Kubernetes job submitted.");
+    println!("\u{2713} Kubernetes resources created.");
     println!(
-        "  job    {}/{} ({})",
+        "  job      {}/{}",
         backend.namespace.as_deref().unwrap_or(""),
-        backend.job_id.as_deref().unwrap_or(""),
-        backend.flavor.as_deref().unwrap_or("")
+        backend.job_id.as_deref().unwrap_or("")
     );
-    println!("  run    {}", run.id);
     println!(
-        "  Follow it with `orx exp wait {}` or `orx logs {}`.",
+        "  manifest {}",
+        backend.manifest.as_deref().unwrap_or(DEFAULT_MANIFEST)
+    );
+    if let Some(resources) = backend.resources.as_deref().filter(|r| r.len() > 1) {
+        println!("  created  {}", resources.join(", "));
+    }
+    println!("  run      {}", run.id);
+    println!(
+        "  Follow it with `orx exp wait {}` or `orx logs {}` (the log follows the \
+         primary Job's leader pod).",
         run.experiment_id, run.id
     );
     Ok(())
 }
 
-/// Submit the local experiment's run as a Kubernetes Job and detach a
-/// supervisor. Requires `--backend k8s` and `--flavor <name>` where the name
-/// is a detected or custom flavor from the k8s settings.
+/// Submit the local experiment's run from its committed manifest and detach a
+/// supervisor.
 pub async fn submit_local_k8s(args: &crate::ExpRunArgs) -> Result<StoredRun> {
     if args.sandbox.is_some() || args.gpu.is_some() || args.cpu.is_some() {
         return Err(anyhow!(
-            "--backend k8s runs on your Kubernetes cluster; drop --gpu/--cpu/--sandbox \
-             and pass --flavor instead (see `orx up` Settings → Compute for names)."
+            "--backend k8s runs from a manifest committed on the experiment branch; \
+             drop --gpu/--cpu/--sandbox (resources live in the manifest)."
+        ));
+    }
+    if args.flavor.is_some() {
+        return Err(anyhow!(
+            "--backend k8s has no flavors — the manifest on the experiment branch \
+             (default {DEFAULT_MANIFEST}, or --manifest <path>) declares the resources."
+        ));
+    }
+    if args.image.is_some() {
+        return Err(anyhow!(
+            "--image doesn't apply to --backend k8s — set the image in the manifest."
         ));
     }
     let settings = k8s::load_settings()?.unwrap_or_default();
-    let flavors = settings.all_flavors();
-    let flavor_name = args.flavor.clone().ok_or_else(|| flavor_error(&flavors))?;
-    let flavor = settings
-        .resolve_flavor(&flavor_name)
-        .ok_or_else(|| flavor_error(&flavors))?;
-    // Same default as the HF path — no-timeout jobs are a footgun.
+    let manifest_path = args
+        .manifest
+        .clone()
+        .unwrap_or_else(|| DEFAULT_MANIFEST.to_string());
+    // Same default as the HF path — no-timeout jobs are a footgun. The
+    // manifest's own activeDeadlineSeconds wins when set.
     let timeout_seconds = match &args.timeout {
         Some(t) => hf::parse_timeout(t)?,
         None => 4 * 3600,
@@ -89,37 +115,36 @@ pub async fn submit_local_k8s(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         }
     }
 
-    // The job clones from GitHub, so the branch tip must exist there.
-    let commit_sha = {
-        let (owner, repo, baseline, branch) = (
+    // The job clones from GitHub, so the branch tip must exist there — and the
+    // manifest is read from that same tip, not the working tree.
+    let (commit_sha, manifest) = {
+        let (owner, repo, baseline, branch, path) = (
             project.github_owner.clone(),
             project.github_repo.clone(),
             project.baseline_branch.clone(),
             exp.branch_name.clone(),
+            manifest_path.clone(),
         );
-        tokio::task::spawn_blocking(move || -> Result<String> {
+        tokio::task::spawn_blocking(move || -> Result<(String, String)> {
             let repo_path = git::ensure_clone(&owner, &repo, &baseline)?;
             if !git::branch_on_remote(&repo_path, &branch)? {
                 git::push_branch(&repo_path, &branch)?;
             }
-            git::branch_head_sha(&repo_path, &branch)
+            let sha = git::branch_head_sha(&repo_path, &branch)?;
+            let manifest = git::file_at(&repo_path, &sha, &path).map_err(|_| {
+                anyhow!(
+                    "No manifest at '{path}' on branch '{branch}' — write one, commit, \
+                     and push (jobs run the branch tip, so an uncommitted manifest \
+                     doesn't exist yet). Pass --manifest <path> if it lives elsewhere."
+                )
+            })?;
+            Ok((sha, manifest))
         })
         .await
         .map_err(|e| anyhow!("git task failed: {e}"))??
     };
 
     let run_id = uuid::Uuid::new_v4().to_string();
-    let image = args
-        .image
-        .clone()
-        .or_else(|| settings.default_image.clone())
-        .unwrap_or_else(|| {
-            if flavor.gpu > 0 {
-                "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime".to_string()
-            } else {
-                "python:3.12".to_string()
-            }
-        });
     let script = hf_clone_script(
         &exp.branch_name,
         &project.github_owner,
@@ -142,15 +167,22 @@ pub async fn submit_local_k8s(args: &crate::ExpRunArgs) -> Result<StoredRun> {
     labels.insert("or_experiment".to_string(), exp.id.clone());
     labels.insert("or_project".to_string(), project.id.clone());
 
+    // DNS-safe, run-unique token for {{ORX_RUN}} in resource names.
+    let run_token = run_id
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .take(10)
+        .collect::<String>();
+
     let context = settings.context.clone();
     let namespace = settings.namespace.clone();
-    let job_name = k8s::run_job(
+    let submitted = k8s::run_manifest(
         context.as_deref(),
         &namespace,
-        &k8s::K8sJobSpec {
+        &k8s::ManifestSpec {
+            manifest,
             script,
-            image: image.clone(),
-            flavor: flavor.clone(),
+            run_token,
             env,
             timeout_seconds,
             labels,
@@ -161,11 +193,13 @@ pub async fn submit_local_k8s(args: &crate::ExpRunArgs) -> Result<StoredRun> {
     let descriptor = BackendDescriptor {
         kind: "k8s_job".to_string(),
         namespace: Some(namespace),
-        job_id: Some(job_name),
-        flavor: Some(flavor.name.clone()),
-        image: Some(image),
+        job_id: Some(submitted.job_name),
+        flavor: None,
+        image: None,
         url: None,
         context,
+        manifest: Some(manifest_path),
+        resources: Some(submitted.resources),
     };
     let run = StoredRun {
         id: run_id.clone(),
@@ -186,19 +220,4 @@ pub async fn submit_local_k8s(args: &crate::ExpRunArgs) -> Result<StoredRun> {
 
     spawn_detached_supervise(&run_id)?;
     Ok(run)
-}
-
-fn flavor_error(flavors: &[k8s::Flavor]) -> crate::error::Error {
-    if flavors.is_empty() {
-        anyhow!(
-            "--backend k8s requires --flavor, and no flavors are configured yet. \
-             Open `orx up` Settings → Compute to pick a cluster and auto-detect flavors."
-        )
-    } else {
-        let names: Vec<&str> = flavors.iter().map(|f| f.name.as_str()).collect();
-        anyhow!(
-            "--backend k8s requires --flavor: {}. Manage them in `orx up` Settings → Compute.",
-            names.join(", ")
-        )
-    }
 }

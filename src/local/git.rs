@@ -46,13 +46,17 @@ fn git(dir: Option<&Path>, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// `GITHUB_TOKEN` env, else `gh auth token`, else None (public-repo fallback).
+/// `GITHUB_TOKEN` env, else the synced env file (UI-pasted token), else
+/// `gh auth token`, else None (public-repo fallback).
 pub fn resolve_github_token() -> Option<String> {
     if let Ok(t) = std::env::var("GITHUB_TOKEN") {
         let t = t.trim().to_string();
         if !t.is_empty() {
             return Some(t);
         }
+    }
+    if let Some(t) = crate::config::synced_env_var("GITHUB_TOKEN") {
+        return Some(t);
     }
     let out = Command::new("gh").args(["auth", "token"]).output().ok()?;
     if !out.status.success() {
@@ -154,6 +158,12 @@ pub fn branch_head_sha(repo_path: &Path, branch: &str) -> Result<String> {
 pub fn branch_on_remote(repo_path: &Path, branch: &str) -> Result<bool> {
     let out = git(Some(repo_path), &["ls-remote", "--heads", "origin", branch])?;
     Ok(!out.is_empty())
+}
+
+/// A file's content at a specific commit (`git show <sha>:<path>`), i.e.
+/// exactly what a job cloning that sha will see — not the working tree.
+pub fn file_at(repo_path: &Path, sha: &str, path: &str) -> Result<String> {
+    git(Some(repo_path), &["show", &format!("{sha}:{path}")])
 }
 
 /// Whether the repo tracks `path` (local check, no network).

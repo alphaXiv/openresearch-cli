@@ -33,6 +33,13 @@ pub struct BackendDescriptor {
     /// kubeconfig context (k8s_job only); `None` = kubectl current-context.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
+    /// Repo-relative manifest path the run was launched from (k8s_job only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<String>,
+    /// Everything the manifest created, as `kind/name` handles in creation
+    /// order (k8s_job only) — cancel deletes exactly this list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<Vec<String>>,
 }
 
 impl BackendDescriptor {

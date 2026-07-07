@@ -164,6 +164,8 @@ pub async fn submit_local_modal(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         image: Some(image),
         url: None,
         context: None,
+        manifest: None,
+        resources: None,
     };
     let run = StoredRun {
         id: run_id.clone(),

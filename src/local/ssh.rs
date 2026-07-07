@@ -37,7 +37,13 @@ pub async fn submit_local_ssh(args: &crate::ExpRunArgs) -> Result<StoredRun> {
     if args.sandbox.is_some() || args.gpu.is_some() || args.cpu.is_some() {
         return Err(anyhow!(
             "--backend ssh runs on your own box; drop --gpu/--cpu/--sandbox and pass \
-             --flavor <host> (an ~/.ssh/config alias) instead."
+             --host <alias> (an ~/.ssh/config alias) instead."
+        ));
+    }
+    if args.flavor.is_some() {
+        return Err(anyhow!(
+            "--backend ssh has no flavors — a machine is an address, not a shape. \
+             Pass --host <alias> (an ~/.ssh/config alias)."
         ));
     }
     if args.image.is_some() {
@@ -45,9 +51,9 @@ pub async fn submit_local_ssh(args: &crate::ExpRunArgs) -> Result<StoredRun> {
             "--image doesn't apply to --backend ssh — the run uses the host's own environment."
         ));
     }
-    let host = args.flavor.clone().ok_or_else(|| {
+    let host = args.host.clone().ok_or_else(|| {
         anyhow!(
-            "--backend ssh requires --flavor <host>: an ~/.ssh/config alias to run on \
+            "--backend ssh requires --host <alias>: an ~/.ssh/config alias to run on \
              (see `orx up` Settings → Compute → SSH). The host needs git and bash."
         )
     })?;
@@ -138,10 +144,12 @@ pub async fn submit_local_ssh(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         kind: "ssh_job".to_string(),
         namespace: Some(host),
         job_id: Some(remote_dir),
-        flavor: args.flavor.clone(),
+        flavor: None,
         image: None,
         url: None,
         context: None,
+        manifest: None,
+        resources: None,
     };
     let run = StoredRun {
         id: run_id.clone(),

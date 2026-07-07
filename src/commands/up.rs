@@ -114,7 +114,6 @@ fn router(state: AppState) -> Router {
             "/api/settings/k8s",
             get(k8s_settings).post(set_k8s_settings),
         )
-        .route("/api/settings/k8s/detect", post(detect_k8s_flavors))
         .route("/api/settings/modal", get(modal_settings))
         .route("/api/settings/modal/provision", post(provision_modal))
         .route("/api/settings/env", get(env_settings).post(set_env_var))
@@ -125,6 +124,10 @@ fn router(state: AppState) -> Router {
         .route(
             "/api/settings/git",
             get(git_settings).post(set_git_settings),
+        )
+        .route(
+            "/api/settings/git/token",
+            post(set_git_token).delete(delete_git_token),
         )
         .route("/api/settings/ssh", get(ssh_settings))
         .route("/api/settings/ssh/preflight", post(ssh_preflight))
@@ -405,6 +408,8 @@ async fn create_experiment(
 struct RunReq {
     backend: Option<String>,
     flavor: Option<String>,
+    /// Repo-relative manifest path (k8s only; default .orx/k8s.yaml).
+    manifest: Option<String>,
     timeout: Option<String>,
 }
 
@@ -427,6 +432,8 @@ async fn run_experiment(Path(id): Path<String>, body: Bytes) -> ApiResult {
         sandbox: None,
         backend: Some(backend.clone()),
         flavor: req.flavor,
+        host: None,
+        manifest: req.manifest,
         image: None,
         timeout: req.timeout,
         force: false,
@@ -918,8 +925,9 @@ async fn provision_modal() -> ApiResult {
 
 use crate::jobs::kubernetes as k8s;
 
-/// One payload powers the whole settings card: stored config, live cluster
-/// health, and the flavor list. Contexts come from the local kubeconfig.
+/// One payload powers the whole settings card: stored config plus live
+/// cluster health. Contexts come from the local kubeconfig. Resource shapes
+/// live in each experiment's committed manifest, not in settings.
 async fn k8s_settings_json() -> Value {
     let settings = k8s::load_settings().ok().flatten();
     let configured = settings.is_some();
@@ -932,9 +940,6 @@ async fn k8s_settings_json() -> Value {
         "currentContext": current,
         "context": settings.context,
         "namespace": settings.namespace,
-        "defaultImage": settings.default_image,
-        "flavors": settings.all_flavors(),
-        "detectedAt": settings.detected_at,
         "preflight": preflight,
     })
 }
@@ -949,12 +954,8 @@ struct SetK8sSettingsReq {
     /// `None` leaves the field alone; `Some("")` clears it (kubectl default).
     context: Option<String>,
     namespace: Option<String>,
-    default_image: Option<String>,
 }
 
-/// Save context/namespace/image, then re-detect flavors against the (possibly
-/// new) cluster. Detection failure doesn't fail the save — the preflight in
-/// the response says why the cluster is unhappy.
 async fn set_k8s_settings(Json(req): Json<SetK8sSettingsReq>) -> ApiResult {
     let mut settings = k8s::load_settings()?.unwrap_or_default();
     if let Some(ctx) = req.context {
@@ -968,23 +969,6 @@ async fn set_k8s_settings(Json(req): Json<SetK8sSettingsReq>) -> ApiResult {
             ns
         };
     }
-    if let Some(img) = req.default_image {
-        settings.default_image = Some(img.trim().to_string()).filter(|i| !i.is_empty());
-    }
-    if let Ok(flavors) = k8s::detect_flavors(settings.context.as_deref()).await {
-        settings.flavors = flavors;
-        settings.detected_at = Some(now_ms());
-    }
-    k8s::save_settings(&settings)?;
-    Ok(Json(k8s_settings_json().await))
-}
-
-async fn detect_k8s_flavors() -> ApiResult {
-    let mut settings = k8s::load_settings()?.unwrap_or_default();
-    settings.flavors = k8s::detect_flavors(settings.context.as_deref())
-        .await
-        .map_err(bad_request)?;
-    settings.detected_at = Some(now_ms());
     k8s::save_settings(&settings)?;
     Ok(Json(k8s_settings_json().await))
 }
@@ -1093,20 +1077,87 @@ fn git_out(args: &[&str]) -> Option<String> {
 }
 
 fn git_settings_json() -> Value {
+    // Spawn failure means gh isn't installed — distinct from installed-but-
+    // signed-out, so the UI can lead with the right fix.
+    let gh = std::process::Command::new("gh")
+        .args(["auth", "token"])
+        .output();
+    let gh_installed = gh.is_ok();
     let github_source = if std::env::var("GITHUB_TOKEN").is_ok_and(|t| !t.trim().is_empty()) {
         Some("env")
+    } else if crate::config::synced_env_var("GITHUB_TOKEN").is_some() {
+        Some("stored")
     } else {
-        let gh = std::process::Command::new("gh")
-            .args(["auth", "token"])
-            .output();
         matches!(gh, Ok(out) if out.status.success() && !out.stdout.is_empty()).then_some("gh")
     };
     json!({
         "gitVersion": git_out(&["--version"]),
         "userName": git_out(&["config", "--global", "user.name"]),
         "userEmail": git_out(&["config", "--global", "user.email"]),
+        "ghInstalled": gh_installed,
         "githubTokenSource": github_source,
     })
+}
+
+#[derive(Deserialize)]
+struct SetGitTokenReq {
+    token: String,
+}
+
+/// Validate a pasted GitHub token against the API, then persist it to the
+/// synced env file — the same store job launches already read, so local git
+/// ops and remote compute both pick it up.
+async fn set_git_token(Json(req): Json<SetGitTokenReq>) -> ApiResult {
+    let token = req.token.trim().to_string();
+    if token.is_empty() {
+        return Err(bad_request("token is required"));
+    }
+    let resp = reqwest::Client::new()
+        .get("https://api.github.com/user")
+        .header("User-Agent", "orx")
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| bad_request(format!("Could not reach api.github.com: {e}")))?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(bad_request(
+            "GitHub rejected the token — check it was copied fully.",
+        ));
+    }
+    if !resp.status().is_success() {
+        return Err(bad_request(format!(
+            "GitHub returned {} validating the token.",
+            resp.status()
+        )));
+    }
+    // Classic PATs list scopes; fine-grained tokens send an empty header, so
+    // only enforce when scopes are reported.
+    let scopes = resp
+        .headers()
+        .get("x-oauth-scopes")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if !scopes.trim().is_empty() && !scopes.split(',').any(|s| s.trim() == "repo") {
+        return Err(bad_request(
+            "Token is valid but lacks the `repo` scope — private clones and branch pushes would fail.",
+        ));
+    }
+    tokio::task::spawn_blocking(move || {
+        crate::config::write_synced_env_var("GITHUB_TOKEN", &token)?;
+        Ok(Json(git_settings_json()))
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow!("git task failed: {e}")))?
+}
+
+async fn delete_git_token() -> ApiResult {
+    tokio::task::spawn_blocking(|| {
+        crate::config::remove_synced_env_var("GITHUB_TOKEN")?;
+        Ok(Json(git_settings_json()))
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow!("git task failed: {e}")))?
 }
 
 async fn git_settings() -> ApiResult {

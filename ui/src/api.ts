@@ -115,7 +115,7 @@ export const createExperiment = (projectId: string, body: NewExperiment) =>
 
 export const startRun = (
   experimentId: string,
-  body: { backend?: "hf" | "k8s"; flavor?: string; timeout?: string } = {},
+  body: { backend?: "hf" | "k8s"; flavor?: string; manifest?: string; timeout?: string } = {},
 ) => post<{ run: Run }>(`/api/experiments/${experimentId}/run`, body).then((r) => r.run);
 
 export const cancelRun = (runId: string) => post<{ ok: boolean }>(`/api/runs/${runId}/cancel`);
@@ -190,13 +190,6 @@ export const saveHfToken = (token: string) => post<HfSettings>("/api/settings/hf
 
 // --- settings: kubernetes -----------------------------------------------------
 
-export interface K8sFlavor {
-  name: string;
-  gpu: number;
-  cpu: string;
-  memory: string;
-}
-
 export interface K8sPreflight {
   kubectlFound: boolean;
   reachable: boolean;
@@ -210,21 +203,13 @@ export interface K8sSettings {
   currentContext: string | null;
   context: string | null;
   namespace: string;
-  defaultImage: string | null;
-  flavors: K8sFlavor[];
-  detectedAt: number | null;
   preflight: K8sPreflight;
 }
 
 export const getK8sSettings = () => get<K8sSettings>("/api/settings/k8s");
 
-export const saveK8sSettings = (body: {
-  context?: string;
-  namespace?: string;
-  defaultImage?: string;
-}) => post<K8sSettings>("/api/settings/k8s", body);
-
-export const detectK8sFlavors = () => post<K8sSettings>("/api/settings/k8s/detect");
+export const saveK8sSettings = (body: { context?: string; namespace?: string }) =>
+  post<K8sSettings>("/api/settings/k8s", body);
 
 // --- settings: modal ----------------------------------------------------------
 
@@ -331,13 +316,21 @@ export interface GitSettings {
   gitVersion: string | null;
   userName: string | null;
   userEmail: string | null;
-  githubTokenSource: "env" | "gh" | null;
+  ghInstalled: boolean;
+  githubTokenSource: "env" | "stored" | "gh" | null;
 }
 
 export const getGitSettings = () => get<GitSettings>("/api/settings/git");
 
 export const saveGitSettings = (body: { userName?: string; userEmail?: string }) =>
   post<GitSettings>("/api/settings/git", body);
+
+/** Validate + persist a pasted GitHub token (stored in the synced env file). */
+export const saveGitToken = (token: string) =>
+  post<GitSettings>("/api/settings/git/token", { token });
+
+export const removeGitToken = () =>
+  fetch("/api/settings/git/token", { method: "DELETE" }).then((r) => json<GitSettings>(r));
 
 export type HarnessId = "claude-code" | "codex" | "opencode";
 

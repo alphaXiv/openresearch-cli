@@ -11,8 +11,17 @@ function backendLabel(run: Run): string {
   const b = run.backend;
   if (!b) return "—";
   const kind = typeof b.kind === "string" ? b.kind : typeof b.type === "string" ? b.type : "";
-  const flavor = typeof b.flavor === "string" ? b.flavor : "";
-  return [kind, flavor].filter(Boolean).join(" · ") || "—";
+  // k8s runs carry a manifest path, ssh runs a host (in namespace), instead
+  // of a flavor.
+  const shape =
+    typeof b.flavor === "string" && b.flavor
+      ? b.flavor
+      : typeof b.manifest === "string" && b.manifest
+        ? b.manifest
+        : kind === "ssh_job" && typeof b.namespace === "string"
+          ? b.namespace
+          : "";
+  return [kind, shape].filter(Boolean).join(" · ") || "—";
 }
 
 export function RunsTable({
