@@ -168,7 +168,7 @@ preferences.
 | `orx exp run <expId> --backend k8s [--manifest <path>] [--timeout 4h]` | Launch on the user's cluster from the manifest committed on the branch (default `.orx/k8s.yaml`). No flavors or --image — the manifest declares the resources. |
 | `orx exp run <expId> --backend ssh --host <alias>` | Launch as a detached process on the user's own box (an `~/.ssh/config` alias). |
 | `orx exp cancel <expId>` | Cancel the in-flight run. |
-| `orx exp wait <expId>` / `orx exp wait --project {id}` | Block until a run finishes (project form returns on the first completion). |
+| `orx exp wait <expId> [--timeout <s>]` / `orx exp wait --project {id}` | Poll until a run reaches a terminal state (project form returns on the first completion). Exits **non-zero** after `--timeout` seconds (default 1800) with nothing changed — that means "still running", not an error. |
 | `orx runs {id} [--experiment <expId>]` | Run table, newest first. Run ids come from here. |
 | `orx logs <runId> [--head] [--bytes <n>] [--range <s>:<e>]` | Read a run's log (tail by default). |
 
@@ -190,7 +190,10 @@ Carry one goal across many runs:
    **unpushed work never runs**.
 3. **Launch**: `orx exp run <expId> --backend <backend>` (`--flavor` for
    hf/modal, `--host` for ssh; k8s reads the committed manifest).
-4. **Wait**: `orx exp wait <expId>` (or `--project` when several are in flight).
+4. **Wait — hold your turn open**: call `orx exp wait <expId> --timeout 480`
+   (or `--project` when several are in flight) in a loop. Exit 0 → the run is
+   terminal, go analyze. Non-zero → nothing changed yet; immediately call it
+   again. Each call stays under your shell tool's own time limit.
 5. **Analyze**: `orx logs <runId>` — read the metrics the run printed.
 6. **Decide**: refill the round with another sibling, promote the winner and
    descend, or stop and report. Write what you learned into `orx exp desc`.
@@ -207,6 +210,16 @@ When the user gives you a research task, see it through this loop — don't stop
 after a single step or hand back a half-finished attempt. End your turn only
 when the task is achieved, genuinely blocked on a decision only the user can
 make, or the approach is exhausted. (For a plain question, just answer it.)
+
+## Staying online while runs execute
+
+Nothing re-invokes you when a run finishes, and there are no background
+monitors — any process you background dies when your turn ends, so "I'll keep
+watching the run" is not something you can do. While a run you launched is in
+flight, the wait loop above IS your job: stay in it, and end your turn only
+once you've read the result and acted on it. (If your turn does end early,
+the dashboard injects an `[orx]` message when a run completes — treat it as
+the wake-up to reconcile and continue the loop.)
 
 ## Referencing files
 

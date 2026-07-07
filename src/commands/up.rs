@@ -54,6 +54,9 @@ pub async fn run(args: UpArgs) -> Result<()> {
     spawn_hf_preflight();
     spawn_k8s_preflight();
     spawn_agent_git_preflight();
+    // Wake an idle chat session when a run completes (the agent's wait loop
+    // covers the busy case; this covers turns that ended early).
+    tokio::spawn(local::chat::watch_runs(state.chat.clone()));
 
     let app = router(state);
     let url = format!("http://127.0.0.1:{port}");
