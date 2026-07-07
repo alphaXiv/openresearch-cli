@@ -28,6 +28,7 @@ function slugify(text: string): string {
 }
 
 type Mode = "existing" | "new";
+type RepoMode = "use" | "fork";
 
 export function NewProjectForm({
   onCreated,
@@ -37,6 +38,7 @@ export function NewProjectForm({
   onCancel?: () => void;
 }) {
   const [mode, setMode] = useState<Mode>("existing");
+  const [repoMode, setRepoMode] = useState<RepoMode>("use");
   const [repoInput, setRepoInput] = useState("");
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
@@ -67,6 +69,7 @@ export function NewProjectForm({
               githubOwner: parsed!.owner,
               githubRepo: parsed!.repo,
               baselineBranch: branch.trim() || "main",
+              forkRepo: repoMode === "fork",
             },
       );
       onCreated(project);
@@ -115,6 +118,27 @@ export function NewProjectForm({
                   : "URL or owner/repo — cloned with your git credentials"}
             </span>
           </label>
+          <div className="seg form-seg">
+            <button
+              type="button"
+              className={repoMode === "use" ? "active" : ""}
+              onClick={() => setRepoMode("use")}
+            >
+              Use this repo
+            </button>
+            <button
+              type="button"
+              className={repoMode === "fork" ? "active" : ""}
+              onClick={() => setRepoMode("fork")}
+            >
+              Fork a copy
+            </button>
+          </div>
+          <span className="repo-hint">
+            {repoMode === "fork"
+              ? `snapshots ${parsed ? `${parsed.owner}/${parsed.repo}` : "the repo"} into a private repo on your account`
+              : "experiments push branches here — if you can't push to it, a fork is made automatically"}
+          </span>
           <div className="row2">
             <label>
               Project name
@@ -168,7 +192,9 @@ export function NewProjectForm({
           {pending
             ? mode === "new"
               ? "Creating repo…"
-              : "Cloning repo…"
+              : repoMode === "fork"
+                ? "Forking repo…"
+                : "Cloning repo…"
             : "Create project"}
         </button>
       </div>

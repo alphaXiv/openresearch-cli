@@ -115,6 +115,79 @@ pub fn ensure_clone(owner: &str, repo: &str, baseline_branch: &str) -> Result<Pa
     Ok(dir)
 }
 
+/// Seed a fresh (empty) GitHub repo from the tip of another repo — the
+/// fork-by-copy the platform does on import. Shallow-clones the source
+/// (`src_branch`, or its default branch), re-roots the snapshot as a single
+/// orphan commit (a shallow tip's parents aren't in the clone, so pushing it
+/// as-is would be rejected), and pushes it as the new repo's `main`.
+pub fn seed_copy(
+    src_owner: &str,
+    src_repo: &str,
+    src_branch: Option<&str>,
+    dst_owner: &str,
+    dst_repo: &str,
+) -> Result<()> {
+    let tmp = std::env::temp_dir().join(format!("orx-seed-{}", uuid::Uuid::new_v4()));
+    let result = seed_copy_in(&tmp, src_owner, src_repo, src_branch, dst_owner, dst_repo);
+    let _ = std::fs::remove_dir_all(&tmp);
+    result
+}
+
+fn seed_copy_in(
+    dir: &Path,
+    src_owner: &str,
+    src_repo: &str,
+    src_branch: Option<&str>,
+    dst_owner: &str,
+    dst_repo: &str,
+) -> Result<()> {
+    let target = dir.to_string_lossy().to_string();
+    let mut args = vec!["clone", "--depth=1", "--single-branch"];
+    if let Some(branch) = src_branch {
+        args.extend(["--branch", branch]);
+    }
+    // ssh first, https fallback — same auth order as ensure_clone.
+    let ssh = format!("git@github.com:{src_owner}/{src_repo}.git");
+    let https = format!("https://github.com/{src_owner}/{src_repo}.git");
+    let mut ssh_args = args.clone();
+    ssh_args.extend([ssh.as_str(), target.as_str()]);
+    if git(None, &ssh_args).is_err() {
+        let mut https_args = args;
+        https_args.extend([https.as_str(), target.as_str()]);
+        if let Err(err) = git(None, &https_args) {
+            return Err(anyhow!(
+                "Could not clone {src_owner}/{src_repo} (tried ssh and https): {err}"
+            ));
+        }
+    }
+    git(Some(dir), &["checkout", "--orphan", "orx-seed"])?;
+    git(Some(dir), &["add", "-A"])?;
+    // An empty source stages nothing; seed the stub a blank project gets.
+    if git(Some(dir), &["status", "--porcelain"])?.is_empty() {
+        std::fs::write(dir.join("README.md"), format!("# {dst_repo}\n"))
+            .map_err(|e| anyhow!("Could not write README.md: {}", e))?;
+        git(Some(dir), &["add", "-A"])?;
+    }
+    git(
+        Some(dir),
+        &[
+            "-c",
+            "user.name=orx",
+            "-c",
+            "user.email=orx@openresearch.sh",
+            "commit",
+            "-m",
+            &format!("orx: import {src_owner}/{src_repo}"),
+        ],
+    )?;
+    let dst_ssh = format!("git@github.com:{dst_owner}/{dst_repo}.git");
+    let dst_https = format!("https://github.com/{dst_owner}/{dst_repo}.git");
+    if git(Some(dir), &["push", &dst_ssh, "HEAD:main"]).is_err() {
+        git(Some(dir), &["push", &dst_https, "HEAD:main"])?;
+    }
+    Ok(())
+}
+
 /// Create `new_branch` from `parent_branch`'s tip and push it to origin —
 /// the branch must exist on GitHub before an HF job can clone it.
 pub fn create_experiment_branch(
