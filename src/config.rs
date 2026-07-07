@@ -125,3 +125,103 @@ pub fn synced_env_var(key: &str) -> Option<String> {
     }
     None
 }
+
+/// All vars in the synced env file, in file order (same format as
+/// `synced_env_var`). Malformed lines are skipped.
+pub fn list_synced_env() -> Vec<(String, String)> {
+    let Some(path) = dirs::home_dir().map(|h| h.join(".openresearch").join("env")) else {
+        return Vec::new();
+    };
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in content.lines() {
+        let Some(rest) = line.strip_prefix("export ") else {
+            continue;
+        };
+        let Some((key, quoted)) = rest.split_once('=') else {
+            continue;
+        };
+        let Some(escaped) = quoted.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')) else {
+            continue;
+        };
+        let value = escaped.replace(r"'\''", "'").replace(r"\\", r"\");
+        if !key.is_empty() && !value.is_empty() {
+            out.push((key.to_string(), value));
+        }
+    }
+    out
+}
+
+/// Drop `key`'s line from the synced env file. Missing file/key is a no-op.
+pub fn remove_synced_env_var(key: &str) -> Result<()> {
+    let Some(path) = dirs::home_dir().map(|h| h.join(".openresearch").join("env")) else {
+        return Ok(());
+    };
+    let Ok(existing) = std::fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    let prefix = format!("export {key}=");
+    let lines: Vec<&str> = existing
+        .lines()
+        .filter(|l| !l.starts_with(&prefix))
+        .collect();
+    let body = if lines.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", lines.join("\n"))
+    };
+    std::fs::write(&path, body)?;
+    Ok(())
+}
+
+/// Write `export KEY='value'` into `~/.openresearch/env` (the exact format
+/// `synced_env_var` parses), replacing an existing line for `key` and keeping
+/// every other line. File is owner-only (0600) on create and rewrite.
+pub fn write_synced_env_var(key: &str, value: &str) -> Result<()> {
+    use anyhow::anyhow;
+    let dir = dirs::home_dir()
+        .ok_or_else(|| anyhow!("no home directory"))?
+        .join(".openresearch");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("env");
+    // Inverse of synced_env_var's unescaping: backslashes first, then quotes.
+    let escaped = value.replace('\\', r"\\").replace('\'', r"'\''");
+    let new_line = format!("export {key}='{escaped}'");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let prefix = format!("export {key}=");
+    let mut lines: Vec<&str> = Vec::new();
+    let mut replaced = false;
+    for line in existing.lines() {
+        if line.starts_with(&prefix) {
+            if !replaced {
+                lines.push(&new_line);
+                replaced = true;
+            }
+        } else {
+            lines.push(line);
+        }
+    }
+    if !replaced {
+        lines.push(&new_line);
+    }
+    let body = format!("{}\n", lines.join("\n"));
+    {
+        use std::io::Write;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600); // applies on create only
+        }
+        opts.open(&path)?.write_all(body.as_bytes())?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}

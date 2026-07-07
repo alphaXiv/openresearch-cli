@@ -112,6 +112,12 @@ async fn write_shim(agent: Agent) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Non-interactive OpenCode install, for the `orx up` agent bootstrap: the
+/// spawned opencode discovers `orx` via its skill tool.
+pub(crate) async fn install_opencode_shim() -> Result<PathBuf> {
+    write_shim(Agent::OpenCode).await
+}
+
 pub async fn run(args: crate::InstallSkillsArgs) -> Result<()> {
     let targets = match args.agent.as_deref() {
         Some("claude") => vec![Agent::Claude],

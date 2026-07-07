@@ -16,6 +16,10 @@ fn sync_status_str(status: SyncStatus) -> &'static str {
 pub async fn run(args: crate::QueryArgs) -> Result<()> {
     // clap enforces the required positionals, so the TS `if (!projectId || !sql)`
     // usage guard is unnecessary here.
+    let store = crate::store::Store::open()?;
+    if store.get_local_project(&args.project_id)?.is_some() {
+        return Err(crate::local::unsupported("query"));
+    }
     let creds = require_credentials().await;
     let result = query_project(&creds, &args.project_id, &args.sql).await?;
 

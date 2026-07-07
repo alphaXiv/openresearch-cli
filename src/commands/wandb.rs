@@ -9,6 +9,10 @@ use crate::error::require_credentials;
 use crate::error::Result;
 
 pub async fn run(args: crate::WandbArgs) -> Result<()> {
+    let store = crate::store::Store::open()?;
+    if crate::local::local_run(&store, &args.run_id)?.is_some() {
+        return Err(crate::local::unsupported("wandb"));
+    }
     let creds = require_credentials().await;
 
     let runs = list_wandb_runs(&creds, &args.run_id).await?.wandb_runs;

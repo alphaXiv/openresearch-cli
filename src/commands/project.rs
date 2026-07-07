@@ -16,6 +16,43 @@ use crate::error::{anyhow, require_credentials, Result};
 use crate::ProjectCommand;
 
 pub async fn run(args: crate::ProjectArgs) -> Result<()> {
+    let project_id = match &args.command {
+        ProjectCommand::View { project_id } | ProjectCommand::Edit { project_id, .. } => project_id,
+    };
+    let store = crate::store::Store::open()?;
+    if let Some(project) = store.get_local_project(project_id)? {
+        return match args.command {
+            ProjectCommand::View { .. } => view_local(&store, &project),
+            ProjectCommand::Edit {
+                name,
+                description,
+                description_stdin,
+                public,
+                private,
+                run_command,
+                ..
+            } => {
+                if description.is_some() || description_stdin || public || private {
+                    return Err(anyhow!(
+                        "Local projects support --name and --run-command only."
+                    ));
+                }
+                edit_local(&store, project, name, run_command)
+            }
+        };
+    }
+    // The server project PATCH carries no run command field — refuse before
+    // even asking for credentials.
+    if let ProjectCommand::Edit {
+        run_command: Some(_),
+        ..
+    } = &args.command
+    {
+        return Err(anyhow!(
+            "--run-command is supported for local projects only. For server \
+             projects, set it per experiment with `orx exp cmd <expId> --set '<cmd>'`."
+        ));
+    }
     let creds = require_credentials().await;
     match args.command {
         ProjectCommand::View { project_id } => view(&creds, &project_id).await,
@@ -26,6 +63,7 @@ pub async fn run(args: crate::ProjectArgs) -> Result<()> {
             description_stdin,
             public,
             private,
+            run_command: _,
         } => {
             edit(
                 &creds,
@@ -39,6 +77,88 @@ pub async fn run(args: crate::ProjectArgs) -> Result<()> {
             .await
         }
     }
+}
+
+/// Local `orx project view`: the project row, its default run command, and a
+/// flat experiment list (there is no local `orx experiments`).
+fn view_local(
+    store: &crate::store::Store,
+    project: &crate::local::model::LocalProject,
+) -> Result<()> {
+    println!("{} (local)", project.name);
+    println!("  id:      {}", project.id);
+    println!(
+        "  repo:    {}/{} (baseline branch: {})",
+        project.github_owner, project.github_repo, project.baseline_branch
+    );
+    println!("  clone:   {}", project.repo_path);
+    match project
+        .run_command
+        .as_deref()
+        .filter(|c| !c.trim().is_empty())
+    {
+        Some(cmd) => println!("  command: {}", cmd),
+        None => println!(
+            "  command: — (not set — `orx project edit {} --run-command '<cmd>'`)",
+            project.id
+        ),
+    }
+
+    let experiments = store.list_experiments_by_project(&project.id)?;
+    println!("\nExperiments");
+    if experiments.is_empty() {
+        println!("  (none)");
+    } else {
+        for e in &experiments {
+            let root = if e.parent_experiment_id.is_none() {
+                " [root]"
+            } else {
+                ""
+            };
+            println!(
+                "  {}  {}{}  ({})",
+                e.id,
+                e.display_name(),
+                root,
+                e.branch_name
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Local `orx project edit`: rename and/or set the default run command
+/// (`--run-command ''` clears it). New experiments inherit the command.
+fn edit_local(
+    store: &crate::store::Store,
+    mut project: crate::local::model::LocalProject,
+    name: Option<String>,
+    run_command: Option<String>,
+) -> Result<()> {
+    if name.is_none() && run_command.is_none() {
+        return Err(anyhow!(
+            "Nothing to change. Pass at least one of --name or --run-command."
+        ));
+    }
+    if let Some(name) = name {
+        if name.trim().is_empty() {
+            return Err(anyhow!("--name cannot be empty."));
+        }
+        project.name = name.trim().to_string();
+    }
+    if let Some(cmd) = run_command {
+        project.run_command = Some(cmd).filter(|c| !c.trim().is_empty());
+    }
+    store.update_local_project(&project)?;
+
+    println!("\u{2713} Project updated.");
+    println!("  id:      {}", project.id);
+    println!("  name:    {}", project.name);
+    match project.run_command.as_deref() {
+        Some(cmd) => println!("  command: {}", cmd),
+        None => println!("  command: — (empty)"),
+    }
+    Ok(())
 }
 
 /// `orx project view <projectId>` — overview of a single project: its details,

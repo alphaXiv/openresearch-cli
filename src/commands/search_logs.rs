@@ -11,6 +11,10 @@ pub async fn run(args: crate::SearchLogsArgs) -> Result<()> {
         std::process::exit(1);
     }
 
+    let store = crate::store::Store::open()?;
+    if store.get_local_project(&args.project_id)?.is_some() {
+        return Err(crate::local::unsupported("search-logs"));
+    }
     let creds = require_credentials().await;
 
     let max_matching_lines = args.max.as_deref().map(parse_number);

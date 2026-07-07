@@ -17,6 +17,9 @@ mod commands;
 mod config;
 mod error;
 mod jobs;
+// Local mode (`orx up`): builds out across stages; not all of it is wired yet.
+#[allow(dead_code)]
+mod local;
 mod output;
 mod store;
 mod updates;
@@ -132,6 +135,10 @@ enum Command {
     /// api, honor cancel intent. Spawned detached by `exp run --backend hf`;
     /// safe to re-run after a crash or box replacement.
     Supervise(SuperviseArgs),
+
+    /// Start the local autoresearch dashboard on 127.0.0.1: embedded UI,
+    /// JSON/SSE API over the local store, and the opencode agent proxy.
+    Up(UpArgs),
 }
 
 #[derive(Args, Debug)]
@@ -171,12 +178,16 @@ pub enum ProjectCommand {
     View { project_id: String },
 
     /// Edit a project's metadata. Pass at least one of `--name` / `--description`
-    /// / `--public` / `--private`.
+    /// / `--public` / `--private` / `--run-command`.
     Edit {
         project_id: String,
         /// Rename the project.
         #[arg(long)]
         name: Option<String>,
+        /// Set the project's default run command (local projects only).
+        /// New experiments inherit it; pass '' to clear.
+        #[arg(long = "run-command")]
+        run_command: Option<String>,
         /// Overwrite the project's description with this value.
         #[arg(long)]
         description: Option<String>,
@@ -316,9 +327,13 @@ pub struct CreateExperimentArgs {
     #[arg(long)]
     pub description: Option<String>,
     /// Parent experiment id -> create a child. Omit to create a baseline on the
-    /// project's bound repo.
+    /// project's bound repo (local projects: a child of the project root).
     #[arg(long)]
     pub parent: Option<String>,
+    /// Run command for the node (local projects only). Omit to inherit from
+    /// the parent / project default.
+    #[arg(long = "run-command")]
+    pub run_command: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -410,7 +425,7 @@ pub enum ExpCommand {
     },
 
     /// Launch a run on new (`--gpu`) or existing (`--sandbox`) compute.
-    Run(ExpRunArgs),
+    Run(Box<ExpRunArgs>),
 
     /// Cancel the in-flight run.
     Cancel { exp_id: String },
@@ -503,21 +518,37 @@ pub struct ExpRunArgs {
     /// Run on an existing sandbox instead of provisioning. Mutually exclusive with `--gpu`/`--cpu`.
     #[arg(long)]
     pub sandbox: Option<String>,
-    /// External executor instead of managed compute. Currently `hf` (Hugging
-    /// Face Jobs, billed to your HF account): orx submits the job and a
-    /// detached supervisor mirrors status/logs back.
+    /// External executor instead of managed compute: `hf` (Hugging Face Jobs,
+    /// billed to your HF account), `modal` (a Modal Sandbox on your own Modal
+    /// account, billed per second), `k8s` (a Job on your own Kubernetes
+    /// cluster), or `ssh` (a detached process on one of your own boxes). k8s and
+    /// ssh are local experiments only. orx submits the job and a detached
+    /// supervisor mirrors status/logs back.
     #[arg(long)]
     pub backend: Option<String>,
-    /// HF hardware flavor (with `--backend hf`), e.g. t4-small, a10g-small,
-    /// a100-large, h200. Required for HF runs.
+    /// Hardware flavor. With `--backend hf`: t4-small, a10g-small, a100-large,
+    /// h200, … With `--backend modal`: a Modal GPU (t4, l4, a10g, a100,
+    /// a100-80gb, l40s, h100, h200, or e.g. h100:2) or cpu/cpu-large. Not used
+    /// by k8s (see --manifest) or ssh (see --host).
     #[arg(long)]
     pub flavor: Option<String>,
-    /// Docker image for the job (with `--backend hf`). Defaults to python:3.12
-    /// on cpu-* flavors, a CUDA pytorch image otherwise.
+    /// The ~/.ssh/config host alias to run on (with `--backend ssh`).
+    #[arg(long)]
+    pub host: Option<String>,
+    /// Repo-relative path to the k8s manifest on the experiment branch (with
+    /// `--backend k8s`; default .orx/k8s.yaml). The manifest declares the run's
+    /// resources — image, GPUs, topology — and orx injects the run script, env
+    /// Secret, labels, and a default timeout. See `orx skill` for the contract.
+    #[arg(long)]
+    pub manifest: Option<String>,
+    /// Docker image for the job (with `--backend hf/modal`). Defaults to
+    /// python:3.12 on CPU flavors, a CUDA pytorch image otherwise. With
+    /// `--backend k8s`, set the image in the manifest instead.
     #[arg(long)]
     pub image: Option<String>,
-    /// Job timeout (with `--backend hf`): 90s, 30m, 4h, 1d. Default 4h — HF's
-    /// own default is only 30 minutes.
+    /// Job timeout (with `--backend hf/modal/k8s`): 90s, 30m, 4h, 1d. Default 4h —
+    /// HF's own default is only 30 minutes. With `--backend k8s` it becomes
+    /// activeDeadlineSeconds unless the manifest sets its own.
     #[arg(long)]
     pub timeout: Option<String>,
     /// Launch even if the experiment's branch has no changes over its parent
@@ -537,6 +568,22 @@ pub struct ServeArgs {
 pub struct SuperviseArgs {
     /// The run to supervise (must exist in the local store).
     pub run_id: String,
+}
+
+#[derive(Args, Debug)]
+pub struct UpArgs {
+    /// Port to bind on 127.0.0.1.
+    #[arg(long, default_value_t = 4791)]
+    pub port: u16,
+    /// Don't open the dashboard in the browser on startup.
+    #[arg(long)]
+    pub no_browser: bool,
+    /// Don't spawn the opencode agent on startup (for tests).
+    #[arg(long)]
+    pub no_agent: bool,
+    /// opencode model override, e.g. `anthropic/claude-sonnet-4-5`.
+    #[arg(long)]
+    pub model: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -655,5 +702,6 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Update(args) => commands::update::run(args).await,
         Command::Serve(args) => commands::serve::run(args).await,
         Command::Supervise(args) => commands::supervise::run(args).await,
+        Command::Up(args) => commands::up::run(args).await,
     }
 }

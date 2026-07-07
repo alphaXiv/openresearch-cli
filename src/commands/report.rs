@@ -16,6 +16,16 @@ use crate::config::Credentials;
 use crate::error::{anyhow, require_credentials, Result};
 
 pub async fn run(args: crate::ReportArgs) -> Result<()> {
+    let project_id = match &args.command {
+        crate::ReportCommand::Upload { project_id, .. }
+        | crate::ReportCommand::List { project_id }
+        | crate::ReportCommand::Show { project_id, .. }
+        | crate::ReportCommand::Download { project_id, .. } => project_id,
+    };
+    let store = crate::store::Store::open()?;
+    if let Some(project) = store.get_local_project(project_id)? {
+        return local_guidance(&project);
+    }
     match args.command {
         crate::ReportCommand::Upload {
             project_id,
@@ -30,6 +40,18 @@ pub async fn run(args: crate::ReportArgs) -> Result<()> {
             dir,
         } => download(&project_id, &report, &dir).await,
     }
+}
+
+/// Local projects have no report registry or upload step — the artifacts dir
+/// on disk is the whole feature. Point there instead of pretending to upload.
+fn local_guidance(project: &crate::local::model::LocalProject) -> Result<()> {
+    let dir = crate::local::artifacts::ensure_dir(project)?;
+    Err(anyhow!(
+        "`orx report` is cloud-only. Local projects have no upload step: write the report \
+         folder (report.md + images/) straight into the project's artifacts directory,\n  {}\n\
+         Everything in that directory shows up in the dashboard's Artifacts tab.",
+        dir.display()
+    ))
 }
 
 /// Resolve a report id-or-slug to its id, erroring clearly if it isn't found.

@@ -1,8 +1,9 @@
-use std::io::Write;
+use std::io::{Read as _, Seek as _, Write};
 
 use crate::client::read_run_log;
 use crate::error::require_credentials;
 use crate::error::Result;
+use crate::store::{log_path, Store};
 
 /// Parses a string the way JS `Number(s)` does for our purposes and returns it
 /// only if it represents an integer (matching `Number.isInteger`). An empty or
@@ -23,8 +24,6 @@ fn parse_integer(s: &str) -> Option<i64> {
 /// want); `--head` reads from the start, `--range <start>:<end>` an exact byte
 /// window (offsets come from `orx search-logs`).
 pub async fn run(args: crate::LogsArgs) -> Result<()> {
-    let creds = require_credentials().await;
-
     let mut mode: &str = if args.head { "head" } else { "tail" };
     let mut start_byte: Option<i64> = None;
     let mut end_byte: Option<i64> = None;
@@ -58,6 +57,15 @@ pub async fn run(args: crate::LogsArgs) -> Result<()> {
         },
         None => None,
     };
+
+    // Local run (orx up): the log is a plain file beside the store — read it
+    // directly, no api / login needed.
+    let store = Store::open()?;
+    if crate::local::local_run(&store, &args.run_id)?.is_some() {
+        return run_local(&args.run_id, mode, max_bytes, start_byte, end_byte);
+    }
+
+    let creds = require_credentials().await;
 
     let log = read_run_log(
         &creds,
@@ -95,6 +103,71 @@ pub async fn run(args: crate::LogsArgs) -> Result<()> {
         format!(" ({})", more.join(", "))
     };
     eprintln!("[{}] {}{}", log.source, span, more_str);
+
+    Ok(())
+}
+
+/// Default byte window for local head/tail reads without `--bytes`.
+const LOCAL_DEFAULT_BYTES: i64 = 64 * 1024;
+
+/// Local-mode log read: same head/tail/range semantics over the run's
+/// `run-logs/<id>.log` file, same stdout/stderr split as the server path.
+fn run_local(
+    run_id: &str,
+    mode: &str,
+    max_bytes: Option<i64>,
+    start_byte: Option<i64>,
+    end_byte: Option<i64>,
+) -> Result<()> {
+    let path = log_path(run_id);
+    let total = match std::fs::metadata(&path) {
+        Ok(m) => m.len() as i64,
+        Err(_) => {
+            eprintln!("[local file] no log captured yet for this run.");
+            return Ok(());
+        }
+    };
+
+    let max = max_bytes.unwrap_or(LOCAL_DEFAULT_BYTES).max(0);
+    let (start, end) = match mode {
+        "range" => (
+            start_byte.unwrap_or(0).clamp(0, total),
+            end_byte.unwrap_or(total).clamp(0, total),
+        ),
+        "head" => (0, max.min(total)),
+        _ => ((total - max).max(0), total),
+    };
+
+    let mut content = Vec::new();
+    if end > start {
+        let mut f = std::fs::File::open(&path)?;
+        f.seek(std::io::SeekFrom::Start(start as u64))?;
+        f.take((end - start) as u64).read_to_end(&mut content)?;
+    }
+
+    let mut stdout = std::io::stdout();
+    stdout.write_all(&content)?;
+    if !content.is_empty() && !content.ends_with(b"\n") {
+        stdout.write_all(b"\n")?;
+    }
+    stdout.flush()?;
+
+    let mut more: Vec<&str> = Vec::new();
+    if start > 0 {
+        more.push("more above");
+    }
+    if end < total {
+        more.push("more below");
+    }
+    let more_str = if more.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", more.join(", "))
+    };
+    eprintln!(
+        "[local file] bytes {}–{} of {}{}",
+        start, end, total, more_str
+    );
 
     Ok(())
 }

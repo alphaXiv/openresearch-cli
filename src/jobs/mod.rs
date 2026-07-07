@@ -6,6 +6,9 @@
 //! descriptor is the serialized handle a later supervisor uses to reattach.
 
 pub mod huggingface;
+pub mod kubernetes;
+pub mod modal;
+pub mod ssh;
 
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +30,16 @@ pub struct BackendDescriptor {
     pub image: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// kubeconfig context (k8s_job only); `None` = kubectl current-context.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// Repo-relative manifest path the run was launched from (k8s_job only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<String>,
+    /// Everything the manifest created, as `kind/name` handles in creation
+    /// order (k8s_job only) — cancel deletes exactly this list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<Vec<String>>,
 }
 
 impl BackendDescriptor {
@@ -47,6 +60,42 @@ impl BackendDescriptor {
             (Some(ns), Some(id)) => Ok((ns, id)),
             _ => Err(anyhow!(
                 "Backend descriptor is missing namespace/jobId — was the job submitted?"
+            )),
+        }
+    }
+
+    /// The k8s (namespace, job name) handle; context rides on `self.context`.
+    pub fn k8s_ref(&self) -> Result<(&str, &str)> {
+        if self.kind != "k8s_job" {
+            return Err(anyhow!("Unsupported backend kind: {}", self.kind));
+        }
+        match (self.namespace.as_deref(), self.job_id.as_deref()) {
+            (Some(ns), Some(id)) => Ok((ns, id)),
+            _ => Err(anyhow!(
+                "Backend descriptor is missing namespace/jobName — was the job submitted?"
+            )),
+        }
+    }
+
+    /// The Modal sandbox id (the reattach handle); `namespace` holds the app.
+    pub fn modal_ref(&self) -> Result<&str> {
+        if self.kind != "modal_job" {
+            return Err(anyhow!("Unsupported backend kind: {}", self.kind));
+        }
+        self.job_id.as_deref().ok_or_else(|| {
+            anyhow!("Backend descriptor is missing the Modal sandbox id — was the job submitted?")
+        })
+    }
+
+    /// The SSH (host, remote run dir) handle; host rides on `namespace`.
+    pub fn ssh_ref(&self) -> Result<(&str, &str)> {
+        if self.kind != "ssh_job" {
+            return Err(anyhow!("Unsupported backend kind: {}", self.kind));
+        }
+        match (self.namespace.as_deref(), self.job_id.as_deref()) {
+            (Some(host), Some(dir)) => Ok((host, dir)),
+            _ => Err(anyhow!(
+                "Backend descriptor is missing the ssh host/dir — was the job submitted?"
             )),
         }
     }

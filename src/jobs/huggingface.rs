@@ -23,18 +23,31 @@ pub fn endpoint() -> String {
     std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string())
 }
 
+/// Which link of the resolution chain produced the token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenSource {
+    Env,
+    OpenresearchEnv,
+    HfCache,
+}
+
 /// Resolve the HF token: `HF_TOKEN` env first, then the box's synced env file
 /// (`~/.openresearch/env` — where the org credential/env-var lands, invisible
 /// to non-interactive shells), then the hf CLI's token file.
 pub fn resolve_token() -> Result<String> {
+    resolve_token_with_source().map(|(tok, _)| tok)
+}
+
+/// `resolve_token`, but also reports which source won (settings UI).
+pub fn resolve_token_with_source() -> Result<(String, TokenSource)> {
     if let Ok(tok) = std::env::var("HF_TOKEN") {
         let tok = tok.trim().to_string();
         if !tok.is_empty() {
-            return Ok(tok);
+            return Ok((tok, TokenSource::Env));
         }
     }
     if let Some(tok) = crate::config::synced_env_var("HF_TOKEN") {
-        return Ok(tok);
+        return Ok((tok, TokenSource::OpenresearchEnv));
     }
     let path = dirs::home_dir()
         .unwrap_or_default()
@@ -44,7 +57,7 @@ pub fn resolve_token() -> Result<String> {
     if let Ok(tok) = std::fs::read_to_string(&path) {
         let tok = tok.trim().to_string();
         if !tok.is_empty() {
-            return Ok(tok);
+            return Ok((tok, TokenSource::HfCache));
         }
     }
     Err(anyhow!(
@@ -113,6 +126,56 @@ pub async fn whoami(token: &str) -> Result<String> {
         .map_err(|e| anyhow!("Could not reach Hugging Face: {}", e))?;
     let who: WhoAmI = check(res, "whoami").await?.json().await?;
     Ok(who.name)
+}
+
+/// whoami-v2 details for the settings UI.
+#[derive(Debug, Clone)]
+pub struct WhoamiDetails {
+    pub name: String,
+    /// Can this token submit jobs? `None` = shape didn't say.
+    pub jobs_write: Option<bool>,
+}
+
+pub async fn whoami_details(token: &str) -> Result<WhoamiDetails> {
+    let res = http()
+        .get(format!("{}/api/whoami-v2", endpoint()))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Could not reach Hugging Face: {}", e))?;
+    let body: serde_json::Value = check(res, "whoami").await?.json().await?;
+    let name = body
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("whoami response had no name"))?
+        .to_string();
+    let jobs_write = match body["auth"]["accessToken"]["role"].as_str() {
+        Some("write") => Some(true),
+        Some("read") => Some(false),
+        // fineGrained: job.write must appear in the global or a scoped grant.
+        Some("fineGrained") => {
+            let fg = &body["auth"]["accessToken"]["fineGrained"];
+            let global = fg.get("global").and_then(|v| v.as_array());
+            let scoped = fg.get("scoped").and_then(|v| v.as_array());
+            if global.is_none() && scoped.is_none() {
+                None
+            } else {
+                let has = |perms: &[serde_json::Value]| {
+                    perms.iter().any(|p| p.as_str() == Some("job.write"))
+                };
+                let hit = global.map(|g| has(g)).unwrap_or(false)
+                    || scoped.into_iter().flatten().any(|s| {
+                        s.get("permissions")
+                            .and_then(|p| p.as_array())
+                            .map(|p| has(p))
+                            .unwrap_or(false)
+                    });
+                Some(hit)
+            }
+        }
+        _ => None,
+    };
+    Ok(WhoamiDetails { name, jobs_write })
 }
 
 pub struct JobSubmission {
