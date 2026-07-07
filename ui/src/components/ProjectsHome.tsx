@@ -1,18 +1,38 @@
-import { Plus } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { timeAgo, type Project } from "../api";
+import { deleteProject, timeAgo, type Project } from "../api";
 import { NewProjectForm } from "./NewProjectForm";
 
 export function ProjectsHome({
   projects,
   onOpen,
   onCreated,
+  onDeleted,
 }: {
   projects: Project[];
   onOpen: (id: string) => void;
   onCreated: (project: Project) => void;
+  onDeleted: (id: string) => void;
 }) {
   const [modalOpen, setModalOpen] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
+
+  async function onDelete(p: Project) {
+    const ok = window.confirm(
+      `Delete project "${p.name}"?\n\nIts experiments, runs and chats are removed from orx. ` +
+        `The GitHub repo (${p.githubOwner}/${p.githubRepo}) is kept.`,
+    );
+    if (!ok) return;
+    setDeleting(p.id);
+    try {
+      await deleteProject(p.id);
+      onDeleted(p.id);
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeleting(null);
+    }
+  }
 
   return (
     <div className="home">
@@ -31,13 +51,33 @@ export function ProjectsHome({
             <div className="changes-note">No projects yet — create one to get started.</div>
           ) : (
             projects.map((p) => (
-              <button key={p.id} className="project-card" onClick={() => onOpen(p.id)}>
+              <div
+                key={p.id}
+                className="project-card"
+                role="button"
+                tabIndex={0}
+                onClick={() => onOpen(p.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") onOpen(p.id);
+                }}
+              >
                 <span className="name">{p.name}</span>
                 <span className="repo mono">
                   {p.githubOwner}/{p.githubRepo} · {p.baselineBranch}
                 </span>
                 <span className="time">created {timeAgo(p.createdAt)}</span>
-              </button>
+                <button
+                  className="project-delete"
+                  title={`Delete ${p.name}`}
+                  disabled={deleting === p.id}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete(p);
+                  }}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
             ))
           )}
         </div>

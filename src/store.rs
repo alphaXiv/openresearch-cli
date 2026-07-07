@@ -320,6 +320,31 @@ impl Store {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
+    /// Delete a project and everything hanging off it (chats, runs,
+    /// experiments) in one transaction. GitHub repo and cache clone are kept.
+    pub fn delete_local_project(&self, id: &str) -> Result<()> {
+        let tx = self.begin()?;
+        self.conn.execute(
+            "DELETE FROM chat_messages WHERE session_id IN
+               (SELECT id FROM chat_sessions WHERE project_id = ?1)",
+            params![id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM chat_sessions WHERE project_id = ?1",
+            params![id],
+        )?;
+        self.conn
+            .execute("DELETE FROM runs WHERE project_id = ?1", params![id])?;
+        self.conn.execute(
+            "DELETE FROM local_experiments WHERE project_id = ?1",
+            params![id],
+        )?;
+        self.conn
+            .execute("DELETE FROM local_projects WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Full-row update by id (name / run_command / branch edits).
     pub fn update_local_project(&self, p: &LocalProject) -> Result<()> {
         self.conn.execute(

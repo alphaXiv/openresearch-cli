@@ -84,6 +84,9 @@ export interface NewProject {
   runCommand?: string;
   /** Create a blank private repo on the user's GitHub account instead. */
   createRepo?: boolean;
+  /** Fork-by-copy the repo into a fresh `<repo>-<hash>` repo on the user's
+   * account. Applied automatically when they lack push access. */
+  forkRepo?: boolean;
 }
 
 export const createProject = (body: NewProject) =>
@@ -91,6 +94,14 @@ export const createProject = (body: NewProject) =>
 
 export const updateProject = (projectId: string, body: { runCommand?: string; name?: string }) =>
   patch<{ project: Project }>(`/api/projects/${projectId}`, body).then((r) => r.project);
+
+export const deleteProject = (projectId: string) =>
+  fetch(`/api/projects/${projectId}`, { method: "DELETE" }).then(async (r) => {
+    if (!r.ok) {
+      const body = await r.json().catch(() => null);
+      throw new Error(body?.error ?? `delete failed (${r.status})`);
+    }
+  });
 
 export const listExperiments = (projectId: string) =>
   get<{ experiments: Experiment[] }>(`/api/projects/${projectId}/experiments`).then(

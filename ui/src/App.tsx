@@ -197,6 +197,11 @@ export default function App() {
     setHomeOpen(false);
   };
 
+  const onProjectDeleted = (id: string) => {
+    setProjects((cur) => (cur ? cur.filter((p) => p.id !== id) : cur));
+    if (projectId === id) setProjectId(null);
+  };
+
   const expTab = typeof rightTab === "object" && "view" in rightTab ? rightTab : null;
   const fileTab = typeof rightTab === "object" && "path" in rightTab ? rightTab : null;
   const tabExperiment = expTab ? (experiments.find((e) => e.id === expTab.id) ?? null) : null;
@@ -217,7 +222,12 @@ export default function App() {
     return (
       <div className="app">
         {onboarded ? (
-          <ProjectsHome projects={projects} onOpen={setProjectId} onCreated={onProjectCreated} />
+          <ProjectsHome
+            projects={projects}
+            onOpen={setProjectId}
+            onCreated={onProjectCreated}
+            onDeleted={onProjectDeleted}
+          />
         ) : (
           <Onboarding
             onDone={() => {
@@ -261,6 +271,7 @@ export default function App() {
             setHomeOpen(false);
           }}
           onCreated={onProjectCreated}
+          onDeleted={onProjectDeleted}
         />
       ) : (
       <div className="app-body">

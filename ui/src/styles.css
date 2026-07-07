@@ -221,6 +221,7 @@ select:focus {
   gap: 10px;
 }
 .project-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -229,6 +230,7 @@ select:focus {
   background: var(--base);
   border: 1px solid var(--border);
   border-radius: 10px;
+  cursor: pointer;
   transition:
     border-color 120ms ease,
     box-shadow 120ms ease;
@@ -236,6 +238,23 @@ select:focus {
 .project-card:hover {
   border-color: var(--text);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+}
+.project-delete {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: none;
+  padding: 5px;
+  border-radius: 6px;
+  color: var(--muted);
+  line-height: 0;
+}
+.project-card:hover .project-delete {
+  display: block;
+}
+.project-delete:hover {
+  color: var(--danger, #d33);
+  background: var(--overlay, rgba(0, 0, 0, 0.05));
 }
 .project-card .name {
   font-weight: 700;

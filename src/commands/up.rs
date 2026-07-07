@@ -85,7 +85,12 @@ fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/projects", get(list_projects).post(create_project))
-        .route("/api/projects/{id}", get(get_project).patch(update_project))
+        .route(
+            "/api/projects/{id}",
+            get(get_project)
+                .patch(update_project)
+                .delete(delete_project),
+        )
         .route(
             "/api/projects/{id}/experiments",
             get(list_experiments).post(create_experiment),
@@ -244,6 +249,11 @@ struct CreateProjectReq {
     /// GitHub account instead of pointing at an existing one.
     #[serde(default)]
     create_repo: bool,
+    /// Fork-by-copy the entered repo into a fresh `<repo>-<hash>` repo on the
+    /// user's account. Also applied automatically when the user lacks push
+    /// access to the entered repo — experiments need somewhere to push.
+    #[serde(default)]
+    fork_repo: bool,
 }
 
 async fn create_project(Json(req): Json<CreateProjectReq>) -> ApiResult {
@@ -262,7 +272,25 @@ async fn create_project(Json(req): Json<CreateProjectReq>) -> ApiResult {
         if owner.is_empty() || repo.is_empty() {
             return Err(bad_request("githubOwner and githubRepo are required"));
         }
-        (owner, repo, req.baseline_branch)
+        let branch = req.baseline_branch.filter(|b| !b.trim().is_empty());
+        // Unknown access (no token / API hiccup) counts as access: forking
+        // needs a token anyway, and surprise forks are worse than a later
+        // push error.
+        let fork = req.fork_repo
+            || !local::github::has_push_access(&owner, &repo)
+                .await
+                .unwrap_or(true);
+        if fork {
+            // The entered branch picks what gets copied; the fork itself
+            // starts at its default branch.
+            let (owner, repo, default_branch) =
+                local::github::fork_copy_repo(&owner, &repo, branch)
+                    .await
+                    .map_err(bad_request)?;
+            (owner, repo, Some(default_branch))
+        } else {
+            (owner, repo, branch)
+        }
     };
     // The clone shells out to git (network); keep it off the async workers.
     let run_command = req.run_command;
@@ -334,6 +362,37 @@ async fn update_project(Path(id): Path<String>, Json(req): Json<UpdateProjectReq
         .get_local_project(&id)?
         .ok_or_else(|| not_found("project"))?;
     Ok(Json(json!({ "project": project })))
+}
+
+/// Delete a project and everything hanging off it. Refuses while runs are in
+/// flight (deleting their rows would strand the supervisor mid-job) — but
+/// requests their cancellation, so a retry shortly after goes through. The
+/// GitHub repo and the cache clone are left untouched.
+async fn delete_project(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
+    let store = Store::open()?;
+    store
+        .get_local_project(&id)?
+        .ok_or_else(|| not_found("project"))?;
+    let in_flight: Vec<_> = store
+        .list_runs_by_project(&id)?
+        .into_iter()
+        .filter(|r| !is_terminal(&r.status))
+        .collect();
+    if !in_flight.is_empty() {
+        for run in &in_flight {
+            let _ = store.set_cancel_requested(&run.id, true);
+        }
+        return Err(bad_request(format!(
+            "{} run(s) still in flight — cancellation requested; retry once they stop",
+            in_flight.len()
+        )));
+    }
+    // Abort any in-flight chat turns before their rows disappear.
+    for session in store.list_chat_sessions_by_project(&id)? {
+        let _ = state.chat.interrupt(&session.id).await;
+    }
+    store.delete_local_project(&id)?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn list_experiments(Path(id): Path<String>) -> ApiResult {
