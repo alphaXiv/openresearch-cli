@@ -414,6 +414,64 @@ pub fn list_messages(session_id: &str) -> Result<Vec<WireMessage>> {
         .collect())
 }
 
+// --- run watcher ----------------------------------------------------------------
+
+fn is_terminal(status: &str) -> bool {
+    matches!(status, "done" | "failed" | "cancelled")
+}
+
+/// Poke a project's chat when a run completes while no turn is in flight —
+/// the local stand-in for the cloud agent staying online inside a blocking
+/// `orx exp wait`. The first pass only seeds the cursor, so a server restart
+/// doesn't replay old completions. Busy sessions are skipped (the agent is
+/// awake — likely in its wait loop — and will see the completion itself).
+pub async fn watch_runs(chat: Arc<ChatHost>) {
+    let mut seen: HashMap<String, String> = HashMap::new();
+    let mut first = true;
+    loop {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        // Store hiccups (locked db) just skip a tick.
+        let Ok(store) = Store::open() else { continue };
+        let Ok(runs) = store.list_runs(200) else {
+            continue;
+        };
+        for run in runs {
+            let prev = seen.insert(run.id.clone(), run.status.clone());
+            let newly_terminal =
+                is_terminal(&run.status) && !matches!(prev.as_deref(), Some(s) if is_terminal(s));
+            if first || !newly_terminal {
+                continue;
+            }
+            let Ok(sessions) = store.list_chat_sessions_by_project(&run.project_id) else {
+                continue;
+            };
+            // Most recently touched session that already has history — never
+            // mint or retitle a fresh one.
+            let Some(session) = sessions.into_iter().find(|s| {
+                store
+                    .list_chat_messages(&s.id)
+                    .map(|m| !m.is_empty())
+                    .unwrap_or(false)
+            }) else {
+                continue;
+            };
+            if chat.is_busy(&session.id).await {
+                continue;
+            }
+            let text = format!(
+                "[orx] Run `{}` finished with status **{}**. Reconcile with \
+                 `orx runs {}`, analyze the result (`orx logs {}`), and \
+                 continue the loop.",
+                run.id, run.status, run.project_id, run.id
+            );
+            if let Err(err) = chat.send_message(&session.id, text, None).await {
+                eprintln!("orx up: run watcher: {err}");
+            }
+        }
+        first = false;
+    }
+}
+
 /// Env prep shared by the CLI adapters: this orx first on PATH (agents shell
 /// out to `orx`) and the dashboard-managed env vars, real env winning.
 pub fn prepare_env(cmd: &mut tokio::process::Command) {
