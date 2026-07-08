@@ -97,7 +97,10 @@ function TerminalView({
   const live = selectedRun?.status === "running" || selectedRun?.status === "starting";
   // expRuns is newest-first, so the oldest run is #1. Number a run by its
   // position from the end of the list.
-  const runNumber = (id: string) => expRuns.length - expRuns.findIndex((r) => r.id === id);
+  const runNumber = (id: string) => {
+    const idx = expRuns.findIndex((r) => r.id === id);
+    return idx === -1 ? expRuns.length : expRuns.length - idx;
+  };
 
   // When a new run starts while the tab is open, follow it live.
   const seenRunIds = useRef<Set<string> | null>(null);

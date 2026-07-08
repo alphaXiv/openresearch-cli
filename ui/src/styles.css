@@ -436,6 +436,18 @@ select:focus {
 
 /* ---- panes ---- */
 
+/* Shared chrome for the floating side panels (rail + right pane): border,
+   rounded corners, soft two-layer shadow. Background and margins stay
+   per-panel. */
+.floating-panel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow:
+    0 6px 24px color-mix(in oklab, var(--text) 5%, transparent),
+    0 1px 4px color-mix(in oklab, var(--text) 4%, transparent);
+  overflow: hidden;
+}
+
 /* Floating agents rail: fixed-width, collapsible (not resizable). */
 .session-rail {
   width: 232px;
@@ -446,12 +458,6 @@ select:focus {
      from .app-body's left padding. */
   margin: 10px 14px 10px 0;
   background: var(--base);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow:
-    0 6px 24px color-mix(in oklab, var(--text) 5%, transparent),
-    0 1px 4px color-mix(in oklab, var(--text) 4%, transparent);
-  overflow: hidden;
   min-height: 0;
 }
 /* Rail nav: new session + settings sections, above the Recents list. */
@@ -523,12 +529,6 @@ select:focus {
      from .app-body's right padding. */
   margin: 10px 0 10px 14px;
   background: var(--canvas);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow:
-    0 6px 24px color-mix(in oklab, var(--text) 5%, transparent),
-    0 1px 4px color-mix(in oklab, var(--text) 4%, transparent);
-  overflow: hidden;
 }
 .right-pane.max {
   position: fixed;

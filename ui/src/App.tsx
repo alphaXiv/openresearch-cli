@@ -91,7 +91,7 @@ export default function App() {
   // Right-panel tab strip: the pinned Experiments tab plus a closable tab per
   // opened experiment view / project file. Views are single-purpose, so the
   // same experiment can hold both a terminal tab and a changes tab.
-  const [rightTab, setRightTab] = useState<"log" | ExpViewDef | FileViewDef>("log");
+  const [rightTab, setRightTab] = useState<"experiments" | ExpViewDef | FileViewDef>("experiments");
   const [expTabs, setExpTabs] = useState<ExpViewDef[]>([]);
   const [fileTabs, setFileTabs] = useState<FileViewDef[]>([]);
   // The right pane is a floating panel: closable, edge-resizable, expandable
@@ -154,7 +154,7 @@ export default function App() {
     setSelectedRunId(null);
     setExpTabs([]);
     setFileTabs([]);
-    setRightTab("log");
+    setRightTab("experiments");
     listExperiments(projectId).then(setExperiments).catch(() => {});
     listRuns(projectId).then(setRuns).catch(() => {});
     getArtifacts(projectId).then(setArtifacts).catch(() => {});
@@ -201,7 +201,7 @@ export default function App() {
       setExpTabs(next);
       // Closing the focused tab falls back to a neighbor, else the Log tab.
       if (typeof rightTab === "object" && "view" in rightTab && sameExpTab(rightTab, tab))
-        setRightTab(next[Math.min(idx, next.length - 1)] ?? "log");
+        setRightTab(next[Math.min(idx, next.length - 1)] ?? "experiments");
     },
     [expTabs, rightTab],
   );
@@ -236,7 +236,7 @@ export default function App() {
       const next = fileTabs.filter((_, i) => i !== idx);
       setFileTabs(next);
       if (typeof rightTab === "object" && "path" in rightTab && rightTab.path === tab.path)
-        setRightTab(next[Math.min(idx, next.length - 1)] ?? "log");
+        setRightTab(next[Math.min(idx, next.length - 1)] ?? "experiments");
     },
     [fileTabs, rightTab],
   );
@@ -269,11 +269,13 @@ export default function App() {
     };
     const stop = () => {
       window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
       document.body.style.userSelect = prevUserSelect;
     };
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", stop, { once: true });
-    window.addEventListener("pointercancel", stop, { once: true });
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
   };
 
   const onProjectCreated = (project: Project) => {
@@ -389,15 +391,15 @@ export default function App() {
         )}
         {mainView === "chat" && panelOpen && (
         <aside
-          className={`right-pane ${panelMax ? "max" : ""}`}
+          className={`right-pane floating-panel ${panelMax ? "max" : ""}`}
           style={panelMax ? undefined : { width: panelWidth }}
         >
           {!panelMax && <div className="panel-resizer" onPointerDown={resizePanel} />}
           <div className="tabs">
             <div className="tab-strip">
               <button
-                className={`tab ${rightTab === "log" ? "active" : ""}`}
-                onClick={() => setRightTab("log")}
+                className={`tab ${rightTab === "experiments" ? "active" : ""}`}
+                onClick={() => setRightTab("experiments")}
               >
                 Experiments
               </button>
@@ -456,7 +458,7 @@ export default function App() {
               </button>
             </div>
           </div>
-          {rightTab === "log" ? (
+          {rightTab === "experiments" ? (
             <div className="tab-body">
               <div className="pane-toolbar">
                 <div className="seg">

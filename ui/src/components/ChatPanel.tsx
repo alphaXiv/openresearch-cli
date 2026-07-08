@@ -465,7 +465,7 @@ export function ChatPanel({
   }
 
   const rail = (
-    <aside className="session-rail">
+    <aside className="session-rail floating-panel">
       {railHeader}
       {/* Top nav: new session + the settings sections (shown in the middle pane). */}
       <nav className="rail-nav">
