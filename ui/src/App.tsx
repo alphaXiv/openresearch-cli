@@ -22,7 +22,7 @@ import { RailHeader } from "./components/Header";
 import { Onboarding } from "./components/Onboarding";
 import { ProjectsHome } from "./components/ProjectsHome";
 import { RunsTable } from "./components/RunsTable";
-import { SettingsPage } from "./components/SettingsPage";
+import { SettingsPage, type SettingsTab } from "./components/SettingsPage";
 import { TreeView } from "./components/TreeView";
 import { useOrxEvents } from "./events";
 
@@ -66,6 +66,7 @@ export default function App() {
   const [fileTabs, setFileTabs] = useState<FileTabDef[]>([]);
   const [homeOpen, setHomeOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("harnesses");
   const [hfSettings, setHfSettings] = useState<HfSettings | null>(null);
   const [hfLoading, setHfLoading] = useState(true);
   const [onboarded, setOnboarded] = useState(() => {
@@ -250,7 +251,10 @@ export default function App() {
         setHomeOpen(true);
         setSettingsOpen(false);
       }}
-      onOpenSettings={() => setSettingsOpen(true)}
+      onOpenSettings={() => {
+        setSettingsTab("harnesses");
+        setSettingsOpen(true);
+      }}
     />
   );
 
@@ -262,6 +266,7 @@ export default function App() {
           hfLoading={hfLoading}
           onHfSettingsUpdated={setHfSettings}
           onClose={() => setSettingsOpen(false)}
+          initialTab={settingsTab}
         />
       ) : homeOpen ? (
         <ProjectsHome
@@ -276,7 +281,15 @@ export default function App() {
       ) : (
       <div className="app-body">
         {projectId && (
-          <ChatPanel projectId={projectId} railHeader={railHeader} onOpenFile={openFileTab} />
+          <ChatPanel
+            projectId={projectId}
+            railHeader={railHeader}
+            onOpenFile={openFileTab}
+            onOpenCompute={() => {
+              setSettingsTab("compute");
+              setSettingsOpen(true);
+            }}
+          />
         )}
         <div className="right-pane">
           <div className="tabs">

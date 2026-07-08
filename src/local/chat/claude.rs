@@ -73,6 +73,10 @@ pub async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
         "--verbose",
         "--permission-mode",
         "bypassPermissions",
+        // Headless --print can't answer it (auto-dismissed); parity with the
+        // opencode config's `question: false`.
+        "--disallowed-tools",
+        "AskUserQuestion",
     ])
     .arg("--append-system-prompt-file")
     .arg(&playbook)

@@ -18,6 +18,7 @@ pub mod modal;
 pub mod model;
 pub mod opencode;
 pub mod projects;
+pub mod skills;
 pub mod ssh;
 
 use crate::error::{anyhow, Error, Result};

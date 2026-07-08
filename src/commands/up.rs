@@ -140,6 +140,7 @@ fn router(state: AppState) -> Router {
         .route("/api/settings/ssh", get(ssh_settings))
         .route("/api/settings/ssh/preflight", post(ssh_preflight))
         .route("/api/harnesses", get(list_harnesses))
+        .route("/api/skills", get(list_skills))
         .route(
             "/api/chat/sessions",
             get(list_chat_sessions).post(create_chat_session),
@@ -151,6 +152,7 @@ fn router(state: AppState) -> Router {
         .route("/api/chat/sessions/{id}/messages", get(chat_messages))
         .route("/api/chat/sessions/{id}/message", post(send_chat_message))
         .route("/api/chat/sessions/{id}/interrupt", post(interrupt_chat))
+        .route("/api/chat/attachments/{name}", get(chat_attachment))
         .route("/api/agent/status", get(agent_status))
         .fallback(spa)
         .with_state(state)
@@ -233,6 +235,21 @@ impl From<&StoredRun> for ApiRun {
 
 async fn health() -> Json<Value> {
     Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }))
+}
+
+/// Slash-skills the composer's `/` dropdown offers (expanded server-side).
+async fn list_skills() -> Json<Value> {
+    let skills: Vec<Value> = crate::local::skills::CATALOG
+        .iter()
+        .map(|s| {
+            json!({
+                "name": s.name,
+                "description": s.description,
+                "argHint": s.arg_hint,
+            })
+        })
+        .collect();
+    Json(json!({ "skills": skills }))
 }
 
 async fn list_projects() -> ApiResult {
@@ -1434,6 +1451,8 @@ async fn chat_messages(Path(id): Path<String>) -> ApiResult {
 struct SendChatReq {
     text: String,
     model: Option<String>,
+    #[serde(default)]
+    images: Vec<local::chat::ImageAttachment>,
 }
 
 async fn send_chat_message(
@@ -1442,16 +1461,45 @@ async fn send_chat_message(
     Json(req): Json<SendChatReq>,
 ) -> ApiResult {
     let text = req.text.trim().to_string();
-    if text.is_empty() {
+    if text.is_empty() && req.images.is_empty() {
         return Err(bad_request("text is required"));
     }
     // The turn runs in the background; progress streams over /api/events.
     state
         .chat
-        .send_message(&id, text, req.model)
+        .send_message(&id, text, req.model, req.images)
         .await
         .map_err(bad_request)?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// Raw bytes of a pasted-image attachment, by bare file name.
+async fn chat_attachment(Path(name): Path<String>) -> std::result::Result<Response, ApiError> {
+    // Names are server-minted (img_<uuid>.<ext>); anything else is rejected.
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        || name.contains("..")
+    {
+        return Err(bad_request("invalid attachment name"));
+    }
+    tokio::task::spawn_blocking(move || {
+        let path = local::chat::attachments_dir()?.join(&name);
+        let bytes = std::fs::read(&path).map_err(|_| not_found("attachment"))?;
+        Ok((
+            [
+                (
+                    header::CONTENT_TYPE,
+                    local::chat::attachment_content_type(&name),
+                ),
+                (header::CACHE_CONTROL, "max-age=31536000, immutable"),
+            ],
+            bytes,
+        )
+            .into_response())
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow!("attachment task failed: {e}")))?
 }
 
 async fn interrupt_chat(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {

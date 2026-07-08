@@ -110,13 +110,11 @@ function ReportView({
   return (
     <div className="report-view">
       <div className="report-view-head">
-        <button className="btn sm ghost" onClick={onBack}>
-          <ArrowLeft size={12} /> Reports
+        <button className="report-back" onClick={onBack}>
+          <ArrowLeft size={13} /> Reports
         </button>
-        <div className="report-view-title">
-          <span>{report.title}</span>
-          <span className="report-date">{new Date(report.modifiedAt).toLocaleString()}</span>
-        </div>
+        <span style={{ flex: 1 }} />
+        <span className="report-date">{new Date(report.modifiedAt).toLocaleString()}</span>
         <button
           className="icon-btn"
           title="Delete report folder"
