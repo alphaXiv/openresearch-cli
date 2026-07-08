@@ -1,6 +1,6 @@
 import { X } from "lucide-react";
 
-/** A closable tab for dynamic tab strips (open sessions, open experiments).
+/** A closable tab in the right panel's tab strip (open experiments / files).
  *  The close "x" is a span, not a button — it can't nest inside the tab button. */
 export function ClosableTab({
   active,

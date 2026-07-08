@@ -1,4 +1,4 @@
-import { FileCode, GitBranch, Terminal } from "lucide-react";
+import { FileCode, GitBranch, Maximize2, Minimize2, Terminal, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   cancelRun,
@@ -22,24 +22,54 @@ import { RailHeader } from "./components/Header";
 import { Onboarding } from "./components/Onboarding";
 import { ProjectsHome } from "./components/ProjectsHome";
 import { RunsTable } from "./components/RunsTable";
-import { SettingsPage, type SettingsTab } from "./components/SettingsPage";
+import { SettingsView, type SettingsTab } from "./components/SettingsPage";
 import { TreeView } from "./components/TreeView";
 import { useOrxEvents } from "./events";
 
-/** An experiment view open as a right-pane tab. */
-interface ExpTabDef {
+/** An experiment view open as a right-panel tab. */
+interface ExpViewDef {
   id: string;
   view: ExperimentView;
 }
 
-const sameTab = (a: ExpTabDef, b: ExpTabDef) => a.id === b.id && a.view === b.view;
+const sameExpTab = (a: ExpViewDef, b: ExpViewDef) => a.id === b.id && a.view === b.view;
 
-/** A project file open as a right-pane tab (clicked in chat tool rows). */
-interface FileTabDef {
+/** A project file open as a right-panel tab (clicked in chat tool rows). */
+interface FileViewDef {
   path: string;
 }
 
 const ONBOARDED_KEY = "orx:onboarded";
+const PANEL_WIDTH_KEY = "orx:panel-width";
+
+/** Floating panel sizing: keep both the panel and the chat column usable. */
+const PANEL_MIN_WIDTH = 360;
+const PANEL_MARGIN = 10;
+// Space the rest of the layout needs beside the panel: the ~232px rail, the
+// chat column's minimum, and the gutters/margins between the three columns
+// (app-body padding 14×2, rail inner margin 14, right-pane inner margin 14).
+const RAIL_WIDTH = 232;
+const CHAT_MIN_SPACE = 380;
+const LAYOUT_CHROME = RAIL_WIDTH + 14 * 4;
+// Once a drag pushes the panel past its usable max by this much, it snaps to
+// fullscreen — a bit of resistance you have to overcome deliberately.
+const FULLSCREEN_SNAP_SLOP = 80;
+
+/** The widest the floating panel can be while leaving the rail + chat usable. */
+function panelMaxWidth(): number {
+  return Math.max(PANEL_MIN_WIDTH, window.innerWidth - LAYOUT_CHROME - CHAT_MIN_SPACE);
+}
+
+function initialPanelWidth(): number {
+  const max = panelMaxWidth();
+  try {
+    const saved = Number(localStorage.getItem(PANEL_WIDTH_KEY));
+    if (Number.isFinite(saved) && saved >= PANEL_MIN_WIDTH) return Math.min(saved, max);
+  } catch {
+    // storage unavailable — fall through to the default
+  }
+  return Math.max(PANEL_MIN_WIDTH, Math.min(760, max, Math.round(window.innerWidth * 0.42)));
+}
 
 function upsert<T extends { id: string }>(list: T[], item: T): T[] {
   const i = list.findIndex((x) => x.id === item.id);
@@ -58,15 +88,23 @@ export default function App() {
   const [view, setView] = useState<"tree" | "table">("tree");
   const [selectedExpId, setSelectedExpId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
-  // Right-pane tab strip: the static Log tab plus a closable tab per opened
-  // experiment view. Views are single-purpose, so the same experiment can hold
-  // both a terminal tab and a changes tab.
-  const [rightTab, setRightTab] = useState<"log" | "artifacts" | ExpTabDef | FileTabDef>("log");
-  const [expTabs, setExpTabs] = useState<ExpTabDef[]>([]);
-  const [fileTabs, setFileTabs] = useState<FileTabDef[]>([]);
+  // Right-panel tab strip: the pinned Experiments tab plus a closable tab per
+  // opened experiment view / project file. Views are single-purpose, so the
+  // same experiment can hold both a terminal tab and a changes tab.
+  const [rightTab, setRightTab] = useState<"experiments" | ExpViewDef | FileViewDef>("experiments");
+  const [expTabs, setExpTabs] = useState<ExpViewDef[]>([]);
+  const [fileTabs, setFileTabs] = useState<FileViewDef[]>([]);
+  // The right pane is a floating panel: closable, edge-resizable, expandable
+  // to (nearly) full screen. Width persists across sessions.
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelMax, setPanelMax] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(initialPanelWidth);
+  // The agents rail is a floating panel too: fixed-width, collapsible.
+  const [railOpen, setRailOpen] = useState(true);
   const [homeOpen, setHomeOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("harnesses");
+  // What the middle pane shows: the agent chat, the project's artifacts, or
+  // one settings section (picked from the rail nav — no separate pages).
+  const [mainView, setMainView] = useState<"chat" | "artifacts" | SettingsTab>("chat");
   const [hfSettings, setHfSettings] = useState<HfSettings | null>(null);
   const [hfLoading, setHfLoading] = useState(true);
   const [onboarded, setOnboarded] = useState(() => {
@@ -98,6 +136,14 @@ export default function App() {
       .finally(() => setHfLoading(false));
   }, []);
 
+  // Shrinking the window can push a fixed-width panel past its usable max —
+  // reclamp so it never overflows the viewport.
+  useEffect(() => {
+    const onResize = () => setPanelWidth((w) => Math.min(w, panelMaxWidth()));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   // Per-project data. Harness agents spawn lazily on the first chat message.
   useEffect(() => {
     if (!projectId) return;
@@ -108,7 +154,7 @@ export default function App() {
     setSelectedRunId(null);
     setExpTabs([]);
     setFileTabs([]);
-    setRightTab("log");
+    setRightTab("experiments");
     listExperiments(projectId).then(setExperiments).catch(() => {});
     listRuns(projectId).then(setRuns).catch(() => {});
     getArtifacts(projectId).then(setArtifacts).catch(() => {});
@@ -137,28 +183,30 @@ export default function App() {
     },
   });
 
-  // Open an experiment view as a right-pane tab (creating it if needed) and
+  // Open an experiment view as a right-panel tab (creating it if needed) and
   // focus it.
   const openExperimentTab = useCallback((id: string, view: ExperimentView = "changes") => {
     setSelectedExpId(id);
     const tab = { id, view };
-    setExpTabs((prev) => (prev.some((t) => sameTab(t, tab)) ? prev : [...prev, tab]));
+    setExpTabs((prev) => (prev.some((t) => sameExpTab(t, tab)) ? prev : [...prev, tab]));
     setRightTab(tab);
+    setPanelOpen(true);
   }, []);
 
   const closeExperimentTab = useCallback(
-    (tab: ExpTabDef) => {
-      const idx = expTabs.findIndex((t) => sameTab(t, tab));
+    (tab: ExpViewDef) => {
+      const idx = expTabs.findIndex((t) => sameExpTab(t, tab));
       if (idx === -1) return;
       const next = expTabs.filter((_, i) => i !== idx);
       setExpTabs(next);
-      if (typeof rightTab === "object" && "view" in rightTab && sameTab(rightTab, tab))
-        setRightTab(next[Math.min(idx, next.length - 1)] ?? "log");
+      // Closing the focused tab falls back to a neighbor, else the Log tab.
+      if (typeof rightTab === "object" && "view" in rightTab && sameExpTab(rightTab, tab))
+        setRightTab(next[Math.min(idx, next.length - 1)] ?? "experiments");
     },
     [expTabs, rightTab],
   );
 
-  // Open a project file as a right-pane tab. Agents report absolute paths
+  // Open a project file as a right-panel tab. Agents report absolute paths
   // inside the clone; strip the clone prefix so tabs and the API stay
   // repo-relative.
   const openFileTab = useCallback(
@@ -176,21 +224,59 @@ export default function App() {
       const tab = { path };
       setFileTabs((prev) => (prev.some((t) => t.path === path) ? prev : [...prev, tab]));
       setRightTab(tab);
+      setPanelOpen(true);
     },
     [projects, projectId],
   );
 
   const closeFileTab = useCallback(
-    (tab: FileTabDef) => {
+    (tab: FileViewDef) => {
       const idx = fileTabs.findIndex((t) => t.path === tab.path);
       if (idx === -1) return;
       const next = fileTabs.filter((_, i) => i !== idx);
       setFileTabs(next);
       if (typeof rightTab === "object" && "path" in rightTab && rightTab.path === tab.path)
-        setRightTab(next[Math.min(idx, next.length - 1)] ?? "log");
+        setRightTab(next[Math.min(idx, next.length - 1)] ?? "experiments");
     },
     [fileTabs, rightTab],
   );
+
+  // Drag the panel's left edge to resize; width persists across reloads.
+  const resizePanel = (e: React.PointerEvent) => {
+    e.preventDefault();
+    // Capture the pointer so the terminal/diff views under the cursor don't
+    // steal the drag, and suppress text selection for its duration.
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const prevUserSelect = document.body.style.userSelect;
+    document.body.style.userSelect = "none";
+    const onMove = (ev: PointerEvent) => {
+      const w = Math.round(window.innerWidth - ev.clientX - PANEL_MARGIN);
+      const max = panelMaxWidth();
+      // Drag past the usable max by the slop threshold → snap to fullscreen.
+      // Dragging back below it drops out of fullscreen to the clamped width.
+      if (w > max + FULLSCREEN_SNAP_SLOP) {
+        setPanelMax(true);
+        return;
+      }
+      setPanelMax(false);
+      const clamped = Math.min(Math.max(w, PANEL_MIN_WIDTH), max);
+      setPanelWidth(clamped);
+      try {
+        localStorage.setItem(PANEL_WIDTH_KEY, String(clamped));
+      } catch {
+        // best-effort persistence
+      }
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      document.body.style.userSelect = prevUserSelect;
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+  };
 
   const onProjectCreated = (project: Project) => {
     setProjects((cur) => (cur ? upsert(cur, project) : [project]));
@@ -247,28 +333,15 @@ export default function App() {
 
   const railHeader = (
     <RailHeader
-      onHome={() => {
-        setHomeOpen(true);
-        setSettingsOpen(false);
-      }}
-      onOpenSettings={() => {
-        setSettingsTab("harnesses");
-        setSettingsOpen(true);
-      }}
+      projectName={projects.find((p) => p.id === projectId)?.name ?? ""}
+      onHome={() => setHomeOpen(true)}
+      onCollapse={() => setRailOpen(false)}
     />
   );
 
   return (
     <div className="app">
-      {settingsOpen ? (
-        <SettingsPage
-          hfSettings={hfSettings}
-          hfLoading={hfLoading}
-          onHfSettingsUpdated={setHfSettings}
-          onClose={() => setSettingsOpen(false)}
-          initialTab={settingsTab}
-        />
-      ) : homeOpen ? (
+      {homeOpen ? (
         <ProjectsHome
           projects={projects}
           onOpen={(id) => {
@@ -284,37 +357,58 @@ export default function App() {
           <ChatPanel
             projectId={projectId}
             railHeader={railHeader}
-            onOpenFile={openFileTab}
-            onOpenCompute={() => {
-              setSettingsTab("compute");
-              setSettingsOpen(true);
+            railOpen={railOpen}
+            onShowRail={() => setRailOpen(true)}
+            mainView={mainView}
+            onSelectMainView={setMainView}
+            panelOpen={panelOpen}
+            onTogglePanel={() => {
+              if (panelOpen) setPanelMax(false);
+              setPanelOpen(!panelOpen);
             }}
-          />
+            onOpenFile={openFileTab}
+          >
+            {mainView === "artifacts" ? (
+              (() => {
+                const project = projects.find((p) => p.id === projectId);
+                return project ? (
+                  <ArtifactsTab
+                    project={project}
+                    artifacts={artifacts}
+                    onChanged={refreshArtifacts}
+                  />
+                ) : null;
+              })()
+            ) : mainView !== "chat" ? (
+              <SettingsView
+                tab={mainView}
+                hfSettings={hfSettings}
+                hfLoading={hfLoading}
+                onHfSettingsUpdated={setHfSettings}
+              />
+            ) : null}
+          </ChatPanel>
         )}
-        <div className="right-pane">
+        {mainView === "chat" && panelOpen && (
+        <aside
+          className={`right-pane floating-panel ${panelMax ? "max" : ""}`}
+          style={panelMax ? undefined : { width: panelWidth }}
+        >
+          {!panelMax && <div className="panel-resizer" onPointerDown={resizePanel} />}
           <div className="tabs">
             <div className="tab-strip">
               <button
-                className={`tab ${rightTab === "log" ? "active" : ""}`}
-                onClick={() => setRightTab("log")}
+                className={`tab ${rightTab === "experiments" ? "active" : ""}`}
+                onClick={() => setRightTab("experiments")}
               >
-                Log
-              </button>
-              <button
-                className={`tab ${rightTab === "artifacts" ? "active" : ""}`}
-                onClick={() => setRightTab("artifacts")}
-              >
-                Artifacts
-                {artifacts && artifacts.entries.length > 0 && (
-                  <span className="tab-count">{artifacts.entries.length}</span>
-                )}
+                Experiments
               </button>
               {expTabs.map((t) => {
                 const exp = experiments.find((e) => e.id === t.id);
                 return (
                   <ClosableTab
                     key={`${t.id}:${t.view}`}
-                    active={expTab !== null && sameTab(expTab, t)}
+                    active={expTab !== null && sameExpTab(expTab, t)}
                     label={exp ? exp.title || exp.slug : "…"}
                     icon={
                       t.view === "terminal" ? (
@@ -342,13 +436,31 @@ export default function App() {
                 />
               ))}
             </div>
-            <div style={{ fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" }}>
-              {projects.find((p) => p.id === projectId)?.name ?? ""}
+            <div className="panel-controls">
+              <button
+                className="icon-btn"
+                title={panelMax ? "Restore panel" : "Expand panel"}
+                aria-label={panelMax ? "Restore panel" : "Expand panel"}
+                onClick={() => setPanelMax((m) => !m)}
+              >
+                {panelMax ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              </button>
+              <button
+                className="icon-btn"
+                title="Close panel"
+                aria-label="Close panel"
+                onClick={() => {
+                  setPanelOpen(false);
+                  setPanelMax(false);
+                }}
+              >
+                <X size={14} />
+              </button>
             </div>
           </div>
-          {rightTab === "log" ? (
+          {rightTab === "experiments" ? (
             <div className="tab-body">
-              <div className="seg-float">
+              <div className="pane-toolbar">
                 <div className="seg">
                   <button
                     className={view === "tree" ? "active" : ""}
@@ -364,42 +476,31 @@ export default function App() {
                   </button>
                 </div>
               </div>
-              {view === "tree" ? (
-                <TreeView
-                  experiments={experiments}
-                  runs={runs}
-                  selectedId={selectedExpId}
-                  onSelect={(id) => {
-                    setSelectedRunId(null);
-                    setSelectedExpId(id);
-                  }}
-                  onOpenView={openExperimentTab}
-                />
-              ) : (
-                <RunsTable
-                  runs={runs}
-                  experiments={experiments}
-                  onOpen={(run) => {
-                    setSelectedRunId(run.id);
-                    openExperimentTab(run.experimentId, "terminal");
-                  }}
-                  onOpenChanges={(experimentId) => openExperimentTab(experimentId, "changes")}
-                  onCancel={(runId) => void cancelRun(runId).catch(() => {})}
-                />
-              )}
-            </div>
-          ) : rightTab === "artifacts" ? (
-            <div className="tab-body">
-              {(() => {
-                const project = projects.find((p) => p.id === projectId);
-                return project ? (
-                  <ArtifactsTab
-                    project={project}
-                    artifacts={artifacts}
-                    onChanged={refreshArtifacts}
+              <div className="pane-content">
+                {view === "tree" ? (
+                  <TreeView
+                    experiments={experiments}
+                    runs={runs}
+                    selectedId={selectedExpId}
+                    onSelect={(id) => {
+                      setSelectedRunId(null);
+                      setSelectedExpId(id);
+                    }}
+                    onOpenView={openExperimentTab}
                   />
-                ) : null;
-              })()}
+                ) : (
+                  <RunsTable
+                    runs={runs}
+                    experiments={experiments}
+                    onOpen={(run) => {
+                      setSelectedRunId(run.id);
+                      openExperimentTab(run.experimentId, "terminal");
+                    }}
+                    onOpenChanges={(experimentId) => openExperimentTab(experimentId, "changes")}
+                    onCancel={(runId) => void cancelRun(runId).catch(() => {})}
+                  />
+                )}
+              </div>
             </div>
           ) : fileTab ? (
             <div className="tab-body">
@@ -426,7 +527,8 @@ export default function App() {
               )}
             </div>
           )}
-        </div>
+        </aside>
+        )}
       </div>
       )}
     </div>

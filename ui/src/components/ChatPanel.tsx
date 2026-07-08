@@ -1,9 +1,8 @@
-import { ArrowUp, Cpu, Plus, X } from "lucide-react";
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { CornerDownLeft, FlaskConical, PanelLeft, Package, Plus, X } from "lucide-react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import {
   chatAttachmentUrl,
   createChatSession,
-  deleteChatSession,
   getChatMessages,
   getSkills,
   interruptChat,
@@ -18,7 +17,7 @@ import {
 } from "../api";
 import { onChatEvent } from "../events";
 import { Md } from "./Md";
-import { ClosableTab } from "./ClosableTab";
+import { SETTINGS_NAV, type SettingsTab } from "./SettingsPage";
 import { SkillMenu } from "./SkillMenu";
 import {
   defaultSelection,
@@ -221,7 +220,6 @@ function Message({
       .map((p) => (p.text!.startsWith("data:") ? p.text! : chatAttachmentUrl(p.text!)));
     return (
       <div className="msg-user">
-        <span className="eyebrow">You</span>
         {text}
         {images.length > 0 && (
           <div className="msg-images">
@@ -260,22 +258,35 @@ function Message({
 export function ChatPanel({
   projectId,
   railHeader,
+  railOpen,
+  onShowRail,
+  mainView,
+  onSelectMainView,
+  panelOpen,
+  onTogglePanel,
   onOpenFile,
-  onOpenCompute,
+  children,
 }: {
   projectId: string;
-  /** Brand + project switcher block rendered at the top of the agents rail. */
+  /** Back-to-projects + project name block rendered at the top of the rail. */
   railHeader?: React.ReactNode;
+  /** Whether the agents rail is showing (collapsed via its own header icon). */
+  railOpen: boolean;
+  /** Reopen the rail (from the chat header's sidebar icon). */
+  onShowRail: () => void;
+  /** What the middle pane shows: chat, artifacts, or a settings section. */
+  mainView: "chat" | "artifacts" | SettingsTab;
+  onSelectMainView: (view: "chat" | "artifacts" | SettingsTab) => void;
+  /** Whether the right panel is showing (toggled from the chat header). */
+  panelOpen: boolean;
+  onTogglePanel: () => void;
   /** Open a project file in the right pane (chat tool rows are clickable). */
   onOpenFile?: (path: string) => void;
-  /** Open Settings with the Compute tab active. */
-  onOpenCompute?: () => void;
+  /** Middle-pane content when a settings section is active (the SettingsView). */
+  children?: React.ReactNode;
 }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  // Sessions open as tabs in the chat header, in strip order. Selecting a
-  // session (rail or strip) opens a tab; closing one only removes it here.
-  const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
   // Pasted/dropped images waiting in the composer, as data URLs.
   const [attachments, setAttachments] = useState<{ dataUrl: string; mediaType: string }[]>([]);
@@ -345,7 +356,6 @@ export function ChatPanel({
   useEffect(() => {
     setSessions([]);
     setActiveId(null);
-    setOpenTabs([]);
     setDraft("");
     setAttachments([]);
     dispatch({ type: "reset" });
@@ -361,24 +371,6 @@ export function ChatPanel({
       })
       .catch(() => {});
   }, [projectId]);
-
-  // Whatever session becomes active always gets a tab — covers the initially
-  // auto-selected session and drafts that materialize on first send.
-  useEffect(() => {
-    if (!activeId) return;
-    setOpenTabs((prev) => (prev.includes(activeId) ? prev : [...prev, activeId]));
-  }, [activeId]);
-
-  const closeTab = useCallback(
-    (id: string) => {
-      const idx = openTabs.indexOf(id);
-      const next = openTabs.filter((t) => t !== id);
-      setOpenTabs(next);
-      // Closing the active tab falls back to a neighbor, else the draft page.
-      setActiveId((cur) => (cur === id ? (next[Math.min(idx, next.length - 1)] ?? null) : cur));
-    },
-    [openTabs],
-  );
 
   // Load message history when a session becomes active.
   useEffect(() => {
@@ -472,89 +464,118 @@ export function ChatPanel({
     if (activeId) void interruptChat(activeId);
   }
 
-  async function removeSession(id: string) {
-    await deleteChatSession(id).catch(() => false);
-    setSessions((cur) => cur.filter((s) => s.id !== id));
-    closeTab(id);
-  }
-
   const rail = (
-    <aside className="session-rail">
+    <aside className="session-rail floating-panel">
       {railHeader}
-      <div className="rail-header">
-        <button className="rail-compute-btn" title="Compute settings" onClick={onOpenCompute}>
-          Compute
-          <span style={{ flex: 1 }} />
-          <Cpu size={15} />
-        </button>
-      </div>
-      <div className="rail-body">
-        <button className="session-row new-session" onClick={() => setActiveId(null)}>
-          <span className="session-title">New session</span>
+      {/* Top nav: new session + the settings sections (shown in the middle pane). */}
+      <nav className="rail-nav">
+        <button
+          className="rail-nav-item"
+          onClick={() => {
+            setActiveId(null);
+            onSelectMainView("chat");
+          }}
+        >
           <Plus size={15} />
+          New session
         </button>
+        <button
+          className={`rail-nav-item ${mainView === "artifacts" ? "active" : ""}`}
+          onClick={() => onSelectMainView("artifacts")}
+        >
+          <Package size={15} />
+          Artifacts
+        </button>
+        {SETTINGS_NAV.map((item) => (
+          <button
+            key={item.id}
+            className={`rail-nav-item ${mainView === item.id ? "active" : ""}`}
+            onClick={() => onSelectMainView(item.id)}
+          >
+            {item.icon}
+            {item.label}
+          </button>
+        ))}
+      </nav>
+      <div className="rail-body">
+        <div className="rail-section-label">Recents</div>
         {sessions.map((s) => (
           <button
             key={s.id}
-            className={`session-row ${s.id === activeId ? "active" : ""}`}
+            className={`session-row ${s.id === activeId && mainView === "chat" ? "active" : ""}`}
             title={`${HARNESS_LABELS[s.harness]}${s.model ? ` · ${s.model}` : ""}`}
-            onClick={() => setActiveId(s.id)}
+            onClick={() => {
+              setActiveId(s.id);
+              onSelectMainView("chat");
+            }}
           >
-            {state.busySessions.has(s.id) && <span className="busy-dot" />}
+            <span className="session-dot">
+              {state.busySessions.has(s.id) && <span className="busy-dot" />}
+            </span>
             <span className="session-title">{s.title?.trim() || "Untitled"}</span>
             <span className="session-time">{relTime(s.updatedAt)}</span>
-            <span
-              className="del"
-              title="Delete session"
-              onClick={(e) => {
-                e.stopPropagation();
-                void removeSession(s.id);
-              }}
-            >
-              ×
-            </span>
           </button>
         ))}
       </div>
     </aside>
   );
 
+  // A settings section replaces the chat entirely (no chat header, no
+  // composer, no right panel) — only the rail-reopen affordance survives.
+  if (mainView !== "chat") {
+    return (
+      <>
+        {railOpen && rail}
+        <section className="chat-pane">
+          {!railOpen && (
+            <div className="chat-header">
+              <button
+                className="icon-btn"
+                title="Show sidebar"
+                aria-label="Show sidebar"
+                onClick={onShowRail}
+              >
+                <PanelLeft size={15} />
+              </button>
+            </div>
+          )}
+          <div className="settings-view-scroll">{children}</div>
+        </section>
+      </>
+    );
+  }
+
   return (
     <>
-      {rail}
+      {railOpen && rail}
       <section className="chat-pane">
-      {/* Header — browser-style tab strip of the open sessions. */}
+      {/* Header — session title on the left, right-pane view switchers on the
+          right, fading into the chat below (sessions live in the rail). */}
       <div className="chat-header">
-        <div className="tab-strip">
-          {openTabs.map((id) => {
-            const session = sessions.find((s) => s.id === id);
-            return (
-              <ClosableTab
-                key={id}
-                active={id === activeId}
-                label={session?.title?.trim() || "Untitled"}
-                icon={state.busySessions.has(id) ? <span className="busy-dot" /> : undefined}
-                onSelect={() => setActiveId(id)}
-                onClose={() => closeTab(id)}
-              />
-            );
-          })}
-          {/* Draft tab: the blank page has no session yet, so it can't be
-              closed — selecting any other tab discards it. */}
-          {activeId === null && (
-            <button className="tab closable active" onClick={() => {}}>
-              <span className="tab-label">New agent</span>
-            </button>
-          )}
+        {!railOpen && (
           <button
             className="icon-btn"
-            title="New agent"
-            aria-label="New agent"
-            onClick={() => setActiveId(null)}
+            title="Show sidebar"
+            aria-label="Show sidebar"
+            onClick={onShowRail}
           >
-            <Plus size={14} />
+            <PanelLeft size={15} />
           </button>
+        )}
+        <div
+          className="title"
+          title={activeSession ? activeSession.title?.trim() || "Untitled" : "New session"}
+        >
+          {activeSession ? activeSession.title?.trim() || "Untitled" : "New session"}
         </div>
+        <button
+          className={`icon-btn ${panelOpen ? "active" : ""}`}
+          title="Experiments"
+          aria-label="Experiments"
+          onClick={onTogglePanel}
+        >
+          <FlaskConical size={15} />
+        </button>
       </div>
 
       {messages.length === 0 && !busy ? (
@@ -678,7 +699,7 @@ export function ChatPanel({
                 onClick={() => void send()}
                 disabled={!draft.trim() && attachments.length === 0}
               >
-                <ArrowUp size={16} />
+                <CornerDownLeft size={16} />
               </button>
             )}
           </div>

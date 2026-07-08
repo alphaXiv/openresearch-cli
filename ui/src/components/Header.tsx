@@ -1,28 +1,33 @@
-import { Settings } from "lucide-react";
+import { ArrowLeft, PanelLeft } from "lucide-react";
 
-/** Brand row at the top of the agents rail (the old full-width header,
- *  folded into the left pane). Project switching lives on the home page. */
+/** Top row of the agents rail: back to the projects page + the current
+ *  project's name. Settings sections live in the rail nav below. */
 export function RailHeader({
+  projectName,
   onHome,
-  onOpenSettings,
+  onCollapse,
 }: {
+  projectName: string;
   onHome: () => void;
-  onOpenSettings: () => void;
+  /** Hide the rail (a matching reopen button lives in the chat header). */
+  onCollapse?: () => void;
 }) {
   return (
     <div className="rail-brand">
-      <button className="brand" onClick={onHome} title="Projects">
-        Open<span>Research</span>
+      <button className="brand" onClick={onHome} title="All projects">
+        <ArrowLeft size={15} />
+        <span className="brand-project">{projectName}</span>
       </button>
-      <span style={{ flex: 1 }} />
-      <button
-        className="icon-btn"
-        title="Settings"
-        aria-label="Settings"
-        onClick={onOpenSettings}
-      >
-        <Settings size={15} />
-      </button>
+      {onCollapse && (
+        <button
+          className="icon-btn"
+          title="Hide sidebar"
+          aria-label="Hide sidebar"
+          onClick={onCollapse}
+        >
+          <PanelLeft size={15} />
+        </button>
+      )}
     </div>
   );
 }

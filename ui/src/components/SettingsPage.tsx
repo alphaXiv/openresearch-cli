@@ -1,5 +1,4 @@
 import {
-  ArrowLeft,
   Blocks,
   Cpu,
   GitBranch,
@@ -44,10 +43,13 @@ type Tab = SettingsTab;
 // --- harnesses ---------------------------------------------------------------
 
 function harnessStatus(h: Harness): { cls: string; label: string } {
-  if (h.authenticated && (h.installed || h.id === "codex"))
-    return { cls: "ok", label: "Connected" };
-  if (h.installed) return { cls: "", label: "Not signed in" };
-  return { cls: "err", label: "Not detected" };
+  // Fully usable only when both the binary is on PATH and it's authenticated.
+  if (h.installed && h.authenticated) return { cls: "ok", label: "Connected" };
+  // Not installed — the same blocker whether or not there's saved auth: the
+  // CLI has to be installed before anything can run. Amber "action needed".
+  if (!h.installed) return { cls: "warn", label: "Not installed" };
+  // Installed but not signed in.
+  return { cls: "warn", label: "Not signed in" };
 }
 
 function AuthLabel({ h }: { h: Harness }) {
@@ -874,71 +876,48 @@ function GitTab() {
   );
 }
 
-// --- page ------------------------------------------------------------------------
+// --- embedded view -----------------------------------------------------------
 
-const NAV: { id: Tab; label: string; icon: React.ReactNode }[] = [
+/** Rail nav entries, one per settings section (rendered in the agents rail). */
+export const SETTINGS_NAV: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "harnesses", label: "Harnesses", icon: <Blocks size={15} /> },
   { id: "compute", label: "Compute", icon: <Cpu size={15} /> },
   { id: "environment", label: "Environment", icon: <SquareTerminal size={15} /> },
   { id: "git", label: "Git", icon: <GitBranch size={15} /> },
 ];
 
-export function SettingsPage({
+/** One settings section's content, shown in the middle pane in place of chat. */
+export function SettingsView({
+  tab,
   hfSettings,
   hfLoading,
   onHfSettingsUpdated,
-  onClose,
-  initialTab,
 }: {
+  tab: Tab;
   hfSettings: HfSettings | null;
   hfLoading: boolean;
   onHfSettingsUpdated: (settings: HfSettings) => void;
-  onClose: () => void;
-  initialTab?: SettingsTab;
 }) {
-  const [tab, setTab] = useState<Tab>(initialTab ?? "harnesses");
-
   return (
-    <div className="settings-page">
-      <div className="settings-topbar">
-        <button className="settings-back" onClick={onClose}>
-          <ArrowLeft size={15} /> Back
-        </button>
-      </div>
-      <div className="settings-body">
-        <nav className="settings-nav">
-          {NAV.map((item) => (
-            <button
-              key={item.id}
-              className={tab === item.id ? "active" : ""}
-              onClick={() => setTab(item.id)}
-            >
-              {item.icon}
-              {item.label}
-            </button>
-          ))}
-        </nav>
-        <main className="settings-main">
-          {tab === "harnesses" && <HarnessesTab />}
-          {tab === "compute" && (
-            <ComputeTab
-              hfSettings={hfSettings}
-              hfLoading={hfLoading}
-              onHfSettingsUpdated={onHfSettingsUpdated}
-            />
-          )}
-          {tab === "environment" && (
-            <>
-              <h1>Environment</h1>
-              <p className="settings-sub">
-                Variables available to runs and the research agent (API keys, tokens).
-              </p>
-              <EnvVarsSection />
-            </>
-          )}
-          {tab === "git" && <GitTab />}
-        </main>
-      </div>
+    <div className="settings-view">
+      {tab === "harnesses" && <HarnessesTab />}
+      {tab === "compute" && (
+        <ComputeTab
+          hfSettings={hfSettings}
+          hfLoading={hfLoading}
+          onHfSettingsUpdated={onHfSettingsUpdated}
+        />
+      )}
+      {tab === "environment" && (
+        <>
+          <h1>Environment</h1>
+          <p className="settings-sub">
+            Variables available to runs and the research agent (API keys, tokens).
+          </p>
+          <EnvVarsSection />
+        </>
+      )}
+      {tab === "git" && <GitTab />}
     </div>
   );
 }
