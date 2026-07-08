@@ -2615,7 +2615,7 @@ select:focus {
   width: 320px;
 }
 .option-menu {
-  min-width: 130px;
+  min-width: 190px;
   padding: 6px;
 }
 /* Right-anchored menus (bottom-right controls) open toward the left edge. */
@@ -2623,6 +2623,23 @@ select:focus {
 .option-menu.align-right {
   left: auto;
   right: 0;
+}
+/* "· Default" note on the pinned default row. */
+.option-default {
+  color: var(--muted);
+  font-weight: 400;
+}
+/* Separator under the default row. */
+.option-sep {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--border-variant);
+}
+/* Right-aligned 1-based number hints in the mode menu. */
+.option-num {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 .model-menu input {
   border: none;

@@ -169,31 +169,47 @@ export function ModelPicker({
 }
 
 /** A compact single-axis dropdown (permission mode or reasoning level). Renders
- * nothing when the harness advertises no choices for this axis. */
+ * nothing when the harness advertises no choices for this axis. Mirrors the
+ * Claude Code composer menu: a header, the current-default row pinned at top
+ * with a "· Default" note, then the full numbered list. */
 export function OptionPicker({
   choices,
   value,
-  fallbackLabel,
+  defaultId,
+  header,
   align = "left",
   variant = "pill",
   title,
+  numbered = false,
   onSelect,
 }: {
   choices: OptionChoice[];
   value: string | null;
-  /** Shown when nothing is selected yet. */
-  fallbackLabel?: string;
+  /** The harness's default id — pinned at top of the menu and used when
+   * `value` is null. */
+  defaultId?: string | null;
+  /** Uppercase group header (e.g. "Mode"). */
+  header?: string;
   align?: "left" | "right";
   /** `pill` = boxed (permission mode); `bare` = text-only (reasoning). */
   variant?: "pill" | "bare";
   title?: string;
+  /** Show 1-based number hints on the right (like the mode menu). */
+  numbered?: boolean;
   onSelect: (id: string) => void;
 }) {
   const { open, setOpen, ref } = usePopover();
   if (choices.length === 0) return null;
 
-  const current = choices.find((c) => c.id === value);
-  const label = current?.label ?? fallbackLabel ?? choices[0]?.label ?? "";
+  const effectiveId = value ?? defaultId ?? choices[0]?.id ?? null;
+  const current = choices.find((c) => c.id === effectiveId);
+  const defaultChoice = choices.find((c) => c.id === defaultId);
+  const label = current?.label ?? choices[0]?.label ?? "";
+
+  const choose = (id: string) => {
+    onSelect(id);
+    setOpen(false);
+  };
 
   return (
     <div className="option-picker" ref={ref}>
@@ -208,17 +224,26 @@ export function OptionPicker({
       </button>
       {open && (
         <div className={`option-menu ${align === "right" ? "align-right" : ""}`}>
-          {choices.map((c) => (
-            <button
-              key={c.id}
-              className="model-item"
-              onClick={() => {
-                onSelect(c.id);
-                setOpen(false);
-              }}
-            >
+          {header && <div className="model-group">{header}</div>}
+          {defaultChoice && (
+            <>
+              <button className="model-item" onClick={() => choose(defaultChoice.id)}>
+                <span>
+                  {defaultChoice.label} <span className="option-default">· Default</span>
+                </span>
+                {effectiveId === defaultChoice.id && <Check size={13} />}
+              </button>
+              <div className="option-sep" />
+            </>
+          )}
+          {choices.map((c, i) => (
+            <button key={c.id} className="model-item" onClick={() => choose(c.id)}>
               <span>{c.label}</span>
-              {c.id === (value ?? label) && current?.id === c.id && <Check size={13} />}
+              {effectiveId === c.id ? (
+                <Check size={13} />
+              ) : (
+                numbered && <span className="option-num">{i + 1}</span>
+              )}
             </button>
           ))}
         </div>

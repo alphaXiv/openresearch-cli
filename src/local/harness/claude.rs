@@ -18,7 +18,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use super::detect::{bin_version, find_on_path, nonempty_str, read_json, HarnessInfo};
-use super::options::{HarnessOptions, PermissionMode, ReasoningLevel};
+use super::options::{HarnessOptions, PermissionMode};
 use super::Harness;
 use crate::error::{anyhow, Result};
 use crate::local::chat::{prepare_env, TurnCtx, WirePart, WireToolState};
@@ -31,6 +31,16 @@ const CLAUDE_MODELS: [&str; 4] = [
     "claude-sonnet-5",
     "claude-opus-4-8",
     "claude-haiku-4-5",
+];
+
+/// Claude Code's `--effort` tiers (id == the CLI value). `xhigh`/`max` are
+/// Claude-specific — the reasoning vocabulary is per-harness, not global.
+const CLAUDE_EFFORT_LEVELS: [(&str, &str); 5] = [
+    ("low", "Low"),
+    ("medium", "Medium"),
+    ("high", "High"),
+    ("xhigh", "XHigh"),
+    ("max", "Max"),
 ];
 
 pub struct ClaudeCode;
@@ -103,23 +113,19 @@ impl Harness for ClaudeCode {
 
     fn options(&self) -> HarnessOptions {
         HarnessOptions::none()
+            // Matches the Claude Code composer's mode menu, Auto is the default.
             .with_permission_modes(
                 &[
-                    PermissionMode::Auto,
+                    PermissionMode::Ask,
+                    PermissionMode::AcceptEdits,
                     PermissionMode::Plan,
-                    PermissionMode::Default,
+                    PermissionMode::Auto,
                     PermissionMode::Bypass,
                 ],
                 PermissionMode::Auto,
             )
-            .with_reasoning_levels(
-                &[
-                    ReasoningLevel::Low,
-                    ReasoningLevel::Medium,
-                    ReasoningLevel::High,
-                ],
-                ReasoningLevel::High,
-            )
+            // Claude Code's `--effort` tiers (default `high` on current models).
+            .with_reasoning_levels(&CLAUDE_EFFORT_LEVELS, "high")
     }
 
     fn config_home(&self) -> Option<PathBuf> {
@@ -140,25 +146,22 @@ impl Harness for ClaudeCode {
     }
 }
 
-/// Wire mode → Claude Code's `--permission-mode` value. Defaults to `Auto`
-/// (acceptEdits) when the session hasn't picked one.
+/// Session mode → `--permission-mode` value. The wire id already equals the
+/// CLI value (see `PermissionMode::id`), so this only supplies the `Auto`
+/// default when the session hasn't picked one.
 fn claude_permission_mode(mode: Option<PermissionMode>) -> &'static str {
-    match mode.unwrap_or(PermissionMode::Auto) {
-        PermissionMode::Auto => "acceptEdits",
-        PermissionMode::Plan => "plan",
-        PermissionMode::Default => "default",
-        PermissionMode::Bypass => "bypassPermissions",
-    }
+    mode.unwrap_or(PermissionMode::Auto).id()
 }
 
-/// Reasoning level → Claude Code thinking keyword, prepended to the prompt.
-/// Claude escalates its thinking budget on these phrases; `Low` adds nothing.
-fn claude_thinking_directive(level: Option<ReasoningLevel>) -> Option<&'static str> {
-    match level.unwrap_or(ReasoningLevel::High) {
-        ReasoningLevel::Low => None,
-        ReasoningLevel::Medium => Some("think"),
-        ReasoningLevel::High => Some("think hard"),
-    }
+/// Session reasoning id → Claude Code `--effort` value. The composer only
+/// offers ids from `CLAUDE_EFFORT_LEVELS`, so an unrecognized/absent value just
+/// omits the flag and lets the CLI apply its own default (`high`).
+fn claude_effort(level: Option<&str>) -> Option<&str> {
+    let level = level?;
+    CLAUDE_EFFORT_LEVELS
+        .iter()
+        .any(|(id, _)| *id == level)
+        .then_some(level)
 }
 
 /// Claude's tool inputs are snake_case; the UI summarizes via `filePath`.
@@ -217,22 +220,20 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     if let Some(model) = &ctx.model {
         cmd.args(["--model", model]);
     }
+    // Reasoning level maps directly to Claude Code's `--effort` flag.
+    if let Some(effort) = claude_effort(ctx.reasoning_level.as_deref()) {
+        cmd.args(["--effort", effort]);
+    }
     if let Some(native_id) = &ctx.native_session_id {
         cmd.args(["--resume", native_id]);
     }
     prepare_env(&mut cmd);
 
-    // Reasoning level rides the prompt as a thinking directive Claude recognizes.
-    let prompt = match claude_thinking_directive(ctx.reasoning_level) {
-        Some(directive) => format!("{directive}.\n\n{}", ctx.text),
-        None => ctx.text.clone(),
-    };
-
     let mut child = cmd
         .spawn()
         .map_err(|e| anyhow!("Could not spawn {}: {}", bin.display(), e))?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(prompt.as_bytes()).await?;
+        stdin.write_all(ctx.text.as_bytes()).await?;
         // Dropped here: EOF is what tells --print the prompt is complete.
     }
     let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;

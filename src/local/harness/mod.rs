@@ -32,7 +32,7 @@ use crate::error::{anyhow, Result};
 use crate::local::chat::TurnCtx;
 
 pub use detect::{HarnessInfo, ModelInfo};
-pub use options::{HarnessOptions, PermissionMode, ReasoningLevel};
+pub use options::{HarnessOptions, PermissionMode};
 
 /// One coding-agent integration. See the module docs for the capability model.
 #[async_trait]

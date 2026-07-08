@@ -330,10 +330,7 @@ impl ChatHost {
                 .permission_mode
                 .as_deref()
                 .and_then(crate::local::harness::PermissionMode::from_id),
-            reasoning_level: session
-                .reasoning_level
-                .as_deref()
-                .and_then(crate::local::harness::ReasoningLevel::from_id),
+            reasoning_level: session.reasoning_level.clone(),
             project,
             text: turn_text,
             assistant: WireMessage {
@@ -429,8 +426,9 @@ pub struct TurnCtx {
     /// Effective permission mode for this turn (session value; harness applies
     /// its own default when `None`).
     pub permission_mode: Option<crate::local::harness::PermissionMode>,
-    /// Effective reasoning level for this turn (harness default when `None`).
-    pub reasoning_level: Option<crate::local::harness::ReasoningLevel>,
+    /// Effective reasoning-level wire id for this turn (harness-owned vocabulary;
+    /// the harness interprets it, e.g. Claude → `--effort`). Default when `None`.
+    pub reasoning_level: Option<String>,
     pub project: LocalProject,
     pub text: String,
     pub assistant: WireMessage,

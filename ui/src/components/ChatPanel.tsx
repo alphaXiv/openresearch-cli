@@ -708,9 +708,12 @@ export function ChatPanel({
             {/* Bottom-left: permission mode. */}
             <OptionPicker
               choices={opts?.permissionModes ?? []}
-              value={activeSelection?.permissionMode ?? opts?.defaultPermissionMode ?? null}
+              value={activeSelection?.permissionMode ?? null}
+              defaultId={opts?.defaultPermissionMode ?? null}
+              header="Mode"
               align="left"
               variant="pill"
+              numbered
               title="Permission mode for this chat"
               onSelect={setPermissionMode}
             />
@@ -719,7 +722,9 @@ export function ChatPanel({
             <ModelPicker value={selection} onSelect={selectModel} onHarnesses={setHarnesses} />
             <OptionPicker
               choices={opts?.reasoningLevels ?? []}
-              value={activeSelection?.reasoningLevel ?? opts?.defaultReasoningLevel ?? null}
+              value={activeSelection?.reasoningLevel ?? null}
+              defaultId={opts?.defaultReasoningLevel ?? null}
+              header="Reasoning"
               align="right"
               variant="bare"
               title="Reasoning level for this chat"

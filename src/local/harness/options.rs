@@ -1,47 +1,57 @@
 //! Cross-harness turn options — the permission mode and reasoning level a chat
-//! session runs under. These are the shared vocabulary the UI toggles speak;
-//! each harness advertises which values it supports (`options()`) and maps the
+//! session runs under. These are the vocabulary the UI toggles speak; each
+//! harness advertises which values it supports (`options()`) and maps the
 //! chosen value onto its own CLI (in its `run_turn`).
 //!
-//! The wire ids are stable, harness-agnostic strings (`"auto"`, `"high"`). A
-//! harness that doesn't support a given axis simply lists no options for it,
-//! and the composer hides that control.
+//! Permission mode is a *shared* enum: the concept (ask / accept-edits / plan /
+//! auto / bypass) maps across harnesses. Reasoning level is deliberately NOT
+//! shared — Claude's tiers (`low`…`max`) and Codex's (`low`/`medium`/`high`)
+//! differ, so each harness owns its own list of `OptionChoice`s and interprets
+//! the chosen id itself. A harness that doesn't support an axis lists nothing
+//! for it, and the composer hides that control.
 
 use serde::{Deserialize, Serialize};
 
-/// How much the harness should defer to the user before acting. Mirrors Claude
-/// Code's `--permission-mode`; other harnesses map the nearest equivalent.
+/// How much the harness should defer to the user before acting. Values mirror
+/// Claude Code's `--permission-mode` exactly (choices: `default`, `acceptEdits`,
+/// `plan`, `auto`, `bypassPermissions`); other harnesses map the nearest
+/// equivalent. `auto` is a distinct mode from `acceptEdits`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionMode {
+    /// Prompt for every action. (`default`)
+    Ask,
     /// Auto-accept file edits; still prompt for other tools. (`acceptEdits`)
-    Auto,
+    AcceptEdits,
     /// Read/plan only — propose without executing. (`plan`)
     Plan,
-    /// Normal prompting for everything. (`default`)
-    Default,
+    /// Claude Code's default balanced auto mode. (`auto`)
+    Auto,
     /// No prompts at all. (`bypassPermissions`)
     Bypass,
 }
 
 impl PermissionMode {
-    /// The stable wire id (what the UI stores and sends).
+    /// The stable wire id (what the UI stores and sends). Matches Claude Code's
+    /// `--permission-mode` value so no per-harness remap is needed for Claude.
     pub fn id(self) -> &'static str {
         match self {
-            PermissionMode::Auto => "auto",
+            PermissionMode::Ask => "default",
+            PermissionMode::AcceptEdits => "acceptEdits",
             PermissionMode::Plan => "plan",
-            PermissionMode::Default => "default",
-            PermissionMode::Bypass => "bypass",
+            PermissionMode::Auto => "auto",
+            PermissionMode::Bypass => "bypassPermissions",
         }
     }
 
-    /// Short label for the composer toggle.
+    /// Menu label (matches the Claude Code composer wording).
     pub fn label(self) -> &'static str {
         match self {
-            PermissionMode::Auto => "Auto",
-            PermissionMode::Plan => "Plan",
-            PermissionMode::Default => "Default",
-            PermissionMode::Bypass => "Bypass",
+            PermissionMode::Ask => "Ask permissions",
+            PermissionMode::AcceptEdits => "Accept edits",
+            PermissionMode::Plan => "Plan mode",
+            PermissionMode::Auto => "Auto mode",
+            PermissionMode::Bypass => "Bypass permissions",
         }
     }
 
@@ -49,53 +59,19 @@ impl PermissionMode {
     /// caller can apply its own default.
     pub fn from_id(id: &str) -> Option<Self> {
         match id {
-            "auto" => Some(PermissionMode::Auto),
+            "default" => Some(PermissionMode::Ask),
+            "acceptEdits" => Some(PermissionMode::AcceptEdits),
             "plan" => Some(PermissionMode::Plan),
-            "default" => Some(PermissionMode::Default),
-            "bypass" => Some(PermissionMode::Bypass),
+            "auto" => Some(PermissionMode::Auto),
+            "bypassPermissions" => Some(PermissionMode::Bypass),
             _ => None,
         }
     }
 }
 
-/// How much the model should think before answering. Portable across harnesses:
-/// Claude maps it to thinking keywords, Codex to `reasoning_effort`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ReasoningLevel {
-    Low,
-    Medium,
-    High,
-}
-
-impl ReasoningLevel {
-    pub fn id(self) -> &'static str {
-        match self {
-            ReasoningLevel::Low => "low",
-            ReasoningLevel::Medium => "medium",
-            ReasoningLevel::High => "high",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            ReasoningLevel::Low => "Low",
-            ReasoningLevel::Medium => "Medium",
-            ReasoningLevel::High => "High",
-        }
-    }
-
-    pub fn from_id(id: &str) -> Option<Self> {
-        match id {
-            "low" => Some(ReasoningLevel::Low),
-            "medium" => Some(ReasoningLevel::Medium),
-            "high" => Some(ReasoningLevel::High),
-            _ => None,
-        }
-    }
-}
-
-/// One selectable value in a composer toggle (id + human label).
+/// One selectable value in a composer toggle (id + human label). Ids are
+/// `&'static str` so both the shared `PermissionMode` and per-harness reasoning
+/// lists can produce them without allocation.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OptionChoice {
@@ -142,19 +118,20 @@ impl HarnessOptions {
         self
     }
 
+    /// Set the reasoning list from harness-owned `(id, label)` pairs. Unlike
+    /// permission modes, reasoning vocabulary isn't shared — Claude's `--effort`
+    /// tiers and Codex's `reasoning_effort` differ — so each harness passes its
+    /// own choices and interprets the chosen id in its `run_turn`.
     pub fn with_reasoning_levels(
         mut self,
-        levels: &[ReasoningLevel],
-        default: ReasoningLevel,
+        levels: &[(&'static str, &'static str)],
+        default: &'static str,
     ) -> Self {
         self.reasoning_levels = levels
             .iter()
-            .map(|l| OptionChoice {
-                id: l.id(),
-                label: l.label(),
-            })
+            .map(|(id, label)| OptionChoice { id, label })
             .collect();
-        self.default_reasoning_level = Some(default.id());
+        self.default_reasoning_level = Some(default);
         self
     }
 }
