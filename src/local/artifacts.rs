@@ -155,9 +155,7 @@ fn collect_tree(dir: &Path, rel_prefix: &str, seen: &mut usize) -> (Vec<Artifact
         };
         if md.is_dir() {
             let report_md = entry.path().join("report.md");
-            let report_title = report_md
-                .is_file()
-                .then(|| report_title(&report_md, &name));
+            let report_title = report_md.is_file().then(|| report_title(&report_md, &name));
             let (children, hit) = collect_tree(&entry.path(), &rel, seen);
             truncated |= hit;
             out.push(ArtifactEntry {
