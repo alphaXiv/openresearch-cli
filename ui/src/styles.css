@@ -1882,9 +1882,6 @@ select:focus {
   font-size: 11.5px;
   color: var(--subtext);
 }
-.artifact-file-row {
-  align-items: center;
-}
 .artifact-file-link {
   flex: 1;
   min-width: 0;
@@ -1894,7 +1891,7 @@ select:focus {
   color: var(--text);
   text-decoration: none;
 }
-.artifact-file-link:hover .report-row-title {
+.artifact-file-link:hover .artifact-tree-name {
   text-decoration: underline;
 }
 .artifact-thumb {
@@ -1915,33 +1912,55 @@ select:focus {
   font-family: var(--mono);
   font-size: 11.5px;
 }
-.report-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+.artifact-tree {
   border: 1px solid var(--border);
+  margin-top: 10px;
+  padding: 4px 0;
 }
-.report-list li + li {
-  border-top: 1px solid var(--border);
-}
-.report-row {
+.artifact-tree-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  width: 100%;
-  padding: 10px 12px;
-  text-align: left;
+  gap: 8px;
+  padding: 6px 12px;
   font-size: 13px;
 }
-.report-row:hover {
+.artifact-tree-row:hover {
   background: var(--surface);
 }
-.report-row-title {
-  font-weight: 600;
+.artifact-tree-row.clickable {
+  cursor: pointer;
+}
+.artifact-tree-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--muted);
+  transition: transform 0.12s ease;
+}
+.artifact-tree-chevron.open {
+  transform: rotate(90deg);
+}
+.artifact-tree-chevron.spacer {
+  visibility: hidden;
+}
+.artifact-tree-name {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.artifact-tree-name.report {
+  font-weight: 600;
+}
+.artifact-tree-del {
+  visibility: hidden;
+}
+.artifact-tree-row:hover .artifact-tree-del {
+  visibility: visible;
 }
 .report-date {
   font-size: 11px;
