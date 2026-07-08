@@ -38,13 +38,37 @@ Then write the review:
 - End with a short "start here" reading list of the 3-5 most load-bearing papers.
 "#;
 
-pub const CATALOG: &[Skill] = &[Skill {
-    name: "lit-review",
-    description: "Multi-hop literature review via alphaXiv search",
-    arg_hint: "<topic>",
-    template: LIT_REVIEW_TEMPLATE,
-    no_args: "(none given — ask the user what topic to review before searching)",
-}];
+const HF_TEMPLATE: &str = r#"Work with the Hugging Face Hub using the `hf` CLI.
+
+Task: {args}
+
+Setup — verify before anything else:
+1. `hf version` — if missing, install with `curl -LsSf https://hf.co/cli/install.sh | sh` (or `pip install -U "huggingface_hub[cli]"`), then re-check.
+2. `hf auth whoami` — HF_TOKEN is usually already in the environment (synced from the orx up settings). If unauthenticated, ask the user to add their token in the orx up settings (Hugging Face section) or run `hf auth login`.
+
+Using the CLI:
+- Discover flags with `hf --help` and `hf <command> --help`; don't guess.
+- Key families: `hf download` / `hf upload` (models, datasets, spaces), `hf jobs` (run compute on HF infra), `hf repo` (create/manage repos), `hf cache` (inspect/clean local cache).
+- Prefer `--repo-type dataset|space` flags over guessing repo id formats.
+- For anything destructive (deleting repos/files, overwriting), confirm with the user first.
+"#;
+
+pub const CATALOG: &[Skill] = &[
+    Skill {
+        name: "lit-review",
+        description: "Multi-hop literature review via alphaXiv search",
+        arg_hint: "<topic>",
+        template: LIT_REVIEW_TEMPLATE,
+        no_args: "(none given — ask the user what topic to review before searching)",
+    },
+    Skill {
+        name: "hf",
+        description: "Hugging Face Hub via the hf CLI (installs it if missing)",
+        arg_hint: "<task>",
+        template: HF_TEMPLATE,
+        no_args: "(none given — ask the user what they want to do on the Hugging Face Hub)",
+    },
+];
 
 /// Expand a leading `/name [args]` into the skill's full prompt. `None` when
 /// the text is not a known slash-skill (sent to the harness untouched).
@@ -74,6 +98,15 @@ mod tests {
     fn expands_bare_invocation_to_ask() {
         let out = expand("/lit-review").unwrap();
         assert!(out.contains("ask the user"));
+    }
+
+    #[test]
+    fn expands_hf_skill() {
+        let out = expand("/hf download llama-3 weights").unwrap();
+        assert!(out.contains("Task: download llama-3 weights"));
+        assert!(out.contains("hf version"));
+        let bare = expand("/hf").unwrap();
+        assert!(bare.contains("ask the user"));
     }
 
     #[test]
