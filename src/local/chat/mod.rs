@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, Mutex};
@@ -78,6 +79,73 @@ impl WirePart {
             ..Self::text(id, text)
         }
     }
+
+    /// `text` holds the attachment file name (served via /api/chat/attachments).
+    pub fn image(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            kind: "image".into(),
+            ..Self::text(id, name)
+        }
+    }
+}
+
+// --- image attachments ---------------------------------------------------------
+
+/// Pasted image riding the send-message request.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageAttachment {
+    pub media_type: String,
+    pub data_base64: String,
+}
+
+pub fn attachments_dir() -> Result<std::path::PathBuf> {
+    let dir = crate::store::data_dir().join("chat-attachments");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| anyhow!("Could not create {}: {}", dir.display(), e))?;
+    Ok(dir)
+}
+
+fn image_ext(media_type: &str) -> Option<&'static str> {
+    match media_type {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+pub fn attachment_content_type(name: &str) -> &'static str {
+    match name.rsplit('.').next() {
+        Some("png") => "image/png",
+        Some("jpg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Decode pasted images to the attachments dir; returns (file name, abs path).
+fn save_images(images: &[ImageAttachment]) -> Result<Vec<(String, std::path::PathBuf)>> {
+    if images.is_empty() {
+        return Ok(Vec::new());
+    }
+    let dir = attachments_dir()?;
+    let mut saved = Vec::new();
+    for img in images {
+        let ext = image_ext(&img.media_type)
+            .ok_or_else(|| anyhow!("unsupported image type: {}", img.media_type))?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(img.data_base64.as_bytes())
+            .map_err(|e| anyhow!("bad image data: {e}"))?;
+        let name = format!("img_{}.{ext}", uuid::Uuid::new_v4());
+        let path = dir.join(&name);
+        std::fs::write(&path, bytes)
+            .map_err(|e| anyhow!("Could not write {}: {}", path.display(), e))?;
+        saved.push((name, path));
+    }
+    Ok(saved)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -159,6 +227,7 @@ impl ChatHost {
         session_id: &str,
         text: String,
         model_override: Option<String>,
+        images: Vec<ImageAttachment>,
     ) -> Result<()> {
         if self.is_busy(session_id).await {
             return Err(anyhow!("session is busy — interrupt it first"));
@@ -177,19 +246,30 @@ impl ChatHost {
                 session.model = Some(model);
             }
         }
+        let saved_images = save_images(&images)?;
         if session.title.is_none() {
             let title: String = text.lines().next().unwrap_or("").chars().take(64).collect();
-            let title = title.trim().to_string();
+            let mut title = title.trim().to_string();
+            if title.is_empty() && !saved_images.is_empty() {
+                title = "Image".into();
+            }
             if !title.is_empty() {
                 store.set_chat_session_title(&session.id, &title)?;
                 session.title = Some(title);
             }
         }
 
+        let mut parts = Vec::new();
+        if !text.is_empty() {
+            parts.push(WirePart::text("p0", text.clone()));
+        }
+        for (i, (name, _)) in saved_images.iter().enumerate() {
+            parts.push(WirePart::image(format!("img{i}"), name.clone()));
+        }
         let user_msg = WireMessage {
             id: format!("msg_{}", uuid::Uuid::new_v4()),
             role: "user".into(),
-            parts: vec![WirePart::text("p0", text.clone())],
+            parts,
             created_at: now_ms(),
         };
         store.upsert_chat_message(&StoredChatMessage {
@@ -212,6 +292,23 @@ impl ChatHost {
             json!({ "sessionId": session.id, "busy": true }),
         );
 
+        // Slash-skills: the transcript keeps the `/name` the user typed; the
+        // harness gets the expanded prompt.
+        let mut turn_text = crate::local::skills::expand(&text).unwrap_or(text);
+        // Harnesses take plain text; pasted images ride as on-disk paths every
+        // CLI can open with its own image-viewing tool.
+        if !saved_images.is_empty() {
+            let list: String = saved_images
+                .iter()
+                .map(|(_, path)| format!("- {}\n", path.display()))
+                .collect();
+            turn_text.push_str(&format!(
+                "\n\n<attached-images>\nThe user attached {} image(s) to this message, saved at:\n{list}\
+                 View them with your image-reading tool (Read / view_image) before responding.\n</attached-images>",
+                saved_images.len()
+            ));
+        }
+
         let sid = session.id.clone();
         let mut ctx = TurnCtx {
             host: self.clone(),
@@ -220,7 +317,7 @@ impl ChatHost {
             native_session_id: session.native_session_id.clone(),
             model: session.model.clone(),
             project,
-            text,
+            text: turn_text,
             assistant: WireMessage {
                 id: format!("msg_{}", uuid::Uuid::new_v4()),
                 role: "assistant".into(),
@@ -464,7 +561,7 @@ pub async fn watch_runs(chat: Arc<ChatHost>) {
                  continue the loop.",
                 run.id, run.status, run.project_id, run.id
             );
-            if let Err(err) = chat.send_message(&session.id, text, None).await {
+            if let Err(err) = chat.send_message(&session.id, text, None, Vec::new()).await {
                 eprintln!("orx up: run watcher: {err}");
             }
         }

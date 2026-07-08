@@ -370,6 +370,15 @@ export const getHarnesses = (refresh = false) =>
     (r) => r.harnesses,
   );
 
+/** Slash-skill offered in the composer's `/` dropdown; expanded server-side. */
+export interface SkillInfo {
+  name: string;
+  description: string;
+  argHint: string;
+}
+
+export const getSkills = () => get<{ skills: SkillInfo[] }>("/api/skills").then((r) => r.skills);
+
 /** "openai/gpt-5.5" → "GPT 5.5", "anthropic/claude-opus-4-8" → "Opus 4.8". */
 export function modelLabel(id: string): string {
   const last = (id.split("/").pop() ?? id).replace(/^~/, "").replace(/^claude-/, "");
@@ -441,9 +450,23 @@ export const getChatMessages = (sessionId: string) =>
     (r) => r.messages,
   );
 
+/** Pasted image riding a chat message. */
+export interface ChatImageAttachment {
+  mediaType: string;
+  dataBase64: string;
+}
+
+/** Image parts store a server-minted file name; this is where it's served. */
+export const chatAttachmentUrl = (name: string) =>
+  `/api/chat/attachments/${encodeURIComponent(name)}`;
+
 /** Returns immediately; the turn streams over /api/events (chat.* events). */
-export const sendChatMessage = (sessionId: string, text: string, model?: string | null) =>
-  post<{ ok: boolean }>(`/api/chat/sessions/${sessionId}/message`, { text, model });
+export const sendChatMessage = (
+  sessionId: string,
+  text: string,
+  model?: string | null,
+  images?: ChatImageAttachment[],
+) => post<{ ok: boolean }>(`/api/chat/sessions/${sessionId}/message`, { text, model, images });
 
 export const interruptChat = (sessionId: string) =>
   post<{ ok: boolean }>(`/api/chat/sessions/${sessionId}/interrupt`);

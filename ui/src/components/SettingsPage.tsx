@@ -38,7 +38,8 @@ import {
 } from "../api";
 import { GitTokenForm } from "./GitTokenForm";
 
-type Tab = "harnesses" | "compute" | "environment" | "git";
+export type SettingsTab = "harnesses" | "compute" | "environment" | "git";
+type Tab = SettingsTab;
 
 // --- harnesses ---------------------------------------------------------------
 
@@ -887,13 +888,15 @@ export function SettingsPage({
   hfLoading,
   onHfSettingsUpdated,
   onClose,
+  initialTab,
 }: {
   hfSettings: HfSettings | null;
   hfLoading: boolean;
   onHfSettingsUpdated: (settings: HfSettings) => void;
   onClose: () => void;
+  initialTab?: SettingsTab;
 }) {
-  const [tab, setTab] = useState<Tab>("harnesses");
+  const [tab, setTab] = useState<Tab>(initialTab ?? "harnesses");
 
   return (
     <div className="settings-page">

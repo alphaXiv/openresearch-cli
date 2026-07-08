@@ -1,20 +1,25 @@
-import { ArrowUp, Plus, X } from "lucide-react";
+import { ArrowUp, Cpu, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import {
+  chatAttachmentUrl,
   createChatSession,
   deleteChatSession,
   getChatMessages,
+  getSkills,
   interruptChat,
   listChatSessions,
   sendChatMessage,
+  type ChatImageAttachment,
   type ChatMessage,
   type ChatPart,
   type ChatSession,
   type Harness,
+  type SkillInfo,
 } from "../api";
 import { onChatEvent } from "../events";
 import { Md } from "./Md";
 import { ClosableTab } from "./ClosableTab";
+import { SkillMenu } from "./SkillMenu";
 import {
   defaultSelection,
   HARNESS_LABELS,
@@ -44,7 +49,7 @@ type Action =
   | { type: "reset" }
   | { type: "seed"; sessionId: string; messages: ChatMessage[] }
   | { type: "upsertMessage"; sessionId: string; message: ChatMessage }
-  | { type: "optimisticUser"; sessionId: string; text: string }
+  | { type: "optimisticUser"; sessionId: string; text: string; imageUrls: string[] }
   | { type: "busy"; sessionId: string; busy: boolean }
   | { type: "seedBusy"; sessions: string[] };
 
@@ -84,10 +89,17 @@ function reducer(state: ChatState, action: Action): ChatState {
     }
     case "optimisticUser": {
       const list = state.messagesBySession[action.sessionId] ?? [];
+      const parts: ChatPart[] = action.text
+        ? [{ id: "p0", type: "text", text: action.text }]
+        : [];
+      // Data URLs stand in until the server's copy arrives with file names.
+      action.imageUrls.forEach((url, i) =>
+        parts.push({ id: `img${i}`, type: "image", text: url }),
+      );
       const msg: ChatMessage = {
         id: `${LOCAL_PREFIX}${Date.now()}`,
         role: "user",
-        parts: [{ id: "p0", type: "text", text: action.text }],
+        parts,
         createdAt: Date.now(),
       };
       return {
@@ -203,10 +215,23 @@ function Message({
       .filter((p) => p.type === "text")
       .map((p) => p.text ?? "")
       .join("\n");
+    // Optimistic parts carry a data URL; server parts carry a file name.
+    const images = message.parts
+      .filter((p) => p.type === "image" && p.text)
+      .map((p) => (p.text!.startsWith("data:") ? p.text! : chatAttachmentUrl(p.text!)));
     return (
       <div className="msg-user">
         <span className="eyebrow">You</span>
         {text}
+        {images.length > 0 && (
+          <div className="msg-images">
+            {images.map((src, i) => (
+              <a key={i} href={src} target="_blank" rel="noreferrer">
+                <img src={src} alt="attachment" />
+              </a>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -236,12 +261,15 @@ export function ChatPanel({
   projectId,
   railHeader,
   onOpenFile,
+  onOpenCompute,
 }: {
   projectId: string;
   /** Brand + project switcher block rendered at the top of the agents rail. */
   railHeader?: React.ReactNode;
   /** Open a project file in the right pane (chat tool rows are clickable). */
   onOpenFile?: (path: string) => void;
+  /** Open Settings with the Compute tab active. */
+  onOpenCompute?: () => void;
 }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -249,6 +277,8 @@ export function ChatPanel({
   // session (rail or strip) opens a tab; closing one only removes it here.
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
+  // Pasted/dropped images waiting in the composer, as data URLs.
+  const [attachments, setAttachments] = useState<{ dataUrl: string; mediaType: string }[]>([]);
   const [state, dispatch] = useReducer(reducer, {
     messagesBySession: {},
     busySessions: new Set<string>(),
@@ -258,6 +288,53 @@ export function ChatPanel({
   const loadedSessions = useRef(new Set<string>());
   const threadRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+
+  // Slash-skills: menu state is derived from the draft — open while the first
+  // token is an unfinished `/command` (no whitespace yet) with matches.
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [skillIdx, setSkillIdx] = useState(0);
+  const [skillMenuDismissed, setSkillMenuDismissed] = useState(false);
+  useEffect(() => {
+    getSkills().then(setSkills).catch(() => {});
+  }, []);
+  const slashToken = draft.startsWith("/") && !/\s/.test(draft) ? draft.slice(1) : null;
+  const skillMatches =
+    slashToken !== null && !skillMenuDismissed
+      ? skills.filter((s) => s.name.startsWith(slashToken.toLowerCase()))
+      : [];
+  const skillMenuOpen = skillMatches.length > 0;
+  const activeSkillIdx = Math.min(skillIdx, Math.max(0, skillMatches.length - 1));
+  useEffect(() => setSkillIdx(0), [slashToken]);
+
+  function pickSkill(skill: SkillInfo) {
+    setDraft(`/${skill.name} `);
+    composerRef.current?.focus();
+  }
+
+  /** Queue image files (clipboard paste or drag-drop) as composer attachments. */
+  function addImageFiles(files: File[]) {
+    for (const file of files) {
+      if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        setAttachments((cur) => [...cur, { dataUrl, mediaType: file.type }]);
+      };
+      reader.readAsDataURL(file);
+    }
+  }
+
+  function onComposerPaste(e: React.ClipboardEvent) {
+    const files = Array.from(e.clipboardData.items)
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((f): f is File => f !== null);
+    if (files.length > 0) {
+      e.preventDefault();
+      addImageFiles(files);
+    }
+  }
 
   const selectModel = (next: ModelSelection) => {
     setSelection(next);
@@ -270,6 +347,7 @@ export function ChatPanel({
     setActiveId(null);
     setOpenTabs([]);
     setDraft("");
+    setAttachments([]);
     dispatch({ type: "reset" });
     loadedSessions.current = new Set();
     listChatSessions(projectId)
@@ -347,10 +425,12 @@ export function ChatPanel({
 
   async function send() {
     const text = draft.trim();
-    if (!text || busy) return;
+    const pending = attachments;
+    if ((!text && pending.length === 0) || busy) return;
     const effective = selection ?? defaultSelection(harnesses);
     if (!effective && !activeId) return; // no harness available at all
     setDraft("");
+    setAttachments([]);
     let sid = activeId;
     try {
       if (!sid) {
@@ -364,7 +444,12 @@ export function ChatPanel({
         setActiveId(session.id);
         sid = session.id;
       }
-      dispatch({ type: "optimisticUser", sessionId: sid, text });
+      dispatch({
+        type: "optimisticUser",
+        sessionId: sid,
+        text,
+        imageUrls: pending.map((a) => a.dataUrl),
+      });
       dispatch({ type: "busy", sessionId: sid, busy: true });
       stickToBottom.current = true;
       const current = sessions.find((s) => s.id === sid);
@@ -373,7 +458,11 @@ export function ChatPanel({
         effective && (!current || current.harness === effective.harness)
           ? effective.model
           : undefined;
-      await sendChatMessage(sid, text, model);
+      const images: ChatImageAttachment[] = pending.map((a) => ({
+        mediaType: a.mediaType,
+        dataBase64: a.dataUrl.slice(a.dataUrl.indexOf(",") + 1),
+      }));
+      await sendChatMessage(sid, text, model, images.length ? images : undefined);
     } catch {
       if (sid) dispatch({ type: "busy", sessionId: sid, busy: false });
     }
@@ -393,22 +482,17 @@ export function ChatPanel({
     <aside className="session-rail">
       {railHeader}
       <div className="rail-header">
-        <div className="rail-title">Agents</div>
-        <button
-          className="icon-btn"
-          title="New session"
-          aria-label="New session"
-          onClick={() => setActiveId(null)}
-        >
-          <Plus size={14} />
+        <button className="rail-compute-btn" title="Compute settings" onClick={onOpenCompute}>
+          Compute
+          <span style={{ flex: 1 }} />
+          <Cpu size={15} />
         </button>
       </div>
       <div className="rail-body">
-        {sessions.length === 0 && (
-          <div style={{ padding: "10px 12px", fontSize: 12, color: "var(--muted)" }}>
-            No sessions yet
-          </div>
-        )}
+        <button className="session-row new-session" onClick={() => setActiveId(null)}>
+          <span className="session-title">New session</span>
+          <Plus size={15} />
+        </button>
         {sessions.map((s) => (
           <button
             key={s.id}
@@ -506,16 +590,73 @@ export function ChatPanel({
 
       <div className="composer">
         <div className="composer-box">
+          {skillMenuOpen && (
+            <SkillMenu
+              skills={skillMatches}
+              activeIndex={activeSkillIdx}
+              onPick={pickSkill}
+              onHover={setSkillIdx}
+            />
+          )}
+          {attachments.length > 0 && (
+            <div className="composer-attachments">
+              {attachments.map((a, i) => (
+                <div key={i} className="attachment-thumb">
+                  <img src={a.dataUrl} alt="pasted" />
+                  <button
+                    title="Remove image"
+                    aria-label="Remove image"
+                    onClick={() => setAttachments((cur) => cur.filter((_, j) => j !== i))}
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <textarea
+            ref={composerRef}
             value={draft}
             placeholder={
               activeSession
                 ? `Message ${HARNESS_LABELS[activeSession.harness]}…`
-                : "Ask the research agent…"
+                : "Ask the research agent… ( / for skills)"
             }
             rows={2}
-            onChange={(e) => setDraft(e.target.value)}
+            onPaste={onComposerPaste}
+            onDragOver={(e) => {
+              if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+            }}
+            onDrop={(e) => {
+              if (e.dataTransfer.files.length === 0) return;
+              e.preventDefault();
+              addImageFiles(Array.from(e.dataTransfer.files));
+            }}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              setSkillMenuDismissed(false);
+            }}
             onKeyDown={(e) => {
+              if (skillMenuOpen) {
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                  e.preventDefault();
+                  const delta = e.key === "ArrowDown" ? 1 : -1;
+                  setSkillIdx(
+                    (activeSkillIdx + delta + skillMatches.length) % skillMatches.length,
+                  );
+                  return;
+                }
+                if (e.key === "Enter" || e.key === "Tab") {
+                  e.preventDefault();
+                  pickSkill(skillMatches[activeSkillIdx]);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setSkillMenuDismissed(true);
+                  return;
+                }
+              }
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 void send();
@@ -535,7 +676,7 @@ export function ChatPanel({
                 title="Send"
                 aria-label="Send"
                 onClick={() => void send()}
-                disabled={!draft.trim()}
+                disabled={!draft.trim() && attachments.length === 0}
               >
                 <ArrowUp size={16} />
               </button>

@@ -275,7 +275,9 @@ select:focus {
   align-items: center;
   gap: 4px;
   height: 48px;
-  padding: 0 8px;
+  /* 12px left text inset + ~14px icon right edge — keep in step with
+     .rail-compute-btn and .new-session below. */
+  padding: 0 8px 0 12px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -428,7 +430,6 @@ select:focus {
   align-items: center;
   gap: 8px;
   height: 48px;
-  padding: 0 12px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -440,6 +441,21 @@ select:focus {
   white-space: nowrap;
   font-size: 13px;
   font-weight: 700;
+}
+.session-rail .rail-compute-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 14px 6px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--subtext);
+}
+.session-rail .rail-compute-btn:hover {
+  color: var(--text);
+  background: var(--surface);
 }
 .session-rail .rail-body {
   flex: 1;
@@ -661,6 +677,12 @@ select:focus {
 .session-row .del:hover {
   color: var(--accent-red);
 }
+.session-row.new-session {
+  padding-right: 14px;
+}
+.session-row.new-session svg {
+  flex-shrink: 0;
+}
 
 .chat-thread {
   flex: 1;
@@ -723,6 +745,19 @@ select:focus {
   color: var(--muted);
   margin-bottom: 4px;
   white-space: nowrap;
+}
+.msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.msg-images img {
+  max-width: 220px;
+  max-height: 160px;
+  border: 1px solid var(--border-variant);
+  border-radius: 4px;
+  display: block;
 }
 
 .msg-assistant {
@@ -838,6 +873,7 @@ select:focus {
   flex-shrink: 0;
 }
 .composer-box {
+  position: relative; /* anchors the slash-skill menu */
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
@@ -855,6 +891,44 @@ select:focus {
   font-size: 13px;
   min-height: 42px;
   max-height: 180px;
+}
+/* pasted images waiting to be sent */
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px 0;
+}
+.attachment-thumb {
+  position: relative;
+}
+.attachment-thumb img {
+  width: 52px;
+  height: 52px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: block;
+}
+.attachment-thumb button {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+.attachment-thumb button:hover {
+  background: var(--text);
+  color: var(--base);
 }
 .composer-actions {
   display: flex;
@@ -1885,18 +1959,6 @@ select:focus {
   gap: 10px;
   margin-bottom: 12px;
 }
-.report-view-title {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  font-size: 13px;
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .report-md {
   max-width: 720px;
 }
@@ -2199,7 +2261,8 @@ select:focus {
   padding: 10px 16px;
   flex-shrink: 0;
 }
-.settings-back {
+.settings-back,
+.report-back {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -2209,7 +2272,8 @@ select:focus {
   padding: 4px 8px;
   border-radius: 6px;
 }
-.settings-back:hover {
+.settings-back:hover,
+.report-back:hover {
   color: var(--text);
   background: var(--surface);
 }
@@ -2464,6 +2528,46 @@ select:focus {
   padding: 4px 8px 8px;
   font-size: 11px;
   color: var(--muted);
+}
+
+/* ---- composer slash-skill menu ---- */
+
+.skill-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  min-width: 340px;
+  max-width: 100%;
+  padding: 6px;
+  background: var(--base);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  z-index: 50;
+  overflow: hidden;
+}
+.skill-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 8px;
+  border-radius: 6px;
+}
+.skill-item.active {
+  background: var(--surface);
+}
+.skill-item .skill-name {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.skill-item .skill-hint {
+  color: var(--muted);
+}
+.skill-item .skill-desc {
+  font-size: 11px;
+  color: var(--subtext);
 }
 
 /* --- file viewer (right-pane tab opened from chat tool rows) ------------- */
