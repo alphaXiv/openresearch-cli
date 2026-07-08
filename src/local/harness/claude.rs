@@ -21,7 +21,9 @@ use super::detect::{bin_version, find_on_path, nonempty_str, read_json, HarnessI
 use super::options::{HarnessOptions, PermissionMode};
 use super::Harness;
 use crate::error::{anyhow, Result};
-use crate::local::chat::{prepare_env, TurnCtx, WirePart, WireToolState};
+use crate::local::chat::{
+    prepare_env, TurnCtx, WirePart, WirePrompt, WireQuestionOption, WireToolState,
+};
 use crate::local::opencode::ensure_playbook;
 
 /// Each harness runs directly (its own CLI, the user's own login), so its
@@ -164,6 +166,97 @@ fn claude_effort(level: Option<&str>) -> Option<&str> {
         .then_some(level)
 }
 
+/// ExitPlanMode → a `plan` prompt (its `input.plan` is the proposed markdown).
+fn plan_prompt(name: &str, input: Option<&Value>) -> Option<WirePrompt> {
+    if name != "ExitPlanMode" {
+        return None;
+    }
+    let plan = input
+        .and_then(|i| i.get("plan"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    Some(WirePrompt {
+        kind: "plan".into(),
+        resolved: false,
+        plan: Some(plan),
+        tool: None,
+        tool_input: None,
+        question: None,
+        header: None,
+        options: Vec::new(),
+        multi_select: false,
+    })
+}
+
+/// AskUserQuestion → a `question` prompt. Claude's schema is
+/// `{questions: [{question, header, options: [{label, description}], multiSelect}]}`;
+/// we surface the first question (the composer answers one at a time).
+fn question_prompt(name: &str, input: Option<&Value>) -> Option<WirePrompt> {
+    if name != "AskUserQuestion" {
+        return None;
+    }
+    let q = input
+        .and_then(|i| i.get("questions"))
+        .and_then(Value::as_array)
+        .and_then(|qs| qs.first())?;
+    let options = q
+        .get("options")
+        .and_then(Value::as_array)
+        .map(|opts| {
+            opts.iter()
+                .filter_map(|o| {
+                    Some(WireQuestionOption {
+                        label: o.get("label").and_then(Value::as_str)?.to_string(),
+                        description: o
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(WirePrompt {
+        kind: "question".into(),
+        resolved: false,
+        plan: None,
+        tool: None,
+        tool_input: None,
+        question: q
+            .get("question")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        header: q.get("header").and_then(Value::as_str).map(str::to_string),
+        options,
+        multi_select: q
+            .get("multiSelect")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
+/// A blocked tool (from `result.permission_denials`) → a `permission` prompt.
+fn permission_prompt(denial: &Value) -> Option<WirePrompt> {
+    let tool = denial.get("tool_name").and_then(Value::as_str)?.to_string();
+    // ExitPlanMode / AskUserQuestion denials already rendered as their own plan
+    // / question cards (from the tool_use block); don't clobber them.
+    if tool == "ExitPlanMode" || tool == "AskUserQuestion" {
+        return None;
+    }
+    Some(WirePrompt {
+        kind: "permission".into(),
+        resolved: false,
+        plan: None,
+        tool: Some(tool),
+        tool_input: denial.get("tool_input").cloned(),
+        question: None,
+        header: None,
+        options: Vec::new(),
+        multi_select: false,
+    })
+}
+
 /// Claude's tool inputs are snake_case; the UI summarizes via `filePath`.
 fn normalize_input(input: &Value) -> Value {
     let mut input = input.clone();
@@ -205,11 +298,10 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
         "--verbose",
         "--permission-mode",
         claude_permission_mode(ctx.permission_mode),
-        // Headless --print can't answer it (auto-dismissed); parity with the
-        // opencode config's `question: false`.
-        "--disallowed-tools",
-        "AskUserQuestion",
     ])
+    // AskUserQuestion and ExitPlanMode are now surfaced to the user as
+    // interactive cards (see plan_prompt / question_prompt) instead of being
+    // disallowed; the turn ends on them and the answer resumes the session.
     .arg("--append-system-prompt-file")
     .arg(&playbook)
     .current_dir(&repo)
@@ -279,22 +371,32 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                                 .and_then(Value::as_str)
                                 .unwrap_or(&format!("{mid}-{i}"))
                                 .to_string();
-                            ctx.upsert_part(WirePart {
-                                id,
-                                kind: "tool".into(),
-                                text: None,
-                                tool: block
-                                    .get("name")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_string),
-                                state: Some(WireToolState {
-                                    status: "running".into(),
-                                    input: block.get("input").map(normalize_input),
-                                    output: None,
-                                    error: None,
-                                    title: None,
-                                }),
-                            });
+                            let name = block.get("name").and_then(Value::as_str).unwrap_or("");
+                            let input = block.get("input");
+                            // ExitPlanMode / AskUserQuestion surface as interactive
+                            // prompt cards instead of plain tool rows; the CLI
+                            // ends the turn on them (headless can't answer inline),
+                            // and the user's choice resumes the session.
+                            if let Some(prompt) =
+                                plan_prompt(name, input).or_else(|| question_prompt(name, input))
+                            {
+                                ctx.upsert_part(WirePart::prompt(id, prompt));
+                            } else {
+                                ctx.upsert_part(WirePart {
+                                    id,
+                                    kind: "tool".into(),
+                                    text: None,
+                                    tool: Some(name.to_string()),
+                                    state: Some(WireToolState {
+                                        status: "running".into(),
+                                        input: input.map(normalize_input),
+                                        output: None,
+                                        error: None,
+                                        title: None,
+                                    }),
+                                    prompt: None,
+                                });
+                            }
                         }
                         _ => {}
                     }
@@ -339,8 +441,28 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                 if let Some(sid) = event.get("session_id").and_then(Value::as_str) {
                     ctx.set_native_session_id(sid);
                 }
+                // Tools the CLI blocked this turn become permission cards. Keyed
+                // by the tool_use_id so they upsert over the pending tool row.
+                if let Some(denials) = event.get("permission_denials").and_then(Value::as_array) {
+                    for denial in denials {
+                        if let Some(prompt) = permission_prompt(denial) {
+                            let id = denial
+                                .get("tool_use_id")
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                                .unwrap_or_else(|| format!("perm-{}", ctx.assistant.parts.len()));
+                            ctx.upsert_part(WirePart::prompt(id, prompt));
+                        }
+                    }
+                }
                 let subtype = event.get("subtype").and_then(Value::as_str).unwrap_or("");
-                if subtype != "success" {
+                // A plan turn ends by *denying* ExitPlanMode — that's the pause
+                // point, not an error. Only surface genuine failures.
+                let denied_only = event
+                    .get("permission_denials")
+                    .and_then(Value::as_array)
+                    .is_some_and(|d| !d.is_empty());
+                if subtype != "success" && !denied_only {
                     let detail = event
                         .get("result")
                         .and_then(Value::as_str)

@@ -152,6 +152,7 @@ fn router(state: AppState) -> Router {
         .route("/api/chat/sessions/{id}/messages", get(chat_messages))
         .route("/api/chat/sessions/{id}/message", post(send_chat_message))
         .route("/api/chat/sessions/{id}/interrupt", post(interrupt_chat))
+        .route("/api/chat/sessions/{id}/respond", post(respond_chat))
         .route("/api/chat/attachments/{name}", get(chat_attachment))
         .route("/api/agent/status", get(agent_status))
         .fallback(spa)
@@ -1517,6 +1518,45 @@ async fn chat_attachment(Path(name): Path<String>) -> std::result::Result<Respon
 
 async fn interrupt_chat(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
     state.chat.interrupt(&id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RespondReq {
+    prompt_id: String,
+    #[serde(default = "default_true")]
+    approve: bool,
+    #[serde(default)]
+    resume_mode: Option<String>,
+    #[serde(default)]
+    answers: Vec<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Answer an interactive prompt (plan / permission / question) on a session.
+async fn respond_chat(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RespondReq>,
+) -> ApiResult {
+    state
+        .chat
+        .respond(local::chat::PromptAnswer {
+            session_id: id,
+            prompt_id: req.prompt_id,
+            approve: req.approve,
+            resume_mode: req.resume_mode,
+            answers: req.answers,
+            note: req.note,
+        })
+        .await
+        .map_err(bad_request)?;
     Ok(Json(json!({ "ok": true })))
 }
 

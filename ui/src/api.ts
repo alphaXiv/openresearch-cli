@@ -420,12 +420,31 @@ export interface ChatToolState {
   title?: string;
 }
 
+export interface ChatQuestionOption {
+  label: string;
+  description?: string;
+}
+
+/** An interactive request the user acts on before the harness continues. */
+export interface ChatPrompt {
+  kind: "plan" | "permission" | "question";
+  resolved: boolean;
+  plan?: string;
+  tool?: string;
+  toolInput?: Record<string, unknown>;
+  question?: string;
+  header?: string;
+  options?: ChatQuestionOption[];
+  multiSelect?: boolean;
+}
+
 export interface ChatPart {
   id: string;
-  type: string; // text | reasoning | tool
+  type: string; // text | reasoning | tool | prompt
   text?: string;
   tool?: string;
   state?: ChatToolState;
+  prompt?: ChatPrompt;
 }
 
 export interface ChatMessage {
@@ -504,6 +523,20 @@ export const sendChatMessage = (
 
 export const interruptChat = (sessionId: string) =>
   post<{ ok: boolean }>(`/api/chat/sessions/${sessionId}/interrupt`);
+
+/** Answer an interactive prompt (plan / permission / question) on a session. */
+export interface PromptAnswer {
+  promptId: string;
+  approve?: boolean;
+  /** Permission mode to resume under (plan/permission approval). */
+  resumeMode?: string;
+  /** Chosen option labels (questions). */
+  answers?: string[];
+  note?: string;
+}
+
+export const respondChat = (sessionId: string, answer: PromptAnswer) =>
+  post<{ ok: boolean }>(`/api/chat/sessions/${sessionId}/respond`, answer);
 
 // --- helpers shared across views --------------------------------------------
 

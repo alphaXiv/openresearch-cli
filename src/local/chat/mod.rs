@@ -42,18 +42,61 @@ pub struct WireToolState {
     pub title: Option<String>,
 }
 
+/// One option in an AskUserQuestion prompt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireQuestionOption {
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// An interactive request the user must act on before the harness continues.
+/// Harness-agnostic: Claude's ExitPlanMode / denials / AskUserQuestion and
+/// Codex's approvals all normalize into these three kinds. The UI renders a card
+/// and the answer resumes the session (see `ChatHost::respond`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WirePrompt {
+    /// `plan` | `permission` | `question`.
+    pub kind: String,
+    /// Whether this prompt has been answered (answered cards render read-only).
+    #[serde(default)]
+    pub resolved: bool,
+    /// plan: the proposed plan markdown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    /// permission: the tool the harness was blocked from using, + its input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_input: Option<Value>,
+    /// question: the prompt text + selectable options.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub options: Vec<WireQuestionOption>,
+    #[serde(default)]
+    pub multi_select: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WirePart {
     pub id: String,
     #[serde(rename = "type")]
-    pub kind: String, // text | reasoning | tool
+    pub kind: String, // text | reasoning | tool | prompt
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<WireToolState>,
+    /// Present only on `prompt` parts — the interactive request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<WirePrompt>,
 }
 
 impl WirePart {
@@ -64,6 +107,7 @@ impl WirePart {
             text: Some(text.into()),
             tool: None,
             state: None,
+            prompt: None,
         }
     }
 
@@ -79,6 +123,18 @@ impl WirePart {
         Self {
             kind: "image".into(),
             ..Self::text(id, name)
+        }
+    }
+
+    /// An interactive prompt part (plan / permission / question).
+    pub fn prompt(id: impl Into<String>, prompt: WirePrompt) -> Self {
+        Self {
+            id: id.into(),
+            kind: "prompt".into(),
+            text: None,
+            tool: None,
+            state: None,
+            prompt: Some(prompt),
         }
     }
 }
@@ -399,10 +455,147 @@ impl ChatHost {
         Ok(())
     }
 
+    /// Answer an interactive prompt (plan / permission / question) and resume
+    /// the session. The prompt part is marked resolved in the transcript, then
+    /// a synthesized follow-up message continues the turn — for plan/permission
+    /// approvals with the caller's chosen permission mode.
+    pub async fn respond(self: &Arc<Self>, req: PromptAnswer) -> Result<()> {
+        if self.is_busy(&req.session_id).await {
+            return Err(anyhow!("session is busy — interrupt it first"));
+        }
+        // Mark the matching prompt part resolved so the card renders read-only.
+        let (found, kind) = mark_prompt_resolved(&req.session_id, &req.prompt_id)?;
+        if !found {
+            return Err(anyhow!("prompt not found"));
+        }
+
+        // Rejections just close the card — nothing to resume.
+        if !req.approve && kind != "question" {
+            self.emit(
+                "chat.session",
+                json!({ "session": session_json(
+                    &Store::open()?.get_chat_session(&req.session_id)?
+                        .ok_or_else(|| anyhow!("session not found"))?,
+                    false,
+                ) }),
+            );
+            return Ok(());
+        }
+
+        let (text, mode) = synthesize_resume(&kind, &req);
+        let overrides = TurnOverrides {
+            model: None,
+            permission_mode: mode,
+            reasoning_level: None,
+        };
+        self.send_message(&req.session_id, text, overrides, Vec::new())
+            .await
+    }
+
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
         let _ = self.interrupt(session_id).await;
         Store::open()?.delete_chat_session(session_id)?;
         Ok(())
+    }
+}
+
+/// A user's answer to an interactive prompt.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptAnswer {
+    pub session_id: String,
+    pub prompt_id: String,
+    /// Approve (proceed) vs reject (dismiss). For questions, always true.
+    #[serde(default = "default_true")]
+    pub approve: bool,
+    /// For plan/permission approval: the permission mode to resume under
+    /// (e.g. `"auto"`, `"acceptEdits"`). None keeps the session's mode.
+    #[serde(default)]
+    pub resume_mode: Option<String>,
+    /// For questions: the chosen option labels.
+    #[serde(default)]
+    pub answers: Vec<String>,
+    /// Optional freeform note the user added (plan refinement / extra context).
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Flip the `resolved` flag on the prompt part with `prompt_id` in the session's
+/// last assistant message. Returns (found, prompt-kind).
+fn mark_prompt_resolved(session_id: &str, prompt_id: &str) -> Result<(bool, String)> {
+    let store = Store::open()?;
+    for msg in store.list_chat_messages(session_id)?.iter().rev() {
+        if msg.role != "assistant" {
+            continue;
+        }
+        let mut parts: Vec<WirePart> = serde_json::from_str(&msg.parts_json).unwrap_or_default();
+        if let Some(part) = parts
+            .iter_mut()
+            .find(|p| p.id == prompt_id && p.prompt.is_some())
+        {
+            let kind = part
+                .prompt
+                .as_ref()
+                .map(|p| p.kind.clone())
+                .unwrap_or_default();
+            if let Some(prompt) = part.prompt.as_mut() {
+                prompt.resolved = true;
+            }
+            store.upsert_chat_message(&StoredChatMessage {
+                id: msg.id.clone(),
+                session_id: session_id.to_string(),
+                role: msg.role.clone(),
+                parts_json: serde_json::to_string(&parts)?,
+                created_at: msg.created_at,
+            })?;
+            return Ok((true, kind));
+        }
+    }
+    Ok((false, String::new()))
+}
+
+/// The follow-up message + resume mode for an approved prompt.
+fn synthesize_resume(kind: &str, req: &PromptAnswer) -> (String, Option<String>) {
+    let note = req.note.as_deref().filter(|s| !s.trim().is_empty());
+    match kind {
+        "plan" if req.approve => {
+            let mut text = "The user approved the plan. Proceed with implementing it.".to_string();
+            if let Some(note) = note {
+                text.push_str(&format!("\n\nAdditional guidance: {note}"));
+            }
+            // Approving a plan means leaving plan mode; default to `auto`.
+            (
+                text,
+                req.resume_mode.clone().or_else(|| Some("auto".into())),
+            )
+        }
+        "plan" => {
+            // "Keep planning" — stay in plan mode with the refinement.
+            let text = note
+                .map(|n| format!("Keep refining the plan: {n}"))
+                .unwrap_or_else(|| "Please revise the plan.".to_string());
+            (text, Some("plan".into()))
+        }
+        "permission" => {
+            let text = "The user approved that action. Continue.".to_string();
+            (text, req.resume_mode.clone())
+        }
+        // question (or anything else): feed the selection back as the user's reply.
+        _ => {
+            let mut text = if req.answers.is_empty() {
+                note.unwrap_or("").to_string()
+            } else {
+                req.answers.join(", ")
+            };
+            if let (false, Some(note)) = (req.answers.is_empty(), note) {
+                text.push_str(&format!("\n\n{note}"));
+            }
+            (text, None)
+        }
     }
 }
 
@@ -496,6 +689,7 @@ impl TurnCtx {
                 error: Some(message),
                 title: None,
             }),
+            prompt: None,
         });
     }
 

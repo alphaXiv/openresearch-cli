@@ -7,12 +7,15 @@ import {
   getSkills,
   interruptChat,
   listChatSessions,
+  respondChat,
   sendChatMessage,
   type ChatImageAttachment,
   type ChatMessage,
   type ChatPart,
+  type ChatPrompt,
   type ChatSession,
   type Harness,
+  type PromptAnswer,
   type SkillInfo,
 } from "../api";
 import { onChatEvent } from "../events";
@@ -203,12 +206,130 @@ function ToolRow({ part, onOpenFile }: { part: ChatPart; onOpenFile?: (path: str
   );
 }
 
+/** Interactive card for a plan / permission / question prompt. Approving (or
+ * answering) resumes the session; the card renders read-only once resolved. */
+function PromptCard({
+  part,
+  onRespond,
+  onOpenFile,
+}: {
+  part: ChatPart;
+  onRespond?: (answer: PromptAnswer) => void;
+  onOpenFile?: (path: string) => void;
+}) {
+  const p = part.prompt as ChatPrompt;
+  const [picked, setPicked] = useState<string[]>([]);
+  const done = p.resolved || !onRespond;
+
+  const respond = (answer: Omit<PromptAnswer, "promptId">) =>
+    onRespond?.({ promptId: part.id, ...answer });
+
+  if (p.kind === "plan") {
+    return (
+      <div className={`prompt-card plan ${done ? "resolved" : ""}`}>
+        <div className="prompt-head">Proposed plan</div>
+        <div className="prompt-plan">
+          <Md text={p.plan ?? ""} onOpenFile={onOpenFile} />
+        </div>
+        {done ? (
+          <div className="prompt-resolved">Resolved</div>
+        ) : (
+          <div className="prompt-actions">
+            <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "acceptEdits" })}>
+              Approve &amp; auto-accept edits
+            </button>
+            <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "default" })}>
+              Approve &amp; ask each step
+            </button>
+            <button className="btn-ghost" onClick={() => respond({ approve: false })}>
+              Keep planning
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (p.kind === "permission") {
+    const summary =
+      (typeof p.toolInput?.command === "string" && p.toolInput.command) ||
+      (typeof p.toolInput?.filePath === "string" && p.toolInput.filePath) ||
+      "";
+    return (
+      <div className={`prompt-card permission ${done ? "resolved" : ""}`}>
+        <div className="prompt-head">
+          Permission needed: <code>{p.tool}</code>
+        </div>
+        {summary && <div className="prompt-sub">{summary}</div>}
+        {done ? (
+          <div className="prompt-resolved">Resolved</div>
+        ) : (
+          <div className="prompt-actions">
+            <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "acceptEdits" })}>
+              Allow
+            </button>
+            <button className="btn-ghost" onClick={() => respond({ approve: false })}>
+              Deny
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // question
+  const toggle = (label: string) =>
+    setPicked((cur) =>
+      p.multiSelect
+        ? cur.includes(label)
+          ? cur.filter((l) => l !== label)
+          : [...cur, label]
+        : [label],
+    );
+  return (
+    <div className={`prompt-card question ${done ? "resolved" : ""}`}>
+      {p.header && <div className="prompt-head">{p.header}</div>}
+      {p.question && <div className="prompt-q">{p.question}</div>}
+      <div className="prompt-options">
+        {(p.options ?? []).map((o) => {
+          const sel = picked.includes(o.label);
+          return (
+            <button
+              key={o.label}
+              className={`prompt-option ${sel ? "sel" : ""}`}
+              disabled={done}
+              onClick={() => (done ? undefined : p.multiSelect ? toggle(o.label) : respond({ answers: [o.label] }))}
+            >
+              <span className="prompt-option-label">{o.label}</span>
+              {o.description && <span className="prompt-option-desc">{o.description}</span>}
+            </button>
+          );
+        })}
+      </div>
+      {p.multiSelect && !done && (
+        <div className="prompt-actions">
+          <button
+            className="btn-primary"
+            disabled={picked.length === 0}
+            onClick={() => respond({ answers: picked })}
+          >
+            Submit
+          </button>
+        </div>
+      )}
+      {done && <div className="prompt-resolved">Resolved</div>}
+    </div>
+  );
+}
+
 function Message({
   message,
   onOpenFile,
+  onRespond,
 }: {
   message: ChatMessage;
   onOpenFile?: (path: string) => void;
+  onRespond?: (answer: PromptAnswer) => void;
 }) {
   if (message.role === "user") {
     const text = message.parts
@@ -248,6 +369,15 @@ function Message({
           );
         if (part.type === "tool")
           return <ToolRow key={part.id} part={part} onOpenFile={onOpenFile} />;
+        if (part.type === "prompt" && part.prompt)
+          return (
+            <PromptCard
+              key={part.id}
+              part={part}
+              onRespond={onRespond}
+              onOpenFile={onOpenFile}
+            />
+          );
         return null;
       })}
     </div>
@@ -484,6 +614,15 @@ export function ChatPanel({
     if (activeId) void interruptChat(activeId);
   }
 
+  function respond(answer: PromptAnswer) {
+    if (!activeId) return;
+    // The resumed turn streams over SSE; optimistically mark busy.
+    dispatch({ type: "busy", sessionId: activeId, busy: true });
+    void respondChat(activeId, answer).catch(() => {
+      if (activeId) dispatch({ type: "busy", sessionId: activeId, busy: false });
+    });
+  }
+
   const rail = (
     <aside className="session-rail floating-panel">
       {railHeader}
@@ -619,7 +758,7 @@ export function ChatPanel({
           }}
         >
           {messages.map((m) => (
-            <Message key={m.id} message={m} onOpenFile={onOpenFile} />
+            <Message key={m.id} message={m} onOpenFile={onOpenFile} onRespond={respond} />
           ))}
           {busy && (
             <div className="working">

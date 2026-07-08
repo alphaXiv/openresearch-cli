@@ -933,6 +933,133 @@ select:focus {
   background: var(--base);
 }
 
+/* ---- interactive prompt cards (plan / permission / question) ---- */
+.prompt-card {
+  margin: 8px 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-bright);
+  overflow: hidden;
+}
+.prompt-card.plan {
+  border-color: var(--accent-blue);
+}
+.prompt-card.permission {
+  border-color: var(--accent-amber);
+}
+.prompt-card.resolved {
+  opacity: 0.7;
+}
+.prompt-head {
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  border-bottom: 1px solid var(--border-variant);
+}
+.prompt-head code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--primary);
+}
+.prompt-sub {
+  padding: 8px 14px 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--subtext);
+  word-break: break-word;
+}
+.prompt-plan {
+  padding: 4px 14px;
+  max-height: 340px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+.prompt-q {
+  padding: 12px 14px 4px;
+  font-size: 13.5px;
+  color: var(--text);
+}
+.prompt-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 14px;
+}
+.prompt-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--base);
+  cursor: pointer;
+}
+.prompt-option:hover:not(:disabled) {
+  border-color: var(--primary);
+  background: var(--primary-subtle);
+}
+.prompt-option.sel {
+  border-color: var(--primary);
+  background: var(--primary-subtle);
+}
+.prompt-option:disabled {
+  cursor: default;
+}
+.prompt-option-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.prompt-option-desc {
+  font-size: 11.5px;
+  color: var(--subtext);
+}
+.prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border-variant);
+}
+.prompt-resolved {
+  padding: 8px 14px;
+  font-size: 11.5px;
+  color: var(--muted);
+  border-top: 1px solid var(--border-variant);
+}
+.btn-primary {
+  padding: 7px 13px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--primary);
+  border-radius: 7px;
+}
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.btn-ghost {
+  padding: 7px 13px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--subtext);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--base);
+}
+.btn-ghost:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
 .working {
   display: flex;
   align-items: center;

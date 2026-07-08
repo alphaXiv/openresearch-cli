@@ -145,6 +145,7 @@ fn to_wire_part(part: &Value) -> Option<WirePart> {
             text: part.get("text").and_then(Value::as_str).map(str::to_string),
             tool: None,
             state: None,
+            prompt: None,
         }),
         "tool" => {
             let state = part.get("state");
@@ -173,6 +174,7 @@ fn to_wire_part(part: &Value) -> Option<WirePart> {
                         .and_then(Value::as_str)
                         .map(str::to_string),
                 }),
+                prompt: None,
             })
         }
         _ => None,

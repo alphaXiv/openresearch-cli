@@ -244,6 +244,7 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                         error: None,
                         title: None,
                     }),
+                    prompt: None,
                 });
             }
             "exec_command_end" => {
@@ -332,6 +333,7 @@ fn handle_item(ctx: &mut TurnCtx, item: &Value, next_id: &mut impl FnMut(&str) -
                     error: None,
                     title: None,
                 }),
+                prompt: None,
             });
         }
         _ => {}
