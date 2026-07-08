@@ -8,10 +8,6 @@
 //! normalized parts into the per-turn assistant message; every flush persists
 //! the message and broadcasts it as a `chat.message` SSE event.
 
-mod claude;
-mod codex;
-mod opencode;
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,8 +21,6 @@ use crate::error::{anyhow, Result};
 use crate::local::model::LocalProject;
 use crate::local::opencode::AgentHost;
 use crate::store::{now_ms, Store, StoredChatMessage, StoredChatSession};
-
-pub const HARNESS_IDS: [&str; 3] = ["claude-code", "codex", "opencode"];
 
 /// Min interval between mid-turn persist+broadcast flushes (streaming parts
 /// can update many times a second; the final flush is always unconditional).
@@ -327,11 +321,9 @@ impl ChatHost {
             last_flush: Instant::now() - FLUSH_INTERVAL,
         };
         let task = tokio::spawn(async move {
-            let result = match ctx.harness.as_str() {
-                "claude-code" => claude::run_turn(&mut ctx).await,
-                "codex" => codex::run_turn(&mut ctx).await,
-                "opencode" => opencode::run_turn(&mut ctx).await,
-                other => Err(anyhow!("unknown harness: {other}")),
+            let result = match crate::local::harness::chat_harness(&ctx.harness) {
+                Some(harness) => harness.run_turn(&mut ctx).await,
+                None => Err(anyhow!("unknown harness: {}", ctx.harness)),
             };
             if let Err(err) = result {
                 ctx.push_error(format!("{err}"));

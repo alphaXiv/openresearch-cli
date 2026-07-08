@@ -1,31 +1,111 @@
-//! Codex adapter: one `codex exec --json` process per turn, JSONL events on
-//! stdout, multi-turn via `codex exec resume <session>`. Uses the user's own
-//! `codex login` (ChatGPT plan or API key).
+//! Codex harness.
 //!
-//! Codex has no system-prompt flag and reads AGENTS.md (which the repo may
-//! own), so the playbook is injected as tagged context on the first turn —
-//! the display transcript stores only the user's text.
-//!
-//! The event stream parser accepts both JSONL shapes codex has shipped:
+//! Chat: one `codex exec --json` process per turn, JSONL events on stdout,
+//! multi-turn via `codex exec resume <session>`. Uses the user's own
+//! `codex login` (ChatGPT plan or API key). Codex has no system-prompt flag and
+//! reads AGENTS.md (which the repo may own), so the playbook is injected as
+//! tagged context on the first turn — the display transcript stores only the
+//! user's text. The event parser accepts both JSONL shapes codex has shipped:
 //! legacy `{"id", "msg": {"type": ...}}` and item-style `{"type":
 //! "item.completed", "item": {...}}`.
+//!
+//! Detection: `~/.codex/auth.json` holds either an `OPENAI_API_KEY` or an OAuth
+//! `id_token` JWT we decode (unverified) for the account email and plan.
 
 use std::path::PathBuf;
 use std::process::Stdio;
 
+use async_trait::async_trait;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+use super::detect::{
+    bin_version, find_on_path, jwt_payload, nonempty_str, read_json, title_case, HarnessInfo,
+};
+use super::Harness;
 use crate::error::{anyhow, Result};
 use crate::local::chat::{prepare_env, TurnCtx, WirePart, WireToolState};
 use crate::local::opencode::ensure_playbook;
 
+// ChatGPT-account codex rejects the -codex/-fast variants; these two are
+// what `codex exec -m` accepts (verified against codex-cli 0.142).
+const CODEX_MODELS: [&str; 2] = ["gpt-5.5", "gpt-5.4"];
+
+pub struct Codex;
+
 pub fn find_codex() -> Option<PathBuf> {
-    let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths)
-        .map(|dir| dir.join("codex"))
-        .find(|c| c.is_file())
+    find_on_path("codex")
+}
+
+#[async_trait]
+impl Harness for Codex {
+    fn id(&self) -> &'static str {
+        "codex"
+    }
+
+    fn name(&self) -> &'static str {
+        "Codex"
+    }
+
+    fn supports_chat(&self) -> bool {
+        true
+    }
+
+    async fn detect(&self) -> Option<HarnessInfo> {
+        let mut info = HarnessInfo::new(self.id(), self.name());
+        if let Some(bin) = find_codex() {
+            info.installed = true;
+            info.version = bin_version(&bin).await;
+            info.bin_path = Some(bin.to_string_lossy().into_owned());
+        }
+        if let Some(auth) =
+            dirs::home_dir().and_then(|h| read_json(h.join(".codex").join("auth.json")))
+        {
+            if nonempty_str(&auth, "OPENAI_API_KEY").is_some() {
+                info.authenticated = true;
+                info.auth_method = Some("apiKey");
+            }
+            if let Some(claims) = auth
+                .get("tokens")
+                .and_then(|t| t.get("id_token"))
+                .and_then(Value::as_str)
+                .and_then(jwt_payload)
+            {
+                info.authenticated = true;
+                info.auth_method = Some("oauth");
+                info.account = nonempty_str(&claims, "email");
+                if let Some(oa) = claims.get("https://api.openai.com/auth") {
+                    info.plan = nonempty_str(oa, "chatgpt_plan_type").map(|p| title_case(&p));
+                }
+            }
+        }
+
+        info.agent_ready = info.installed && info.authenticated;
+        if info.agent_ready {
+            info = info.with_models(&CODEX_MODELS);
+        } else {
+            info.agent_note =
+                Some("Install Codex and sign in (`codex login`) to chat with it here.".to_string());
+        }
+        Some(info)
+    }
+
+    async fn run_turn(&self, ctx: &mut TurnCtx) -> Result<()> {
+        run_turn(ctx).await
+    }
+
+    fn config_home(&self) -> Option<PathBuf> {
+        Some(dirs::home_dir()?.join(".codex"))
+    }
+
+    fn skill_target(&self) -> Option<PathBuf> {
+        Some(self.config_home()?.join("prompts").join("orx.md"))
+    }
+
+    fn skill_shim(&self) -> Option<&'static str> {
+        Some(super::CODEX_PROMPT)
+    }
 }
 
 fn command_string(v: &Value) -> String {
@@ -40,7 +120,7 @@ fn command_string(v: &Value) -> String {
     }
 }
 
-pub async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
+async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     let bin = find_codex().ok_or_else(|| {
         anyhow!("codex not found on PATH — install Codex and run `codex login` first")
     })?;
@@ -66,7 +146,7 @@ pub async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     .current_dir(&repo)
     .stdin(Stdio::null())
     .stdout(Stdio::piped())
-    .stderr(Stdio::from(super::harness_log("codex")?))
+    .stderr(Stdio::from(crate::local::chat::harness_log("codex")?))
     .kill_on_drop(true);
     if let Some(model) = &ctx.model {
         cmd.args(["-m", model]);

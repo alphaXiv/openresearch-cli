@@ -1,19 +1,138 @@
-//! OpenCode adapter: talks to a lazily spawned `opencode serve` child (the
-//! `AgentHost` the up server shares). serve is opencode's first-party
-//! embedding surface — HTTP on loopback is just this adapter's transport,
-//! never exposed to the browser.
+//! OpenCode harness.
 //!
+//! Chat: talks to a lazily spawned `opencode serve` child (the `AgentHost` the
+//! up server shares). serve is opencode's first-party embedding surface; HTTP
+//! on loopback is just this adapter's transport, never exposed to the browser.
 //! A turn = subscribe to the global `/event` SSE stream, POST the message
 //! (which resolves when the turn ends), and translate this session's part
 //! events into wire parts as they stream.
+//!
+//! Detection: opencode's `auth.json` is `{provider: {type}}`; the signed-in
+//! providers are its account line, and `opencode models` is the model list.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
+use std::time::Duration;
 
+use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::{json, Value};
 
+use super::detect::{bin_version, read_json, HarnessInfo};
+use super::Harness;
 use crate::error::{anyhow, Result};
 use crate::local::chat::{TurnCtx, WirePart, WireToolState};
+use crate::local::opencode::find_opencode;
+
+pub struct OpenCode;
+
+#[async_trait]
+impl Harness for OpenCode {
+    fn id(&self) -> &'static str {
+        "opencode"
+    }
+
+    fn name(&self) -> &'static str {
+        "OpenCode"
+    }
+
+    fn supports_chat(&self) -> bool {
+        true
+    }
+
+    async fn detect(&self) -> Option<HarnessInfo> {
+        let mut info = HarnessInfo::new(self.id(), self.name());
+        let mut models = Vec::new();
+        if let Ok(bin) = find_opencode() {
+            info.installed = true;
+            info.version = bin_version(&bin).await;
+            models = opencode_models(&bin).await;
+            info.bin_path = Some(bin.to_string_lossy().into_owned());
+        }
+        let providers = opencode_providers();
+        if !providers.is_empty() {
+            info.authenticated = true;
+            info.auth_method = Some("oauth");
+            info.account = Some(providers.join(", "));
+        }
+
+        info.agent_ready = info.installed;
+        if info.agent_ready {
+            info.models = models
+                .into_iter()
+                .map(|id| super::ModelInfo { id })
+                .collect();
+        } else {
+            info.agent_note = Some(
+                "Install opencode (curl -fsSL https://opencode.ai/install | bash) to chat with it here."
+                    .to_string(),
+            );
+        }
+        Some(info)
+    }
+
+    async fn run_turn(&self, ctx: &mut TurnCtx) -> Result<()> {
+        run_turn(ctx).await
+    }
+
+    fn config_home(&self) -> Option<PathBuf> {
+        // OpenCode discovers skills under XDG config, staying XDG even on macOS.
+        Some(super::xdg_config_home().join("opencode"))
+    }
+
+    fn skill_target(&self) -> Option<PathBuf> {
+        Some(
+            self.config_home()?
+                .join("skills")
+                .join("orx")
+                .join("SKILL.md"),
+        )
+    }
+
+    fn skill_shim(&self) -> Option<&'static str> {
+        // OpenCode reads the same SKILL.md format as Claude Code.
+        Some(super::CLAUDE_SKILL)
+    }
+}
+
+fn opencode_auth_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("share")))?;
+    Some(base.join("opencode").join("auth.json"))
+}
+
+/// Providers opencode is signed into (its auth.json is `{provider: {type}}`).
+fn opencode_providers() -> Vec<String> {
+    let Some(auth) = opencode_auth_path().and_then(read_json) else {
+        return Vec::new();
+    };
+    match auth.as_object() {
+        Some(map) => map.keys().cloned().collect(),
+        None => Vec::new(),
+    }
+}
+
+/// `opencode models` — the ground truth for what the agent can actually run.
+async fn opencode_models(bin: &PathBuf) -> Vec<String> {
+    let fut = tokio::process::Command::new(bin)
+        .arg("models")
+        .current_dir(dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
+        .stdin(std::process::Stdio::null())
+        .output();
+    let Ok(Ok(out)) = tokio::time::timeout(Duration::from_secs(20), fut).await else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && l.contains('/'))
+        .map(str::to_string)
+        .collect()
+}
 
 /// opencode part → wire part (the shapes are already close).
 fn to_wire_part(part: &Value) -> Option<WirePart> {
@@ -60,7 +179,7 @@ fn to_wire_part(part: &Value) -> Option<WirePart> {
     }
 }
 
-pub async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
+async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     // Lazy bring-up: spawns serve for this project or reuses the live child.
     let status = ctx.host.opencode.ensure(&ctx.project).await?;
     let port = status

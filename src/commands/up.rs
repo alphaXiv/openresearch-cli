@@ -1411,7 +1411,7 @@ struct CreateChatSessionReq {
 }
 
 async fn create_chat_session(Json(req): Json<CreateChatSessionReq>) -> ApiResult {
-    if !local::chat::HARNESS_IDS.contains(&req.harness.as_str()) {
+    if !local::harness::is_chat_harness(&req.harness) {
         return Err(bad_request(format!("unknown harness: {}", req.harness)));
     }
     let store = Store::open()?;

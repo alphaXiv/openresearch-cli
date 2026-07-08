@@ -1,35 +1,121 @@
-//! Claude Code adapter: one `claude --print` process per turn, stream-json on
-//! stdout, multi-turn via `--resume` against Claude Code's own session store.
-//! The playbook rides `--append-system-prompt-file`; permissions are bypassed
+//! Claude Code harness.
+//!
+//! Chat: one `claude --print` process per turn, stream-json on stdout,
+//! multi-turn via `--resume` against Claude Code's own session store. The
+//! playbook rides `--append-system-prompt-file`; permissions are bypassed
 //! (parity with the opencode allow-all config — the playbook forbids
 //! interactive questions anyway, and headless mode couldn't answer them).
+//!
+//! Detection: `~/.claude.json` carries the signed-in OAuth account (no secrets
+//! read); `ANTHROPIC_API_KEY` is the api-key fallback.
 
 use std::path::PathBuf;
 use std::process::Stdio;
 
+use async_trait::async_trait;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
+use super::detect::{bin_version, find_on_path, nonempty_str, read_json, HarnessInfo};
+use super::Harness;
 use crate::error::{anyhow, Result};
 use crate::local::chat::{prepare_env, TurnCtx, WirePart, WireToolState};
 use crate::local::opencode::ensure_playbook;
 
+/// Each harness runs directly (its own CLI, the user's own login), so its
+/// model list is its own: static ids for the Claude Code CLI.
+const CLAUDE_MODELS: [&str; 4] = [
+    "claude-fable-5",
+    "claude-sonnet-5",
+    "claude-opus-4-8",
+    "claude-haiku-4-5",
+];
+
+pub struct ClaudeCode;
+
 /// `claude` on PATH, else the common install drop locations.
 pub fn find_claude() -> Option<PathBuf> {
-    if let Some(paths) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&paths) {
-            let candidate = dir.join("claude");
-            if candidate.is_file() {
-                return Some(candidate);
+    find_on_path("claude").or_else(|| {
+        let home = dirs::home_dir()?;
+        [".claude/local/claude", ".local/bin/claude"]
+            .iter()
+            .map(|rel| home.join(rel))
+            .find(|c| c.is_file())
+    })
+}
+
+#[async_trait]
+impl Harness for ClaudeCode {
+    fn id(&self) -> &'static str {
+        "claude-code"
+    }
+
+    fn name(&self) -> &'static str {
+        "Claude Code"
+    }
+
+    fn supports_chat(&self) -> bool {
+        true
+    }
+
+    async fn detect(&self) -> Option<HarnessInfo> {
+        let mut info = HarnessInfo::new(self.id(), self.name());
+        if let Some(bin) = find_claude() {
+            info.installed = true;
+            info.version = bin_version(&bin).await;
+            info.bin_path = Some(bin.to_string_lossy().into_owned());
+        }
+        // ~/.claude.json carries the signed-in OAuth account (no secrets read).
+        if let Some(cfg) = dirs::home_dir().and_then(|h| read_json(h.join(".claude.json"))) {
+            if let Some(acct) = cfg.get("oauthAccount") {
+                info.authenticated = true;
+                info.auth_method = Some("oauth");
+                info.account = nonempty_str(acct, "emailAddress");
+                info.org = nonempty_str(acct, "organizationName");
+                info.plan = match nonempty_str(acct, "billingType").as_deref() {
+                    Some("stripe_subscription") => Some("Subscription".to_string()),
+                    Some(other) => Some(other.to_string()),
+                    None => None,
+                };
             }
         }
+        if !info.authenticated && std::env::var("ANTHROPIC_API_KEY").is_ok_and(|v| !v.is_empty()) {
+            info.authenticated = true;
+            info.auth_method = Some("apiKey");
+        }
+
+        info.agent_ready = info.installed && info.authenticated;
+        if info.agent_ready {
+            info = info.with_models(&CLAUDE_MODELS);
+        } else {
+            info.agent_note = Some(
+                "Install Claude Code and sign in (`claude`) to chat with it here.".to_string(),
+            );
+        }
+        Some(info)
     }
-    let home = dirs::home_dir()?;
-    [".claude/local/claude", ".local/bin/claude"]
-        .iter()
-        .map(|rel| home.join(rel))
-        .find(|c| c.is_file())
+
+    async fn run_turn(&self, ctx: &mut TurnCtx) -> Result<()> {
+        run_turn(ctx).await
+    }
+
+    fn config_home(&self) -> Option<PathBuf> {
+        Some(dirs::home_dir()?.join(".claude"))
+    }
+
+    fn skill_target(&self) -> Option<PathBuf> {
+        Some(
+            self.config_home()?
+                .join("skills")
+                .join("orx")
+                .join("SKILL.md"),
+        )
+    }
+
+    fn skill_shim(&self) -> Option<&'static str> {
+        Some(super::CLAUDE_SKILL)
+    }
 }
 
 /// Claude's tool inputs are snake_case; the UI summarizes via `filePath`.
@@ -56,7 +142,7 @@ fn result_text(content: &Value) -> String {
     }
 }
 
-pub async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
+async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     let bin = find_claude().ok_or_else(|| {
         anyhow!("claude not found on PATH — install Claude Code and run `claude` once to sign in")
     })?;
@@ -83,7 +169,7 @@ pub async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     .current_dir(&repo)
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
-    .stderr(Stdio::from(super::harness_log("claude")?))
+    .stderr(Stdio::from(crate::local::chat::harness_log("claude")?))
     .kill_on_drop(true);
     if let Some(model) = &ctx.model {
         cmd.args(["--model", model]);

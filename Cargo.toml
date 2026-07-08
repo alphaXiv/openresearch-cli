@@ -33,6 +33,8 @@ base64 = "0.22"
 axum = "0.8"
 rust-embed = "8"
 futures = "0.3"
+# async fns in the Harness trait (object-safe `dyn Harness` in the registry).
+async-trait = "0.1"
 
 # The profile that 'dist' will build with
 [profile.dist]
