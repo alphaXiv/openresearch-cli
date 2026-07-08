@@ -305,10 +305,8 @@ export default function App() {
                 onClick={() => setRightTab("artifacts")}
               >
                 Artifacts
-                {artifacts && artifacts.reports.length + artifacts.files.length > 0 && (
-                  <span className="tab-count">
-                    {artifacts.reports.length + artifacts.files.length}
-                  </span>
+                {artifacts && artifacts.entries.length > 0 && (
+                  <span className="tab-count">{artifacts.entries.length}</span>
                 )}
               </button>
               {expTabs.map((t) => {

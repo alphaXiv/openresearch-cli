@@ -283,25 +283,24 @@ export interface SshPreflight {
 export const sshPreflight = (host: string) =>
   post<SshPreflight>("/api/settings/ssh/preflight", { host });
 
-/** A subfolder of the artifacts dir with a top-level report.md. */
-export interface ArtifactReport {
+/** One node of the artifacts tree: a file, or a directory with children. */
+export interface ArtifactEntry {
   name: string;
-  title: string;
-  modifiedAt: number;
-}
-
-/** Any other file in the artifacts dir, by dir-relative path. */
-export interface ArtifactFile {
+  /** Dir-relative `/`-joined path — the id for file/report/delete endpoints. */
   path: string;
+  isDir: boolean;
+  /** 0 for directories. */
   size: number;
   modifiedAt: number;
+  /** Set when the dir holds a top-level report.md — renders as a report. */
+  reportTitle?: string;
+  children?: ArtifactEntry[];
 }
 
 /** Listing of the project's on-disk artifacts directory. */
 export interface Artifacts {
   dir: string;
-  reports: ArtifactReport[];
-  files: ArtifactFile[];
+  entries: ArtifactEntry[];
   truncated: boolean;
 }
 

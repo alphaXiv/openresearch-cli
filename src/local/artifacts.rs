@@ -1,8 +1,8 @@
 //! Per-project artifacts directory — a plain folder on the user's machine
 //! (`<data dir>/artifacts/<project slug>/`). The filesystem is the source of
-//! truth: no registry, no upload step. Subfolders with a top-level `report.md`
-//! render as reports in the dashboard's Artifacts tab; everything else is
-//! browsable files.
+//! truth: no registry, no upload step. The dashboard's Artifacts tab is an
+//! explorer over this folder; a folder with a top-level `report.md` is still
+//! just a folder, it only additionally renders as a report.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -68,23 +68,23 @@ pub fn content_type_for_path(path: &str) -> &'static str {
     }
 }
 
-/// A subfolder with a top-level `report.md`, rendered as a report.
+/// One node of the artifacts tree: a file or a directory with its children.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ArtifactReport {
-    /// Folder name — the report's id and path prefix for its files.
+pub struct ArtifactEntry {
     pub name: String,
-    pub title: String,
-    pub modified_at: i64,
-}
-
-/// Any other file in the artifacts dir, by dir-relative path.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ArtifactFile {
+    /// Dir-relative, `/`-joined — the id for file/report/delete endpoints.
     pub path: String,
+    pub is_dir: bool,
+    /// 0 for directories.
     pub size: u64,
     pub modified_at: i64,
+    /// Set when this dir holds a top-level `report.md` — the UI offers a
+    /// rendered-report view on top of the normal folder row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_title: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<ArtifactEntry>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -93,8 +93,7 @@ pub struct ArtifactsListing {
     /// Absolute path of the artifacts dir, shown in the UI so the user can
     /// drop files in.
     pub dir: String,
-    pub reports: Vec<ArtifactReport>,
-    pub files: Vec<ArtifactFile>,
+    pub entries: Vec<ArtifactEntry>,
     pub truncated: bool,
 }
 
@@ -131,102 +130,78 @@ fn report_title(md_path: &Path, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
-/// Recursively collect files under `dir` as `/`-joined paths relative to
-/// `base`, up to `MAX_ENTRIES`. Returns true when it hit the cap.
-fn collect_files(base: &Path, dir: &Path, out: &mut Vec<ArtifactFile>) -> bool {
+/// Recursively build the tree under `dir`, counting nodes against
+/// `MAX_ENTRIES`. Returns (children, hit_cap).
+fn collect_tree(dir: &Path, rel_prefix: &str, seen: &mut usize) -> (Vec<ArtifactEntry>, bool) {
+    let mut out = Vec::new();
+    let mut truncated = false;
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
+        return (out, false);
     };
     for entry in entries.flatten() {
-        if out.len() >= MAX_ENTRIES {
-            return true;
+        if *seen >= MAX_ENTRIES {
+            return (out, true);
         }
         let name = entry.file_name().to_string_lossy().into_owned();
         if is_ignored(&name) {
             continue;
         }
-        let path = entry.path();
         let Ok(md) = entry.metadata() else { continue };
+        *seen += 1;
+        let rel = if rel_prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel_prefix}/{name}")
+        };
         if md.is_dir() {
-            if collect_files(base, &path, out) {
-                return true;
-            }
+            let report_md = entry.path().join("report.md");
+            let report_title = report_md.is_file().then(|| report_title(&report_md, &name));
+            let (children, hit) = collect_tree(&entry.path(), &rel, seen);
+            truncated |= hit;
+            out.push(ArtifactEntry {
+                name,
+                path: rel,
+                is_dir: true,
+                size: 0,
+                modified_at: mtime_ms(&md),
+                report_title,
+                children,
+            });
         } else if md.is_file() {
-            if let Ok(rel) = path.strip_prefix(base) {
-                let rel = rel
-                    .components()
-                    .map(|c| c.as_os_str().to_string_lossy())
-                    .collect::<Vec<_>>()
-                    .join("/");
-                if !rel.is_empty() {
-                    out.push(ArtifactFile {
-                        path: rel,
-                        size: md.len(),
-                        modified_at: mtime_ms(&md),
-                    });
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Scan the artifacts dir (creating it if missing): report folders first,
-/// then every other file.
-pub fn list(project: &LocalProject) -> Result<ArtifactsListing> {
-    let dir = ensure_dir(project)?;
-    let mut reports = Vec::new();
-    let mut files = Vec::new();
-    let mut truncated = false;
-
-    let entries =
-        std::fs::read_dir(&dir).map_err(|e| anyhow!("Could not read {}: {}", dir.display(), e))?;
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if is_ignored(&name) {
-            continue;
-        }
-        let path = entry.path();
-        let Ok(md) = entry.metadata() else { continue };
-        if md.is_dir() {
-            let report_md = path.join("report.md");
-            if report_md.is_file() {
-                let modified = std::fs::metadata(&report_md)
-                    .map(|m| mtime_ms(&m))
-                    .unwrap_or(0);
-                reports.push(ArtifactReport {
-                    title: report_title(&report_md, &name),
-                    name,
-                    modified_at: modified,
-                });
-            } else {
-                truncated |= collect_files(&dir, &path, &mut files);
-            }
-        } else if md.is_file() {
-            files.push(ArtifactFile {
-                path: name,
+            out.push(ArtifactEntry {
+                name,
+                path: rel,
+                is_dir: false,
                 size: md.len(),
                 modified_at: mtime_ms(&md),
+                report_title: None,
+                children: Vec::new(),
             });
         }
     }
+    // Dirs first, then files, each alphabetical — stable explorer order.
+    out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+    (out, truncated)
+}
 
-    reports.sort_by_key(|r| std::cmp::Reverse(r.modified_at));
-    files.sort_by(|a, b| a.path.cmp(&b.path));
+/// Scan the artifacts dir (creating it if missing) into a file tree.
+pub fn list(project: &LocalProject) -> Result<ArtifactsListing> {
+    let dir = ensure_dir(project)?;
+    let mut seen = 0;
+    let (entries, truncated) = collect_tree(&dir, "", &mut seen);
     Ok(ArtifactsListing {
         dir: dir.to_string_lossy().into_owned(),
-        reports,
-        files,
+        entries,
         truncated,
     })
 }
 
-/// A report folder's `report.md` body.
-pub fn read_report_markdown(project: &LocalProject, report_name: &str) -> Result<String> {
-    if !is_safe_artifact_path(report_name) || report_name.contains('/') {
-        return Err(anyhow!("invalid report name: {report_name}"));
+/// A report folder's `report.md` body, by dir-relative folder path.
+pub fn read_report_markdown(project: &LocalProject, folder: &str) -> Result<String> {
+    if !is_safe_artifact_path(folder) {
+        return Err(anyhow!("invalid report path: {folder}"));
     }
-    let path = artifacts_dir(project).join(report_name).join("report.md");
+    let path = artifacts_dir(project).join(folder).join("report.md");
     std::fs::read_to_string(&path).map_err(|e| anyhow!("Could not read {}: {}", path.display(), e))
 }
 

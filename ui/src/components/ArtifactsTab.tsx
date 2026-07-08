@@ -1,10 +1,12 @@
 import {
   ArrowLeft,
   Check,
+  ChevronRight,
   Copy,
   ExternalLink,
   File,
   FileText,
+  Folder,
   FolderGit2,
   FolderOpen,
   Trash2,
@@ -15,8 +17,7 @@ import {
   artifactFileUrl,
   deleteArtifact,
   getArtifactReport,
-  type ArtifactFile,
-  type ArtifactReport,
+  type ArtifactEntry,
   type Artifacts,
   type Project,
 } from "../api";
@@ -40,21 +41,33 @@ function fmtBytes(n: number): string {
 
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|svg)$/i;
 
+/** Depth-first lookup of a tree entry by its dir-relative path. */
+function findEntry(entries: ArtifactEntry[], path: string): ArtifactEntry | null {
+  for (const e of entries) {
+    if (e.path === path) return e;
+    if (e.isDir && path.startsWith(e.path + "/")) {
+      const hit = findEntry(e.children ?? [], path);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
 /** Report markdown with report-relative image/link paths (`images/...`)
  * rewritten to the artifact file endpoint, scoped to the report's folder. */
 function ReportMd({
   projectId,
-  reportName,
+  folder,
   markdown,
 }: {
   projectId: string;
-  reportName: string;
+  folder: string;
   markdown: string;
 }) {
   const resolve = (src: string) =>
     isExternalSrc(src)
       ? src
-      : artifactFileUrl(projectId, `${reportName}/${src.replace(/^\.?\//, "")}`);
+      : artifactFileUrl(projectId, `${folder}/${src.replace(/^\.?\//, "")}`);
   return (
     <div className="md report-md">
       <ReactMarkdown
@@ -89,12 +102,12 @@ function ReportMd({
 
 function ReportView({
   projectId,
-  report,
+  entry,
   onBack,
   onDelete,
 }: {
   projectId: string;
-  report: ArtifactReport;
+  entry: ArtifactEntry;
   onBack: () => void;
   onDelete: () => void;
 }) {
@@ -102,25 +115,25 @@ function ReportView({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    getArtifactReport(projectId, report.name)
+    getArtifactReport(projectId, entry.path)
       .then((r) => setMarkdown(r.markdown))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }, [projectId, report.name, report.modifiedAt]);
+  }, [projectId, entry.path, entry.modifiedAt]);
 
   return (
     <div className="report-view">
       <div className="report-view-head">
         <button className="report-back" onClick={onBack}>
-          <ArrowLeft size={13} /> Reports
+          <ArrowLeft size={13} /> Artifacts
         </button>
         <span style={{ flex: 1 }} />
-        <span className="report-date">{new Date(report.modifiedAt).toLocaleString()}</span>
+        <span className="report-date">{new Date(entry.modifiedAt).toLocaleString()}</span>
         <button
           className="icon-btn"
           title="Delete report folder"
           aria-label="Delete report folder"
           onClick={() => {
-            if (window.confirm(`Delete the "${report.name}" folder from the artifacts dir?`))
+            if (window.confirm(`Delete the "${entry.path}" folder from the artifacts dir?`))
               onDelete();
           }}
         >
@@ -134,7 +147,7 @@ function ReportView({
           <span className="spinner" /> Loading report…
         </div>
       ) : (
-        <ReportMd projectId={projectId} reportName={report.name} markdown={markdown} />
+        <ReportMd projectId={projectId} folder={entry.path} markdown={markdown} />
       )}
     </div>
   );
@@ -163,9 +176,119 @@ function DirPath({ dir }: { dir: string }) {
   );
 }
 
-/** Right-pane Artifacts tab — a live view of the project's artifacts folder
- * on disk. Subfolders with a report.md render as reports; everything else
- * (figures, CSVs, whatever the user drops in) is listed as files. */
+function TreeRows({
+  projectId,
+  entries,
+  depth,
+  expanded,
+  onToggle,
+  onOpenReport,
+  onDelete,
+}: {
+  projectId: string;
+  entries: ArtifactEntry[];
+  depth: number;
+  expanded: Set<string>;
+  onToggle: (path: string) => void;
+  onOpenReport: (path: string) => void;
+  onDelete: (path: string) => void;
+}) {
+  return (
+    <>
+      {entries.map((e) => {
+        const indent = { paddingLeft: 12 + depth * 18 };
+        const del = (
+          <button
+            className="icon-btn artifact-tree-del"
+            title={`Delete ${e.path}`}
+            aria-label={`Delete ${e.path}`}
+            onClick={(ev) => {
+              ev.stopPropagation();
+              if (window.confirm(`Delete "${e.path}" from the artifacts dir?`)) onDelete(e.path);
+            }}
+          >
+            <Trash2 size={13} />
+          </button>
+        );
+
+        if (e.isDir) {
+          const isReport = e.reportTitle !== undefined;
+          const open = expanded.has(e.path);
+          return (
+            <div key={e.path}>
+              <div
+                className="artifact-tree-row clickable"
+                style={indent}
+                onClick={() => (isReport ? onOpenReport(e.path) : onToggle(e.path))}
+              >
+                <button
+                  className={`artifact-tree-chevron ${open ? "open" : ""}`}
+                  aria-label={open ? `Collapse ${e.name}` : `Expand ${e.name}`}
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    onToggle(e.path);
+                  }}
+                >
+                  <ChevronRight size={13} />
+                </button>
+                {isReport ? <FileText size={14} /> : <Folder size={14} />}
+                <span className={`artifact-tree-name ${isReport ? "report" : ""}`}>
+                  {e.reportTitle || e.name}
+                </span>
+                {del}
+                <span className="report-date">
+                  {new Date(e.modifiedAt).toLocaleDateString()}
+                </span>
+              </div>
+              {open && (
+                <TreeRows
+                  projectId={projectId}
+                  entries={e.children ?? []}
+                  depth={depth + 1}
+                  expanded={expanded}
+                  onToggle={onToggle}
+                  onOpenReport={onOpenReport}
+                  onDelete={onDelete}
+                />
+              )}
+            </div>
+          );
+        }
+
+        return (
+          <div key={e.path} className="artifact-tree-row" style={indent}>
+            <span className="artifact-tree-chevron spacer" />
+            <a
+              className="artifact-file-link"
+              href={artifactFileUrl(projectId, e.path)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={e.path}
+            >
+              {IMAGE_RE.test(e.name) ? (
+                <img
+                  className="artifact-thumb"
+                  src={artifactFileUrl(projectId, e.path)}
+                  alt=""
+                  loading="lazy"
+                />
+              ) : (
+                <File size={14} />
+              )}
+              <span className="artifact-tree-name">{e.name}</span>
+            </a>
+            {del}
+            <span className="report-date">{fmtBytes(e.size)}</span>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+/** Right-pane Artifacts tab — an explorer over the project's artifacts folder
+ * on disk. Every entry is an artifact; a folder with a top-level report.md
+ * additionally opens as a rendered report. */
 export function ArtifactsTab({
   project,
   artifacts,
@@ -175,16 +298,24 @@ export function ArtifactsTab({
   artifacts: Artifacts | null;
   onChanged: () => void;
 }) {
-  const [openName, setOpenName] = useState<string | null>(null);
-  const open = openName
-    ? (artifacts?.reports.find((r) => r.name === openName) ?? null)
-    : null;
+  const [openPath, setOpenPath] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  const openEntry = openPath && artifacts ? findEntry(artifacts.entries, openPath) : null;
 
   // The open report vanished from disk (deleted externally) — go back.
   useEffect(() => {
-    if (openName && artifacts && !artifacts.reports.some((r) => r.name === openName))
-      setOpenName(null);
-  }, [openName, artifacts]);
+    if (openPath && artifacts && !findEntry(artifacts.entries, openPath)?.reportTitle)
+      setOpenPath(null);
+  }, [openPath, artifacts]);
+
+  const toggle = (path: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
 
   const remove = (path: string) => {
     void deleteArtifact(project.id, path)
@@ -192,15 +323,15 @@ export function ArtifactsTab({
       .finally(onChanged);
   };
 
-  if (open) {
+  if (openEntry?.reportTitle) {
     return (
       <ReportView
         projectId={project.id}
-        report={open}
-        onBack={() => setOpenName(null)}
+        entry={openEntry}
+        onBack={() => setOpenPath(null)}
         onDelete={() => {
-          remove(open.name);
-          setOpenName(null);
+          remove(openEntry.path);
+          setOpenPath(null);
         }}
       />
     );
@@ -217,7 +348,6 @@ export function ArtifactsTab({
   }
 
   const repoUrl = `https://github.com/${project.githubOwner}/${project.githubRepo}`;
-  const empty = artifacts.reports.length === 0 && artifacts.files.length === 0;
   return (
     <div className="artifacts">
       <section>
@@ -232,93 +362,37 @@ export function ArtifactsTab({
 
       <section>
         <h3 className="artifacts-heading">
-          <FolderOpen size={13} /> Local folder
+          <FolderOpen size={13} /> Artifacts
         </h3>
         <DirPath dir={artifacts.dir} />
         <p className="artifacts-hint">
-          Everything in this folder shows up here — the agent writes reports and figures into
-          it, and you can drop in your own files.
+          An explorer over this folder — the agent writes reports and figures into it, and you
+          can drop in your own files.
         </p>
+        {artifacts.entries.length === 0 ? (
+          <p className="artifacts-empty">
+            Nothing here yet. Ask the agent for a write-up of its findings — it saves report
+            folders (<code>report.md</code> + images) into the folder above.
+          </p>
+        ) : (
+          <div className="artifact-tree">
+            <TreeRows
+              projectId={project.id}
+              entries={artifacts.entries}
+              depth={0}
+              expanded={expanded}
+              onToggle={toggle}
+              onOpenReport={setOpenPath}
+              onDelete={remove}
+            />
+            {artifacts.truncated && (
+              <p className="artifacts-hint" style={{ padding: "6px 12px" }}>
+                Listing truncated — the folder has more files.
+              </p>
+            )}
+          </div>
+        )}
       </section>
-
-      {empty ? (
-        <p className="artifacts-empty">
-          Nothing here yet. Ask the agent for a write-up of its findings — it saves report
-          folders (<code>report.md</code> + images) into the folder above.
-        </p>
-      ) : (
-        <>
-          {artifacts.reports.length > 0 && (
-            <section>
-              <h3 className="artifacts-heading">
-                <FileText size={13} /> Reports
-                <span className="artifacts-count">{artifacts.reports.length}</span>
-              </h3>
-              <ul className="report-list">
-                {artifacts.reports.map((r) => (
-                  <li key={r.name}>
-                    <button className="report-row" onClick={() => setOpenName(r.name)}>
-                      <span className="report-row-title">{r.title}</span>
-                      <span className="report-date">
-                        {new Date(r.modifiedAt).toLocaleDateString()}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          {artifacts.files.length > 0 && (
-            <section>
-              <h3 className="artifacts-heading">
-                <File size={13} /> Files
-                <span className="artifacts-count">{artifacts.files.length}</span>
-              </h3>
-              <ul className="report-list">
-                {artifacts.files.map((f: ArtifactFile) => (
-                  <li key={f.path}>
-                    <div className="report-row artifact-file-row">
-                      <a
-                        className="artifact-file-link"
-                        href={artifactFileUrl(project.id, f.path)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        title={f.path}
-                      >
-                        {IMAGE_RE.test(f.path) && (
-                          <img
-                            className="artifact-thumb"
-                            src={artifactFileUrl(project.id, f.path)}
-                            alt=""
-                            loading="lazy"
-                          />
-                        )}
-                        <span className="report-row-title">{f.path}</span>
-                      </a>
-                      <span className="report-date">{fmtBytes(f.size)}</span>
-                      <button
-                        className="icon-btn"
-                        title="Delete file"
-                        aria-label={`Delete ${f.path}`}
-                        onClick={() => {
-                          if (window.confirm(`Delete "${f.path}" from the artifacts dir?`))
-                            remove(f.path);
-                        }}
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-              {artifacts.truncated && (
-                <p className="artifacts-hint">Listing truncated — the folder has more files.</p>
-              )}
-            </section>
-          )}
-        </>
-      )}
     </div>
   );
 }
