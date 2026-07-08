@@ -22,6 +22,7 @@ mod codex;
 mod cursor;
 mod detect;
 mod opencode;
+mod options;
 
 use std::path::PathBuf;
 
@@ -31,6 +32,7 @@ use crate::error::{anyhow, Result};
 use crate::local::chat::TurnCtx;
 
 pub use detect::{HarnessInfo, ModelInfo};
+pub use options::{HarnessOptions, PermissionMode, ReasoningLevel};
 
 /// One coding-agent integration. See the module docs for the capability model.
 #[async_trait]
@@ -60,6 +62,12 @@ pub trait Harness: Send + Sync {
     /// parts onto `ctx`. Default is "not a chat harness".
     async fn run_turn(&self, _ctx: &mut TurnCtx) -> Result<()> {
         Err(anyhow!("{} cannot run chat turns", self.id()))
+    }
+
+    /// The permission-mode / reasoning-level vocabulary this harness supports,
+    /// for the composer toggles. Default is neither control (the UI hides both).
+    fn options(&self) -> HarnessOptions {
+        HarnessOptions::none()
     }
 
     // --- skill-install capability -----------------------------------------
@@ -118,7 +126,14 @@ pub async fn detect_harnesses() -> Vec<HarnessInfo> {
         .into_iter()
         .filter(|h| h.supports_chat())
         .collect();
-    let futures = harnesses.iter().map(|h| h.detect());
+    let futures = harnesses.iter().map(|h| async {
+        // Attach the composer toggle vocabulary alongside detection so the UI
+        // gets both in one payload.
+        h.detect().await.map(|mut info| {
+            info.options = h.options();
+            info
+        })
+    });
     futures::future::join_all(futures)
         .await
         .into_iter()

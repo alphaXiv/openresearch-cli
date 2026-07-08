@@ -1408,6 +1408,8 @@ struct CreateChatSessionReq {
     project_id: String,
     harness: String,
     model: Option<String>,
+    permission_mode: Option<String>,
+    reasoning_level: Option<String>,
 }
 
 async fn create_chat_session(Json(req): Json<CreateChatSessionReq>) -> ApiResult {
@@ -1418,13 +1420,16 @@ async fn create_chat_session(Json(req): Json<CreateChatSessionReq>) -> ApiResult
     store
         .get_local_project(&req.project_id)?
         .ok_or_else(|| not_found("project"))?;
+    let nonempty = |s: Option<String>| s.filter(|v| !v.trim().is_empty());
     let session = StoredChatSession {
         id: format!("chat_{}", uuid::Uuid::new_v4()),
         project_id: req.project_id,
         harness: req.harness,
         native_session_id: None,
         title: None,
-        model: req.model.filter(|m| !m.trim().is_empty()),
+        model: nonempty(req.model),
+        permission_mode: nonempty(req.permission_mode),
+        reasoning_level: nonempty(req.reasoning_level),
         created_at: now_ms(),
         updated_at: now_ms(),
     };
@@ -1448,9 +1453,12 @@ async fn chat_messages(Path(id): Path<String>) -> ApiResult {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SendChatReq {
     text: String,
     model: Option<String>,
+    permission_mode: Option<String>,
+    reasoning_level: Option<String>,
     #[serde(default)]
     images: Vec<local::chat::ImageAttachment>,
 }
@@ -1464,10 +1472,15 @@ async fn send_chat_message(
     if text.is_empty() && req.images.is_empty() {
         return Err(bad_request("text is required"));
     }
+    let overrides = local::chat::TurnOverrides {
+        model: req.model,
+        permission_mode: req.permission_mode,
+        reasoning_level: req.reasoning_level,
+    };
     // The turn runs in the background; progress streams over /api/events.
     state
         .chat
-        .send_message(&id, text, req.model, req.images)
+        .send_message(&id, text, overrides, req.images)
         .await
         .map_err(bad_request)?;
     Ok(Json(json!({ "ok": true })))

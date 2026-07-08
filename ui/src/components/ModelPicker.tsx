@@ -1,10 +1,20 @@
 import { Check, ChevronDown } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getHarnesses, modelLabel, type Harness, type HarnessId } from "../api";
+import {
+  getHarnesses,
+  modelLabel,
+  type Harness,
+  type HarnessId,
+  type OptionChoice,
+} from "../api";
 
 export interface ModelSelection {
   harness: HarnessId;
   model: string | null; // null = the harness's default model
+  /** Permission-mode wire id (null = harness default). */
+  permissionMode: string | null;
+  /** Reasoning-level wire id (null = harness default). */
+  reasoningLevel: string | null;
 }
 
 export const HARNESS_LABELS: Record<HarnessId, string> = {
@@ -13,10 +23,32 @@ export const HARNESS_LABELS: Record<HarnessId, string> = {
   opencode: "OpenCode",
 };
 
-/** First harness that can actually run — the fallback when nothing is picked. */
+/** First harness that can actually run — the fallback when nothing is picked.
+ * Seeds mode/reasoning from that harness's advertised defaults. */
 export function defaultSelection(harnesses: Harness[]): ModelSelection | null {
   const ready = harnesses.find((h) => h.agentReady);
-  return ready ? { harness: ready.id, model: ready.models[0]?.id ?? null } : null;
+  if (!ready) return null;
+  return {
+    harness: ready.id,
+    model: ready.models[0]?.id ?? null,
+    permissionMode: ready.options?.defaultPermissionMode ?? null,
+    reasoningLevel: ready.options?.defaultReasoningLevel ?? null,
+  };
+}
+
+/** Close-on-outside-click + open state shared by the composer dropdowns. */
+function usePopover() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+  return { open, setOpen, ref };
 }
 
 /** Composer selector: pick the harness + model new sessions (and same-harness
@@ -31,9 +63,8 @@ export function ModelPicker({
   onHarnesses?: (harnesses: Harness[]) => void;
 }) {
   const [harnesses, setHarnesses] = useState<Harness[]>([]);
-  const [open, setOpen] = useState(false);
+  const { open, setOpen, ref: rootRef } = usePopover();
   const [filter, setFilter] = useState("");
-  const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     getHarnesses()
@@ -44,16 +75,6 @@ export function ModelPicker({
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Close on outside click.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
 
   const groups = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -66,21 +87,34 @@ export function ModelPicker({
     });
   }, [harnesses, filter]);
 
-  const pick = (harness: HarnessId, model: string | null) => {
-    onSelect({ harness, model });
+  /** Switch harness → reseed model + mode/reasoning defaults for that harness. */
+  const pick = (harness: Harness, model: string | null) => {
+    const sameHarness = value?.harness === harness.id;
+    onSelect({
+      harness: harness.id,
+      model,
+      permissionMode: sameHarness
+        ? value!.permissionMode
+        : harness.options?.defaultPermissionMode ?? null,
+      reasoningLevel: sameHarness
+        ? value!.reasoningLevel
+        : harness.options?.defaultReasoningLevel ?? null,
+    });
     setOpen(false);
     setFilter("");
   };
 
   const label = value
-    ? `${HARNESS_LABELS[value.harness]} · ${value.model ? modelLabel(value.model) : "default"}`
+    ? value.model
+      ? modelLabel(value.model)
+      : "Default model"
     : "Model";
 
   return (
     <div className="model-picker" ref={rootRef}>
       <button
         type="button"
-        className="model-btn"
+        className="composer-pill"
         title="Harness + model for this chat"
         onClick={() => setOpen((v) => !v)}
       >
@@ -88,7 +122,7 @@ export function ModelPicker({
         <ChevronDown size={12} />
       </button>
       {open && (
-        <div className="model-menu">
+        <div className="model-menu align-right">
           <input
             autoFocus
             type="text"
@@ -108,7 +142,7 @@ export function ModelPicker({
                       <button
                         key={m.id}
                         className="model-item"
-                        onClick={() => pick(harness.id, m.id)}
+                        onClick={() => pick(harness, m.id)}
                       >
                         <span>
                           {modelLabel(m.id)}
@@ -128,6 +162,65 @@ export function ModelPicker({
             ))}
             {harnesses.length === 0 && <div className="model-more">Detecting harnesses…</div>}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A compact single-axis dropdown (permission mode or reasoning level). Renders
+ * nothing when the harness advertises no choices for this axis. */
+export function OptionPicker({
+  choices,
+  value,
+  fallbackLabel,
+  align = "left",
+  variant = "pill",
+  title,
+  onSelect,
+}: {
+  choices: OptionChoice[];
+  value: string | null;
+  /** Shown when nothing is selected yet. */
+  fallbackLabel?: string;
+  align?: "left" | "right";
+  /** `pill` = boxed (permission mode); `bare` = text-only (reasoning). */
+  variant?: "pill" | "bare";
+  title?: string;
+  onSelect: (id: string) => void;
+}) {
+  const { open, setOpen, ref } = usePopover();
+  if (choices.length === 0) return null;
+
+  const current = choices.find((c) => c.id === value);
+  const label = current?.label ?? fallbackLabel ?? choices[0]?.label ?? "";
+
+  return (
+    <div className="option-picker" ref={ref}>
+      <button
+        type="button"
+        className={variant === "pill" ? "composer-pill" : "composer-bare"}
+        title={title}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {label}
+        <ChevronDown size={12} />
+      </button>
+      {open && (
+        <div className={`option-menu ${align === "right" ? "align-right" : ""}`}>
+          {choices.map((c) => (
+            <button
+              key={c.id}
+              className="model-item"
+              onClick={() => {
+                onSelect(c.id);
+                setOpen(false);
+              }}
+            >
+              <span>{c.label}</span>
+              {c.id === (value ?? label) && current?.id === c.id && <Check size={13} />}
+            </button>
+          ))}
         </div>
       )}
     </div>

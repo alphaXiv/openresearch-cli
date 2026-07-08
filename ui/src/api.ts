@@ -348,6 +348,20 @@ export interface HarnessModel {
   id: string;
 }
 
+/** One selectable value in a composer toggle (permission mode / reasoning). */
+export interface OptionChoice {
+  id: string;
+  label: string;
+}
+
+/** The toggle vocabulary a harness supports. Empty arrays hide the control. */
+export interface HarnessOptions {
+  permissionModes: OptionChoice[];
+  defaultPermissionMode?: string | null;
+  reasoningLevels: OptionChoice[];
+  defaultReasoningLevel?: string | null;
+}
+
 export interface Harness {
   id: HarnessId;
   name: string;
@@ -362,6 +376,7 @@ export interface Harness {
   agentReady: boolean;
   agentNote?: string;
   models: HarnessModel[];
+  options: HarnessOptions;
 }
 
 export const getHarnesses = (refresh = false) =>
@@ -426,6 +441,8 @@ export interface ChatSession {
   harness: HarnessId;
   title: string | null;
   model: string | null;
+  permissionMode: string | null;
+  reasoningLevel: string | null;
   createdAt: number;
   updatedAt: number;
   busy: boolean;
@@ -436,8 +453,19 @@ export const listChatSessions = (projectId: string) =>
     `/api/chat/sessions?projectId=${encodeURIComponent(projectId)}`,
   ).then((r) => r.sessions);
 
-export const createChatSession = (projectId: string, harness: HarnessId, model?: string | null) =>
-  post<{ session: ChatSession }>("/api/chat/sessions", { projectId, harness, model }).then(
+/** Per-session (and per-turn) composer selections beyond the harness itself. */
+export interface TurnOptions {
+  model?: string | null;
+  permissionMode?: string | null;
+  reasoningLevel?: string | null;
+}
+
+export const createChatSession = (
+  projectId: string,
+  harness: HarnessId,
+  opts: TurnOptions = {},
+) =>
+  post<{ session: ChatSession }>("/api/chat/sessions", { projectId, harness, ...opts }).then(
     (r) => r.session,
   );
 
@@ -463,9 +491,16 @@ export const chatAttachmentUrl = (name: string) =>
 export const sendChatMessage = (
   sessionId: string,
   text: string,
-  model?: string | null,
+  opts: TurnOptions = {},
   images?: ChatImageAttachment[],
-) => post<{ ok: boolean }>(`/api/chat/sessions/${sessionId}/message`, { text, model, images });
+) =>
+  post<{ ok: boolean }>(`/api/chat/sessions/${sessionId}/message`, {
+    text,
+    model: opts.model,
+    permissionMode: opts.permissionMode,
+    reasoningLevel: opts.reasoningLevel,
+    images,
+  });
 
 export const interruptChat = (sessionId: string) =>
   post<{ ok: boolean }>(`/api/chat/sessions/${sessionId}/interrupt`);

@@ -158,6 +158,8 @@ pub fn session_json(s: &StoredChatSession, busy: bool) -> Value {
         "harness": s.harness,
         "title": s.title,
         "model": s.model,
+        "permissionMode": s.permission_mode,
+        "reasoningLevel": s.reasoning_level,
         "createdAt": s.created_at,
         "updatedAt": s.updated_at,
         "busy": busy,
@@ -220,7 +222,7 @@ impl ChatHost {
         self: &Arc<Self>,
         session_id: &str,
         text: String,
-        model_override: Option<String>,
+        overrides: TurnOverrides,
         images: Vec<ImageAttachment>,
     ) -> Result<()> {
         if self.is_busy(session_id).await {
@@ -234,10 +236,24 @@ impl ChatHost {
             .get_local_project(&session.project_id)?
             .ok_or_else(|| anyhow!("project not found"))?;
 
-        if let Some(model) = model_override.filter(|m| !m.is_empty()) {
+        // Composer selections are sticky: an override that differs from the
+        // stored value is persisted so the next turn (and a reload) keep it.
+        if let Some(model) = overrides.model.filter(|m| !m.is_empty()) {
             if session.model.as_deref() != Some(model.as_str()) {
                 store.set_chat_session_model(&session.id, &model)?;
                 session.model = Some(model);
+            }
+        }
+        if let Some(mode) = overrides.permission_mode.filter(|m| !m.is_empty()) {
+            if session.permission_mode.as_deref() != Some(mode.as_str()) {
+                store.set_chat_session_permission_mode(&session.id, &mode)?;
+                session.permission_mode = Some(mode);
+            }
+        }
+        if let Some(level) = overrides.reasoning_level.filter(|l| !l.is_empty()) {
+            if session.reasoning_level.as_deref() != Some(level.as_str()) {
+                store.set_chat_session_reasoning_level(&session.id, &level)?;
+                session.reasoning_level = Some(level);
             }
         }
         let saved_images = save_images(&images)?;
@@ -310,6 +326,14 @@ impl ChatHost {
             harness: session.harness.clone(),
             native_session_id: session.native_session_id.clone(),
             model: session.model.clone(),
+            permission_mode: session
+                .permission_mode
+                .as_deref()
+                .and_then(crate::local::harness::PermissionMode::from_id),
+            reasoning_level: session
+                .reasoning_level
+                .as_deref()
+                .and_then(crate::local::harness::ReasoningLevel::from_id),
             project,
             text: turn_text,
             assistant: WireMessage {
@@ -387,12 +411,26 @@ impl ChatHost {
 
 // --- per-turn context handed to adapters --------------------------------------
 
+/// Composer selections a single message can override, mirroring the sticky
+/// per-session settings. Empty/None fields leave the stored value in place.
+#[derive(Debug, Default)]
+pub struct TurnOverrides {
+    pub model: Option<String>,
+    pub permission_mode: Option<String>,
+    pub reasoning_level: Option<String>,
+}
+
 pub struct TurnCtx {
     pub host: Arc<ChatHost>,
     pub session_id: String,
     pub harness: String,
     pub native_session_id: Option<String>,
     pub model: Option<String>,
+    /// Effective permission mode for this turn (session value; harness applies
+    /// its own default when `None`).
+    pub permission_mode: Option<crate::local::harness::PermissionMode>,
+    /// Effective reasoning level for this turn (harness default when `None`).
+    pub reasoning_level: Option<crate::local::harness::ReasoningLevel>,
     pub project: LocalProject,
     pub text: String,
     pub assistant: WireMessage,
@@ -553,7 +591,10 @@ pub async fn watch_runs(chat: Arc<ChatHost>) {
                  continue the loop.",
                 run.id, run.status, run.project_id, run.id
             );
-            if let Err(err) = chat.send_message(&session.id, text, None, Vec::new()).await {
+            if let Err(err) = chat
+                .send_message(&session.id, text, TurnOverrides::default(), Vec::new())
+                .await
+            {
                 eprintln!("orx up: run watcher: {err}");
             }
         }

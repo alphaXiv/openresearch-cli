@@ -44,6 +44,8 @@ pub struct HarnessInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_note: Option<String>,
     pub models: Vec<ModelInfo>,
+    /// Composer toggle vocabulary (permission modes, reasoning levels).
+    pub options: super::HarnessOptions,
 }
 
 impl HarnessInfo {
@@ -62,6 +64,7 @@ impl HarnessInfo {
             agent_ready: false,
             agent_note: None,
             models: Vec::new(),
+            options: super::HarnessOptions::none(),
         }
     }
 

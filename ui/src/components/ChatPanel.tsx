@@ -23,6 +23,7 @@ import {
   defaultSelection,
   HARNESS_LABELS,
   ModelPicker,
+  OptionPicker,
   type ModelSelection,
 } from "./ModelPicker";
 
@@ -352,6 +353,21 @@ export function ChatPanel({
     localStorage.setItem(SELECTION_STORAGE_KEY, JSON.stringify(next));
   };
 
+  // The selection used for composing (falls back to the first ready harness),
+  // and that harness's advertised toggle vocabulary.
+  const activeSelection = selection ?? defaultSelection(harnesses);
+  const activeHarness = activeSelection
+    ? harnesses.find((h) => h.id === activeSelection.harness)
+    : undefined;
+  const opts = activeHarness?.options;
+
+  const setPermissionMode = (id: string) => {
+    if (activeSelection) selectModel({ ...activeSelection, permissionMode: id });
+  };
+  const setReasoningLevel = (id: string) => {
+    if (activeSelection) selectModel({ ...activeSelection, reasoningLevel: id });
+  };
+
   // Reset everything when the project changes.
   useEffect(() => {
     setSessions([]);
@@ -426,11 +442,11 @@ export function ChatPanel({
     let sid = activeId;
     try {
       if (!sid) {
-        const session = await createChatSession(
-          projectId,
-          effective!.harness,
-          effective!.model,
-        );
+        const session = await createChatSession(projectId, effective!.harness, {
+          model: effective!.model,
+          permissionMode: effective!.permissionMode,
+          reasoningLevel: effective!.reasoningLevel,
+        });
         loadedSessions.current.add(session.id);
         setSessions((cur) => [session, ...cur]);
         setActiveId(session.id);
@@ -445,16 +461,20 @@ export function ChatPanel({
       dispatch({ type: "busy", sessionId: sid, busy: true });
       stickToBottom.current = true;
       const current = sessions.find((s) => s.id === sid);
-      // Model overrides only apply within the session's own harness.
-      const model =
-        effective && (!current || current.harness === effective.harness)
-          ? effective.model
-          : undefined;
+      // Composer overrides only apply within the session's own harness.
+      const sameHarness = effective && (!current || current.harness === effective.harness);
+      const turnOpts = sameHarness
+        ? {
+            model: effective.model,
+            permissionMode: effective.permissionMode,
+            reasoningLevel: effective.reasoningLevel,
+          }
+        : {};
       const images: ChatImageAttachment[] = pending.map((a) => ({
         mediaType: a.mediaType,
         dataBase64: a.dataUrl.slice(a.dataUrl.indexOf(",") + 1),
       }));
-      await sendChatMessage(sid, text, model, images.length ? images : undefined);
+      await sendChatMessage(sid, text, turnOpts, images.length ? images : undefined);
     } catch {
       if (sid) dispatch({ type: "busy", sessionId: sid, busy: false });
     }
@@ -685,8 +705,26 @@ export function ChatPanel({
             }}
           />
           <div className="composer-actions">
-            <ModelPicker value={selection} onSelect={selectModel} onHarnesses={setHarnesses} />
+            {/* Bottom-left: permission mode. */}
+            <OptionPicker
+              choices={opts?.permissionModes ?? []}
+              value={activeSelection?.permissionMode ?? opts?.defaultPermissionMode ?? null}
+              align="left"
+              variant="pill"
+              title="Permission mode for this chat"
+              onSelect={setPermissionMode}
+            />
             <div style={{ flex: 1 }} />
+            {/* Bottom-right: model, then reasoning level. */}
+            <ModelPicker value={selection} onSelect={selectModel} onHarnesses={setHarnesses} />
+            <OptionPicker
+              choices={opts?.reasoningLevels ?? []}
+              value={activeSelection?.reasoningLevel ?? opts?.defaultReasoningLevel ?? null}
+              align="right"
+              variant="bare"
+              title="Reasoning level for this chat"
+              onSelect={setReasoningLevel}
+            />
             {busy ? (
               <button className="send-btn stop" title="Stop" aria-label="Stop" onClick={stop}>
                 <X size={16} />

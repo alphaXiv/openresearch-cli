@@ -2563,10 +2563,13 @@ select:focus {
 
 /* ---- composer model picker ---- */
 
-.model-picker {
+.model-picker,
+.option-picker {
   position: relative;
+  display: inline-flex;
 }
-.model-btn {
+/* Boxed composer control (permission mode, model). */
+.composer-pill {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -2576,15 +2579,28 @@ select:focus {
   padding: 5px 8px;
   border-radius: 6px;
 }
-.model-btn:hover {
+.composer-pill:hover {
   background: var(--surface);
   color: var(--text);
 }
-.model-menu {
+/* Text-only composer control (reasoning level) — sits beside the model label. */
+.composer-bare {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11.5px;
+  color: var(--subtext);
+  padding: 5px 4px;
+  border-radius: 6px;
+}
+.composer-bare:hover {
+  color: var(--text);
+}
+.model-menu,
+.option-menu {
   position: absolute;
   bottom: calc(100% + 8px);
   left: 0;
-  width: 320px;
   max-height: 380px;
   display: flex;
   flex-direction: column;
@@ -2594,6 +2610,19 @@ select:focus {
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
   z-index: 50;
   overflow: hidden;
+}
+.model-menu {
+  width: 320px;
+}
+.option-menu {
+  min-width: 130px;
+  padding: 6px;
+}
+/* Right-anchored menus (bottom-right controls) open toward the left edge. */
+.model-menu.align-right,
+.option-menu.align-right {
+  left: auto;
+  right: 0;
 }
 .model-menu input {
   border: none;

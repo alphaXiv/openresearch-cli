@@ -18,6 +18,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use super::detect::{bin_version, find_on_path, nonempty_str, read_json, HarnessInfo};
+use super::options::{HarnessOptions, PermissionMode, ReasoningLevel};
 use super::Harness;
 use crate::error::{anyhow, Result};
 use crate::local::chat::{prepare_env, TurnCtx, WirePart, WireToolState};
@@ -100,6 +101,27 @@ impl Harness for ClaudeCode {
         run_turn(ctx).await
     }
 
+    fn options(&self) -> HarnessOptions {
+        HarnessOptions::none()
+            .with_permission_modes(
+                &[
+                    PermissionMode::Auto,
+                    PermissionMode::Plan,
+                    PermissionMode::Default,
+                    PermissionMode::Bypass,
+                ],
+                PermissionMode::Auto,
+            )
+            .with_reasoning_levels(
+                &[
+                    ReasoningLevel::Low,
+                    ReasoningLevel::Medium,
+                    ReasoningLevel::High,
+                ],
+                ReasoningLevel::High,
+            )
+    }
+
     fn config_home(&self) -> Option<PathBuf> {
         Some(dirs::home_dir()?.join(".claude"))
     }
@@ -115,6 +137,27 @@ impl Harness for ClaudeCode {
 
     fn skill_shim(&self) -> Option<&'static str> {
         Some(super::CLAUDE_SKILL)
+    }
+}
+
+/// Wire mode → Claude Code's `--permission-mode` value. Defaults to `Auto`
+/// (acceptEdits) when the session hasn't picked one.
+fn claude_permission_mode(mode: Option<PermissionMode>) -> &'static str {
+    match mode.unwrap_or(PermissionMode::Auto) {
+        PermissionMode::Auto => "acceptEdits",
+        PermissionMode::Plan => "plan",
+        PermissionMode::Default => "default",
+        PermissionMode::Bypass => "bypassPermissions",
+    }
+}
+
+/// Reasoning level → Claude Code thinking keyword, prepended to the prompt.
+/// Claude escalates its thinking budget on these phrases; `Low` adds nothing.
+fn claude_thinking_directive(level: Option<ReasoningLevel>) -> Option<&'static str> {
+    match level.unwrap_or(ReasoningLevel::High) {
+        ReasoningLevel::Low => None,
+        ReasoningLevel::Medium => Some("think"),
+        ReasoningLevel::High => Some("think hard"),
     }
 }
 
@@ -158,7 +201,7 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
         "stream-json",
         "--verbose",
         "--permission-mode",
-        "bypassPermissions",
+        claude_permission_mode(ctx.permission_mode),
         // Headless --print can't answer it (auto-dismissed); parity with the
         // opencode config's `question: false`.
         "--disallowed-tools",
@@ -179,11 +222,17 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     }
     prepare_env(&mut cmd);
 
+    // Reasoning level rides the prompt as a thinking directive Claude recognizes.
+    let prompt = match claude_thinking_directive(ctx.reasoning_level) {
+        Some(directive) => format!("{directive}.\n\n{}", ctx.text),
+        None => ctx.text.clone(),
+    };
+
     let mut child = cmd
         .spawn()
         .map_err(|e| anyhow!("Could not spawn {}: {}", bin.display(), e))?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(ctx.text.as_bytes()).await?;
+        stdin.write_all(prompt.as_bytes()).await?;
         // Dropped here: EOF is what tells --print the prompt is complete.
     }
     let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
