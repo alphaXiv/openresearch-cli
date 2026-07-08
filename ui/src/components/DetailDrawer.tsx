@@ -1,4 +1,4 @@
-import { CircleStop, History, RotateCw } from "lucide-react";
+import { ChevronDown, CircleStop, RotateCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   cancelRun,
@@ -95,6 +95,9 @@ function TerminalView({
   const selectedRun =
     (selectedRunId && expRuns.find((r) => r.id === selectedRunId)) || expRuns[0] || null;
   const live = selectedRun?.status === "running" || selectedRun?.status === "starting";
+  // expRuns is newest-first, so the oldest run is #1. Number a run by its
+  // position from the end of the list.
+  const runNumber = (id: string) => expRuns.length - expRuns.findIndex((r) => r.id === id);
 
   // When a new run starts while the tab is open, follow it live.
   const seenRunIds = useRef<Set<string> | null>(null);
@@ -131,9 +134,8 @@ function TerminalView({
   return (
     <div className="term-view">
       <div className="term-bar">
-        <div className="term-branch">
-          <span className="k">branch:</span>
-          <span className="name">{experiment.branchName}</span>
+        <div className="term-title" title={experiment.title || experiment.slug}>
+          {experiment.title || experiment.slug}
         </div>
         <span style={{ flex: 1 }} />
         {error && <span className="error">{error}</span>}
@@ -143,19 +145,20 @@ function TerminalView({
             Stop
           </button>
         )}
-        {selectedRun && <StatusBadge status={selectedRun.status} />}
-        {expRuns.length > 0 && (
+        {expRuns.length > 0 && selectedRun && (
           <div className="run-history" ref={historyRef}>
             <button
-              className="icon-btn"
-              title="Run history"
+              className="run-picker"
+              title="Switch run"
               onClick={() => setHistoryOpen((v) => !v)}
             >
-              <History size={14} />
+              <span className="run-label">Run {runNumber(selectedRun.id)}</span>
+              <StatusBadge status={selectedRun.status} />
+              <ChevronDown size={14} className="run-picker-chev" />
             </button>
             {historyOpen && (
               <div className="history-menu">
-                {expRuns.map((r, i) => (
+                {expRuns.map((r) => (
                   <button
                     key={r.id}
                     className={`history-item ${r.id === selectedRun?.id ? "active" : ""}`}
@@ -164,7 +167,7 @@ function TerminalView({
                       setHistoryOpen(false);
                     }}
                   >
-                    <span className="run-label">Run {expRuns.length - i}</span>
+                    <span className="run-label">Run {runNumber(r.id)}</span>
                     <StatusBadge status={r.status} />
                     <span className="when">{timeAgo(r.createdAt)}</span>
                   </button>
@@ -296,11 +299,12 @@ function ChangesView({ experiment }: { experiment: Experiment }) {
                   ))}
                 </select>
                 <button
-                  className="btn sm ghost"
+                  className="icon-btn"
                   title="Refresh"
+                  aria-label="Refresh"
                   onClick={() => void loadChanges()}
                 >
-                  <RotateCw size={13} />
+                  <RotateCw size={14} />
                 </button>
               </div>
               <div style={{ marginTop: 10 }}>

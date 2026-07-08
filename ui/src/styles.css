@@ -175,10 +175,14 @@ select:focus {
   height: 100%;
 }
 
+/* Horizontal padding gives the chat column a constant gutter to the screen
+   edge; it stays even when a side panel collapses (a flex gap would not).
+   The panels' inner margins add the matching gutter when a panel is present. */
 .app-body {
   display: flex;
   flex: 1;
   min-height: 0;
+  padding: 0 14px;
 }
 
 /* ---- projects home ---- */
@@ -276,19 +280,35 @@ select:focus {
   gap: 4px;
   height: 48px;
   /* 12px left text inset + ~14px icon right edge — keep in step with
-     .rail-compute-btn and .new-session below. */
+     .rail-nav below. */
   padding: 0 8px 0 12px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
+/* Back arrow + current project name; truncates, arrow stays visible. */
 .rail-brand .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
   font-weight: 700;
-  font-size: 14px;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text);
+  padding: 4px 6px 4px 0;
+  border-radius: 6px;
 }
-.rail-brand .brand span {
-  color: var(--primary);
+.rail-brand .brand:hover {
+  color: var(--subtext);
+}
+.rail-brand .brand svg {
+  flex-shrink: 0;
+}
+.rail-brand .brand .brand-project {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .icon-btn {
@@ -369,22 +389,21 @@ select:focus {
   box-shadow: 1px 1px 0 0 var(--text);
 }
 
-/* ---- status badge (mono uppercase + dot; live statuses pulse) ---- */
+/* ---- status badge (colored dot + quiet label; live statuses pulse) ---- */
 
 .status-badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--subtext);
+  text-transform: capitalize;
   white-space: nowrap;
 }
 .status-badge .dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: currentColor;
   flex-shrink: 0;
@@ -392,135 +411,171 @@ select:focus {
 .status-badge.live .dot {
   animation: pulse 1.2s ease-in-out infinite;
 }
-.st-done {
+/* The status color lives on the dot; the label stays neutral. */
+.st-done .dot {
   color: var(--accent-green);
 }
-.st-failed {
+.st-failed .dot {
   color: var(--accent-red);
 }
-.st-running {
+.st-running .dot {
   color: var(--accent-teal);
 }
-.st-starting {
+.st-starting .dot {
   color: var(--accent-amber);
 }
-.st-cancelled {
+.st-cancelled .dot {
   color: var(--accent-orange);
 }
-.st-editing {
+.st-editing .dot {
   color: var(--accent-purple);
 }
-.st-idle {
-  color: var(--subtext);
+.st-idle .dot {
+  color: var(--muted);
 }
 
 /* ---- panes ---- */
 
+/* Floating agents rail: fixed-width, collapsible (not resizable). */
 .session-rail {
   width: 232px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border);
+  /* right margin = the gutter to the chat column; screen-edge gutter comes
+     from .app-body's left padding. */
+  margin: 10px 14px 10px 0;
   background: var(--base);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow:
+    0 6px 24px color-mix(in oklab, var(--text) 5%, transparent),
+    0 1px 4px color-mix(in oklab, var(--text) 4%, transparent);
+  overflow: hidden;
   min-height: 0;
 }
-.session-rail .rail-header {
+/* Rail nav: new session + settings sections, above the Recents list. */
+.rail-nav {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 48px;
-  border-bottom: 1px solid var(--border);
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
   flex-shrink: 0;
 }
-.session-rail .rail-header .rail-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-  font-weight: 700;
-}
-.session-rail .rail-compute-btn {
+.rail-nav-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-  padding: 6px 14px 6px 12px;
-  font-size: 13px;
-  font-weight: 700;
+  gap: 10px;
+  padding: 7px 10px;
+  font-size: 12.5px;
   color: var(--subtext);
+  border-radius: 8px;
+  text-align: left;
 }
-.session-rail .rail-compute-btn:hover {
-  color: var(--text);
+.rail-nav-item:hover {
   background: var(--surface);
+  color: var(--text);
+}
+.rail-nav-item.active {
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.rail-section-label {
+  padding: 10px 10px 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
 }
 .session-rail .rail-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 4px 0;
+  padding: 4px 8px;
 }
 
 .chat-pane {
   flex: 1;
   max-width: 760px;
-  min-width: 360px;
+  /* min-width:0 (not 360) so a wide panel can never force the flex row past
+     the viewport; the panel's own clamp keeps the usable minimum. */
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border);
+  /* Centers in the leftover space; the constant side gutters live on the
+     .app-body padding + the panels' inner margins, so they don't vanish when
+     a panel collapses. */
+  margin: 0 auto;
   background: var(--base);
   min-height: 0;
 }
 
+/* Floating right panel: a closable, resizable card. `.max` lifts it out of
+   the flex row to cover (nearly) the whole window, still floating. */
 .right-pane {
-  flex: 1.2;
+  position: relative;
+  flex-shrink: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  position: relative;
+  /* left margin = the gutter to the chat column; screen-edge gutter comes
+     from .app-body's right padding. */
+  margin: 10px 0 10px 14px;
   background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow:
+    0 6px 24px color-mix(in oklab, var(--text) 5%, transparent),
+    0 1px 4px color-mix(in oklab, var(--text) 4%, transparent);
+  overflow: hidden;
+}
+.right-pane.max {
+  position: fixed;
+  inset: 10px;
+  margin: 0;
+  z-index: 60;
+  box-shadow: 0 12px 40px color-mix(in oklab, var(--text) 22%, transparent);
 }
 
+/* Invisible grab strip on the panel's left edge. Sits above the detail
+   overlays (.drawer/.term-view are z-index 20, inset 0) so resizing works in
+   every view, not just the tree. */
+.panel-resizer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 30;
+}
+.panel-resizer:hover,
+.panel-resizer:active {
+  background: color-mix(in oklab, var(--text) 12%, transparent);
+}
+
+/* Expand/close cluster at the right end of the panel's tab bar. */
+.panel-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* Panel tab bar: pinned Log/Artifacts + closable experiment/file tabs. */
 .tabs {
   display: flex;
   align-items: center;
   gap: 4px;
   padding: 0 10px;
-  height: 48px;
+  height: 40px;
   border-bottom: 1px solid var(--border);
   background: var(--base);
   flex-shrink: 0;
 }
 
-.tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 12px;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--subtext);
-  border-radius: 6px;
-}
-.tab:hover {
-  color: var(--text);
-}
-.tab.active {
-  color: var(--text);
-  background: var(--surface);
-}
-.tab .tab-count {
-  font-family: var(--mono);
-  font-weight: 400;
-  color: var(--muted);
-}
-
-/* Scrollable strip of tabs (open sessions / open experiments). */
+/* Scrollable strip of tabs. */
 .tab-strip {
   display: flex;
   align-items: center;
@@ -534,13 +589,9 @@ select:focus {
   display: none;
 }
 
-/* Dynamic (closable) tabs: normal-case labels, truncated, inline close "x". */
+/* Dynamic (closable) tabs: truncated label, inline close "x". */
 .tab.closable {
-  text-transform: none;
-  letter-spacing: normal;
-  font-size: 12px;
   max-width: 176px;
-  flex-shrink: 0;
   padding-right: 4px;
 }
 .tab .tab-label {
@@ -564,55 +615,106 @@ select:focus {
   color: var(--text);
 }
 
+/* One tab style for the whole strip — pinned tabs simply have no close "x". */
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--subtext);
+  border-radius: 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.tab:hover {
+  color: var(--text);
+}
+.tab.active {
+  color: var(--text);
+  background: var(--surface);
+}
+.tab .tab-count {
+  font-family: var(--mono);
+  font-weight: 400;
+  color: var(--muted);
+}
+
 .tab-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Toolbar row above a tab's content (e.g. the tree/table switch). */
+.pane-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 10px 12px 0;
+  flex-shrink: 0;
+}
+.pane-content {
   flex: 1;
   min-height: 0;
   position: relative;
 }
 
-/* Segmented control (the Log tab's table/tree switch) */
+/* Segmented control: a clearly-darker track (the theme's creams all blend
+   into each other) with a raised white pill on the active segment. */
 .seg {
   display: inline-flex;
   align-items: center;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--base);
-  overflow: hidden;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--text) 10%, transparent);
 }
 .seg button {
-  padding: 4px 10px;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  padding: 3px 12px;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--subtext);
+  border-radius: 6px;
 }
-.seg button + button {
-  border-left: 1px solid var(--border);
-}
-.seg button.active {
-  background: var(--surface);
+.seg button:hover {
   color: var(--text);
 }
-.seg-float {
-  position: absolute;
-  top: 10px;
-  right: 12px;
-  z-index: 5;
+.seg button.active {
+  background: var(--base);
+  color: var(--text);
+  box-shadow: 0 1px 3px color-mix(in oklab, var(--text) 25%, transparent);
 }
 
 /* ---- chat ---- */
 
+/* Borderless header that fades into the chat: the thread scrolls under a
+   gradient hanging below the bar instead of hitting a hard rule. */
 .chat-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--border);
+  padding: 0 16px;
   background: var(--base);
   flex-shrink: 0;
   height: 48px;
+  position: relative;
+  z-index: 4;
 }
+.chat-header::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 24px;
+  background: linear-gradient(to bottom, var(--base), transparent);
+  pointer-events: none;
+}
+
 
 .chat-header .title {
   font-size: 13px;
@@ -631,7 +733,8 @@ select:focus {
   gap: 8px;
   width: 100%;
   text-align: left;
-  padding: 8px 12px;
+  padding: 7px 10px;
+  border-radius: 8px;
   font-size: 12.5px;
   color: var(--subtext);
 }
@@ -640,9 +743,17 @@ select:focus {
   color: var(--text);
 }
 .session-row.active {
-  color: var(--primary);
+  color: var(--text);
   background: var(--surface);
-  font-weight: 700;
+  font-weight: 500;
+}
+/* Reserved status column so titles align whether or not a busy dot shows. */
+.session-row .session-dot {
+  width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 .session-row .session-title {
   flex: 1;
@@ -652,7 +763,7 @@ select:focus {
   white-space: nowrap;
 }
 .session-row .session-time {
-  font-size: 10.5px;
+  font-size: 10px;
   font-family: var(--mono);
   color: var(--muted);
   flex-shrink: 0;
@@ -665,30 +776,13 @@ select:focus {
   animation: pulse 1.2s infinite;
   flex-shrink: 0;
 }
-.session-row .del {
-  color: var(--muted);
-  visibility: hidden;
-  font-size: 14px;
-  line-height: 1;
-}
-.session-row:hover .del {
-  visibility: visible;
-}
-.session-row .del:hover {
-  color: var(--accent-red);
-}
-.session-row.new-session {
-  padding-right: 14px;
-}
-.session-row.new-session svg {
-  flex-shrink: 0;
-}
-
 .chat-thread {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px 16px 6px;
+  /* Bottom padding clears the composer's 24px fade so the last message stays
+     fully legible when scrolled to the very bottom. */
+  padding: 16px 16px 32px;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -727,24 +821,16 @@ select:focus {
   max-width: 320px;
 }
 
-/* user message: right-aligned card with a muted "You" eyebrow */
+/* user message: a right-aligned rounded bubble, no border, no label */
 .msg-user {
   align-self: flex-end;
   max-width: 88%;
   background: var(--surface);
-  border: 1px solid var(--border-variant);
-  padding: 13px 15px;
+  border-radius: 16px;
+  padding: 10px 15px;
   font-size: 13px;
   white-space: pre-wrap;
   word-break: break-word;
-}
-.msg-user .eyebrow {
-  display: block;
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--muted);
-  margin-bottom: 4px;
-  white-space: nowrap;
 }
 .msg-images {
   display: flex;
@@ -866,11 +952,25 @@ select:focus {
   flex-shrink: 0;
 }
 
-/* composer: rounded box, neo square send button */
+/* composer: rounded box, neo square send button. Borderless like the header —
+   the thread fades into the box through a gradient hanging above it. */
 .composer {
-  padding: 12px;
-  border-top: 1px solid var(--border);
+  /* No top padding: the fade hanging above leads straight into the box. */
+  padding: 0 12px 12px;
   flex-shrink: 0;
+  position: relative;
+  z-index: 4;
+  background: var(--base);
+}
+.composer::before {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  height: 24px;
+  background: linear-gradient(to top, var(--base), transparent);
+  pointer-events: none;
 }
 .composer-box {
   position: relative; /* anchors the slash-skill menu */
@@ -879,9 +979,6 @@ select:focus {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--base);
-}
-.composer-box:focus-within {
-  border-color: var(--text);
 }
 .composer textarea {
   border: none;
@@ -941,29 +1038,28 @@ select:focus {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
-  border: 2px solid var(--text);
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
   background: var(--primary);
   color: var(--base);
-  font-size: 15px;
-  font-weight: 700;
-  box-shadow: 2px 2px 0 0 var(--text);
   transition:
-    transform 80ms ease,
-    box-shadow 80ms ease;
+    background 100ms ease,
+    opacity 100ms ease;
 }
 .send-btn:hover:not(:disabled) {
-  transform: translate(1px, 1px);
-  box-shadow: 1px 1px 0 0 var(--text);
+  background: color-mix(in oklab, var(--primary) 88%, var(--text));
 }
 .send-btn:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
   cursor: default;
 }
 .send-btn.stop {
-  background: var(--base);
+  background: var(--surface);
   color: var(--text);
+}
+.send-btn.stop:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--surface) 88%, var(--text));
 }
 
 /* ---- markdown ---- */
@@ -1230,41 +1326,50 @@ select:focus {
 
 /* ---- runs table ---- */
 
+/* Runs table: a white card on the panel canvas, quiet separators. */
 .runs-table-wrap {
   position: absolute;
   inset: 0;
   overflow: auto;
-  padding: 14px;
+  padding: 12px;
 }
 .runs-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 12.5px;
+  background: var(--base);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
 }
 .runs-table th {
   text-align: left;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 10.5px;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-weight: 700;
-  padding: 6px 10px;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
-  background: var(--canvas);
+  background: var(--base);
   z-index: 1;
 }
 .runs-table td {
-  padding: 8px 10px;
-  border-bottom: 1px solid color-mix(in oklab, var(--text) 10%, transparent);
+  padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in oklab, var(--text) 6%, transparent);
   white-space: nowrap;
+}
+.runs-table tr:last-child td {
+  border-bottom: none;
 }
 .runs-table tr.clickable {
   cursor: pointer;
 }
 .runs-table tr.clickable:hover td {
-  background: var(--surface);
+  background: var(--canvas);
 }
 .mono {
   font-family: var(--mono);
@@ -1299,14 +1404,20 @@ select:focus {
   z-index: 20;
 }
 
+/* No padding-top: it would hold sticky diff-file headers 18px below the top
+   with scrolled content peeking through the gap. The first child carries the
+   spacing as margin instead, which scrolls away with the content. */
 .drawer-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 18px 16px 24px;
+  padding: 0 16px 24px;
   display: flex;
   flex-direction: column;
   gap: 22px;
+}
+.drawer-body > :first-child {
+  margin-top: 18px;
 }
 
 .drawer-section h3 {
@@ -1351,21 +1462,11 @@ select:focus {
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.term-branch {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.term-title {
   min-width: 0;
-  font-size: 12px;
-}
-.term-branch .k {
+  font-size: 13px;
   font-weight: 700;
-  color: var(--subtext);
-  flex-shrink: 0;
-}
-.term-branch .name {
-  font-family: var(--mono);
-  font-weight: 700;
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1399,6 +1500,28 @@ select:focus {
 /* run history dropdown */
 .run-history {
   position: relative;
+  flex-shrink: 0;
+}
+.run-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--base);
+  color: var(--text);
+}
+.run-picker:hover {
+  background: var(--surface);
+}
+.run-picker .run-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+.run-picker-chev {
+  color: var(--muted);
+  flex-shrink: 0;
 }
 .history-menu {
   position: absolute;
@@ -1817,6 +1940,11 @@ select:focus {
   border-color: var(--accent-red);
   background: var(--accent-red-subtle);
 }
+.badge.warn {
+  color: var(--accent-amber);
+  border-color: var(--accent-amber);
+  background: var(--accent-amber-subtle);
+}
 
 /* ---- artifacts tab ---- */
 
@@ -1988,9 +2116,16 @@ select:focus {
 }
 
 .diff-file-card {
-  border: 1px solid color-mix(in oklab, var(--text) 15%, transparent);
-  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--base);
 }
+/* The header owns the card's rounded top outline (overlaid on the card
+   border via -1px margins) so it still looks like a rounded card top while
+   stuck — the card's own border scrolls away with the card. Painted via two
+   layered pseudo-elements because negative-z children cover the element's own
+   background/border: a square white mask below (hides code scrolling past the
+   corner notches), the rounded bordered surface above it, text on top. */
 .diff-file-header {
   position: sticky;
   top: 0;
@@ -1999,12 +2134,27 @@ select:focus {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  width: 100%;
+  margin: -1px -1px 0;
+  width: calc(100% + 2px);
   text-align: left;
   padding: 8px 12px;
-  border-bottom: 1px solid color-mix(in oklab, var(--text) 15%, transparent);
-  background: var(--base);
   cursor: pointer;
+}
+.diff-file-header::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  background: var(--base);
+}
+.diff-file-header::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: 8px 8px 0 0;
 }
 .diff-file-header .chev {
   color: var(--muted);
@@ -2079,45 +2229,42 @@ select:focus {
     var(--surface) 68%,
     var(--primary)
   );
+  /* GitHub-strength washes: the tint should read as a highlight, not paint. */
   --openresearch-diff-insert-gutter-background-color: color-mix(
     in oklab,
-    var(--surface) 76%,
+    var(--base) 84%,
     var(--accent-green)
   );
   --openresearch-diff-delete-gutter-background-color: color-mix(
     in oklab,
-    var(--surface) 78%,
+    var(--base) 86%,
     var(--accent-red)
   );
   --openresearch-diff-insert-code-background-color: color-mix(
     in oklab,
-    var(--surface) 72%,
+    var(--base) 91%,
     var(--accent-green)
   );
   --openresearch-diff-delete-code-background-color: color-mix(
     in oklab,
-    var(--surface) 74%,
+    var(--base) 92%,
     var(--accent-red)
   );
   --openresearch-diff-insert-edit-background-color: color-mix(
     in oklab,
-    var(--surface) 32%,
+    var(--base) 72%,
     var(--accent-green)
   );
   --openresearch-diff-delete-edit-background-color: color-mix(
     in oklab,
-    var(--surface) 50%,
+    var(--base) 78%,
     var(--accent-red)
   );
-  --openresearch-diff-divider-color: color-mix(in oklab, var(--surface) 85%, var(--text));
-  --openresearch-diff-omit-gutter-line-color: color-mix(in oklab, var(--surface) 86%, var(--text));
-  --openresearch-diff-unified-gutter-text-color: color-mix(
-    in oklab,
-    var(--text) 70%,
-    var(--surface)
-  );
+  --openresearch-diff-divider-color: var(--border);
+  --openresearch-diff-omit-gutter-line-color: color-mix(in oklab, var(--base) 86%, var(--text));
+  --openresearch-diff-unified-gutter-text-color: color-mix(in oklab, var(--text) 45%, var(--base));
 
-  --diff-background-color: var(--surface);
+  --diff-background-color: var(--base);
   --diff-text-color: var(--text);
   --diff-font-family: var(--mono);
   --diff-selection-text-color: var(--primary);
@@ -2143,8 +2290,8 @@ select:focus {
   --diff-omit-gutter-line-color: var(--openresearch-diff-omit-gutter-line-color);
 
   width: 100%;
-  font-size: 0.8rem;
-  line-height: 1.05rem;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .openresearch-diff .openresearch-diff-file.diff-unified {
@@ -2164,13 +2311,7 @@ select:focus {
   cursor: default;
 }
 .openresearch-diff .openresearch-diff-file .diff-line {
-  line-height: 1.05rem;
-}
-.openresearch-diff .openresearch-diff-file .diff-gutter-insert {
-  box-shadow: inset 0.25rem 0 0 var(--accent-green);
-}
-.openresearch-diff .openresearch-diff-file .diff-gutter-delete {
-  box-shadow: inset 0.25rem 0 0 var(--accent-red);
+  line-height: 1.5;
 }
 .openresearch-diff .openresearch-diff-file .diff-hunk + .diff-hunk .diff-line:first-child > td {
   border-top: 1px solid var(--openresearch-diff-divider-color);
@@ -2246,22 +2387,8 @@ select:focus {
   :is(.md, .openresearch-diff, .file-view) .token.parameter { color: #abb2bf; }
 }
 
-/* ---- settings page (full view) ---- */
+/* ---- settings sections (shown in the middle pane, picked from the rail) ---- */
 
-.settings-page {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  background: var(--canvas);
-}
-.settings-topbar {
-  display: flex;
-  align-items: center;
-  padding: 10px 16px;
-  flex-shrink: 0;
-}
-.settings-back,
 .report-back {
   display: inline-flex;
   align-items: center;
@@ -2272,56 +2399,21 @@ select:focus {
   padding: 4px 8px;
   border-radius: 6px;
 }
-.settings-back:hover,
 .report-back:hover {
   color: var(--text);
   background: var(--surface);
 }
-.settings-body {
-  display: flex;
+.settings-view-scroll {
   flex: 1;
   min-height: 0;
-}
-.settings-nav {
-  width: 220px;
-  flex-shrink: 0;
-  padding: 8px 12px;
-  border-right: 1px solid var(--border-variant);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.settings-nav button {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 10px;
-  font-size: 13.5px;
-  color: var(--subtext);
-  border-radius: 8px;
-  text-align: left;
-}
-.settings-nav button:hover {
-  background: var(--surface);
-  color: var(--text);
-}
-.settings-nav button.active {
-  background: var(--panel);
-  color: var(--text);
-  font-weight: 600;
-}
-.settings-main {
-  flex: 1;
-  min-width: 0;
   overflow-y: auto;
-  padding: 24px 40px 60px;
 }
-.settings-main h1 {
+.settings-view {
+  padding: 24px 32px 60px;
+}
+.settings-view h1 {
   margin: 0 0 6px;
   font-size: 22px;
-}
-.settings-main > * {
-  max-width: 760px;
 }
 .settings-sub {
   margin: 0 0 18px;
