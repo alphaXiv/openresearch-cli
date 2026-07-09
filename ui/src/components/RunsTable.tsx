@@ -1,5 +1,5 @@
 import { GitBranch } from "lucide-react";
-import { shortId, timeAgo, type Experiment, type Run } from "../api";
+import { backendDetail, backendKind, shortId, timeAgo, type Experiment, type Run } from "../api";
 import { StatusBadge } from "./StatusBadge";
 
 // Legacy alias kept for external imports; StatusBadge owns the styling.
@@ -7,21 +7,13 @@ export function StatusChip({ status }: { status: string }) {
   return <StatusBadge status={status} />;
 }
 
+// "modal_job · a100" — the kind plus its flavor/host/manifest, for the runs
+// table's text-only Backend column. (The Instances tab uses BackendBadge, which
+// renders the same pieces with a logo.)
 function backendLabel(run: Run): string {
-  const b = run.backend;
-  if (!b) return "—";
-  const kind = typeof b.kind === "string" ? b.kind : typeof b.type === "string" ? b.type : "";
-  // k8s runs carry a manifest path, ssh runs a host (in namespace), instead
-  // of a flavor.
-  const shape =
-    typeof b.flavor === "string" && b.flavor
-      ? b.flavor
-      : typeof b.manifest === "string" && b.manifest
-        ? b.manifest
-        : kind === "ssh_job" && typeof b.namespace === "string"
-          ? b.namespace
-          : "";
-  return [kind, shape].filter(Boolean).join(" · ") || "—";
+  const kind = backendKind(run.backend);
+  if (!kind) return "—";
+  return [kind, backendDetail(run.backend)].filter(Boolean).join(" · ");
 }
 
 export function RunsTable({
