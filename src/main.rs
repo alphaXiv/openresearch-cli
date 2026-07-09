@@ -139,6 +139,12 @@ enum Command {
     /// Start the local autoresearch dashboard on 127.0.0.1: embedded UI,
     /// JSON/SSE API over the local store, and the opencode agent proxy.
     Up(UpArgs),
+
+    /// Claude Code PreToolUse hook: reads a tool call on stdin and auto-approves
+    /// read-only `orx` commands (so they run even in plan mode). Machine-facing;
+    /// emits only the hook JSON. Not for interactive use.
+    #[command(name = "hook-approve", hide = true)]
+    HookApprove,
 }
 
 #[derive(Args, Debug)]
@@ -656,8 +662,11 @@ async fn main() {
     // `std::process::exit` on their own (e.g. the "not logged in" path) instead
     // of returning here. Never touches stdout or the exit code. Silence it with
     // ORX_NO_UPDATE_CHECK / NO_UPDATE_NOTIFIER.
-    let warning = (!matches!(command, Command::Version(_) | Command::Update(_)))
-        .then(updates::UpdateWarning::start);
+    let warning = (!matches!(
+        command,
+        Command::Version(_) | Command::Update(_) | Command::HookApprove
+    ))
+    .then(updates::UpdateWarning::start);
 
     let result = dispatch(command).await;
     if let Some(warning) = warning {
@@ -703,5 +712,6 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Serve(args) => commands::serve::run(args).await,
         Command::Supervise(args) => commands::supervise::run(args).await,
         Command::Up(args) => commands::up::run(args).await,
+        Command::HookApprove => commands::hook_approve::run().await,
     }
 }

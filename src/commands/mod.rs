@@ -26,6 +26,7 @@ pub mod env;
 pub mod exp;
 pub mod experiments;
 pub mod explore;
+pub mod hook_approve;
 pub mod install_skills;
 pub mod instance;
 pub mod lit;
