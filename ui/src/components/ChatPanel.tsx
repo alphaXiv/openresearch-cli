@@ -343,11 +343,12 @@ function PromptCard({
         {done ? (
           <div className="prompt-resolved">Resolved</div>
         ) : (
-          // resumeMode applies to end-turn harnesses (Claude resumes under it);
-          // inline harnesses (opencode) reply once/reject keyed off `approve`
-          // and ignore it. approve=false denies either way.
+          // No resumeMode: the harness picks the right one for an approval.
+          // Claude resumes under `bypass` (the only mode that actually grants a
+          // blocked tool — acceptEdits would re-deny Bash); inline harnesses
+          // (opencode) reply once/reject keyed off `approve`. Deny denies either way.
           <div className="prompt-actions">
-            <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "accept-edits" })}>
+            <button className="btn-primary" onClick={() => respond({ approve: true })}>
               Allow
             </button>
             <button className="btn-ghost" onClick={() => respond({ approve: false })}>

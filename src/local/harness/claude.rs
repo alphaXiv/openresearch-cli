@@ -222,8 +222,16 @@ fn synthesize_resume(kind: &str, req: &PromptAnswer) -> (String, Option<Permissi
             (text, Some(PermissionMode::Plan))
         }
         "permission" => {
+            // Approving a blocked tool must resume under a mode that actually
+            // *grants* it. Claude's `--permission-mode` is coarse: `acceptEdits`
+            // only auto-approves file edits, so it leaves a Bash (or any
+            // non-edit) denial in place — the tool is denied again and the card
+            // re-appears in a loop. `bypass` is the only mode that lets the
+            // previously-blocked tool through, so that's the default for an
+            // approval (a caller can still override via `resume_mode`). Verified
+            // against the CLI: acceptEdits re-denies Bash, bypass clears it.
             let text = "The user approved that action. Continue.".to_string();
-            (text, chosen)
+            (text, chosen.or(Some(PermissionMode::Bypass)))
         }
         // question (or anything else): feed the selection back as the user's reply.
         _ => {
@@ -604,6 +612,19 @@ mod tests {
         let (text, mode) = synthesize_resume("plan", &answer(false, None, &[], Some("tweak X")));
         assert!(text.contains("tweak X"));
         assert_eq!(mode, Some(PermissionMode::Plan));
+    }
+
+    #[test]
+    fn permission_approve_defaults_to_bypass() {
+        // Approving a blocked tool must resume under `bypass` — the only mode
+        // that actually grants it. `acceptEdits`/`ask` would re-deny a Bash tool
+        // and loop the card. (Verified against the real CLI.)
+        let (text, mode) = synthesize_resume("permission", &answer(true, None, &[], None));
+        assert!(text.contains("approved"));
+        assert_eq!(mode, Some(PermissionMode::Bypass));
+        // An explicit resume_mode still wins, if a caller sets one.
+        let (_, mode) = synthesize_resume("permission", &answer(true, Some("auto"), &[], None));
+        assert_eq!(mode, Some(PermissionMode::Auto));
     }
 
     #[test]
