@@ -7,6 +7,16 @@
 //! (which resolves when the turn ends), and translate this session's part
 //! events into wire parts as they stream.
 //!
+//! Interactive prompts: unlike Claude (which ends its turn and resumes with a
+//! new message), opencode approves *inline*. Its serve stream emits
+//! `permission.asked` / `question.asked` while the `session.prompt` POST is
+//! still open — the turn is paused, not finished. We surface those as
+//! `permission` / `question` cards and reply over the live session
+//! (`resume_from_prompt` → [`ResumeAction::Handled`]), which unblocks the same
+//! POST. Permission cards can also be auto-resolved from the session's mode
+//! (Auto/Bypass reply "always" without a blocking card); questions always need a
+//! human, so they always surface regardless of mode.
+//!
 //! Detection: opencode's `auth.json` is `{provider: {type}}`; the signed-in
 //! providers are its account line, and `opencode models` is the model list.
 
@@ -19,9 +29,12 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 
 use super::detect::{bin_version, read_json, HarnessInfo};
-use super::Harness;
+use super::options::{HarnessOptions, PermissionMode};
+use super::{Harness, ResumeAction};
 use crate::error::{anyhow, Result};
-use crate::local::chat::{TurnCtx, WirePart, WireToolState};
+use crate::local::chat::{
+    PromptAnswer, ResumeCtx, TurnCtx, WirePart, WirePrompt, WireQuestionOption, WireToolState,
+};
 use crate::local::opencode::find_opencode;
 
 pub struct OpenCode;
@@ -73,6 +86,37 @@ impl Harness for OpenCode {
 
     async fn run_turn(&self, ctx: &mut TurnCtx) -> Result<()> {
         run_turn(ctx).await
+    }
+
+    fn options(&self) -> HarnessOptions {
+        // opencode approves inline (see module docs), so permission modes gate
+        // whether a `permission.asked` surfaces a card or is auto-replied. We
+        // advertise the subset that maps: Ask (surface & wait — opencode's own
+        // default), Auto/Bypass (auto-approve). `Plan`/`AcceptEdits` have no
+        // serve-level equivalent, so they're omitted. No reasoning control:
+        // reasoning is a model property in opencode, not a per-turn flag.
+        HarnessOptions::none().with_permission_modes(
+            &[
+                PermissionMode::Ask,
+                PermissionMode::Auto,
+                PermissionMode::Bypass,
+            ],
+            PermissionMode::Ask,
+        )
+    }
+
+    /// opencode is paused mid-turn on a `permission.asked` / `question.asked`;
+    /// the answer is replied over the live serve session, which unblocks the
+    /// still-open `session.prompt` POST. So this delivers the reply inline and
+    /// returns [`ResumeAction::Handled`] — never the new-message path.
+    async fn resume_from_prompt(
+        &self,
+        ctx: &ResumeCtx,
+        prompt: &WirePrompt,
+        answer: &PromptAnswer,
+    ) -> Result<ResumeAction> {
+        reply_inline(ctx, prompt, answer).await?;
+        Ok(ResumeAction::Handled)
     }
 
     fn config_home(&self) -> Option<PathBuf> {
@@ -181,6 +225,156 @@ fn to_wire_part(part: &Value) -> Option<WirePart> {
     }
 }
 
+/// opencode `permission.asked` payload → a `permission` card. The permission
+/// request id rides on `native_id` so the reply can address
+/// `POST /session/{sid}/permissions/{id}`. `permission` is opencode's tool
+/// group (e.g. `bash`, `edit`); the metadata carries the concrete call detail.
+fn permission_card(props: &Value) -> Option<WirePrompt> {
+    let id = props.get("id").and_then(Value::as_str)?.to_string();
+    Some(WirePrompt {
+        kind: "permission".into(),
+        tool: props
+            .get("permission")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        // The event's `metadata` is the closest thing to a tool input summary
+        // the UI can render (command / file / etc., shape varies by tool).
+        tool_input: props.get("metadata").filter(|m| !m.is_null()).cloned(),
+        native_id: Some(id),
+        ..Default::default()
+    })
+}
+
+/// opencode `question.asked` payload → a `question` card. opencode's
+/// `QuestionInfo` (`{question, header, options:[{label,description}], multiple}`)
+/// is the same shape as Claude's AskUserQuestion, so it maps 1:1. Only the first
+/// question is surfaced (the composer answers one at a time); its request id
+/// rides on `native_id` for `POST /question/{id}/reply`.
+fn question_card(props: &Value) -> Option<WirePrompt> {
+    let id = props.get("id").and_then(Value::as_str)?.to_string();
+    let q = props
+        .get("questions")
+        .and_then(Value::as_array)
+        .and_then(|qs| qs.first())?;
+    let options = q
+        .get("options")
+        .and_then(Value::as_array)
+        .map(|opts| {
+            opts.iter()
+                .filter_map(|o| {
+                    Some(WireQuestionOption {
+                        label: o.get("label").and_then(Value::as_str)?.to_string(),
+                        description: o
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(WirePrompt {
+        kind: "question".into(),
+        question: q
+            .get("question")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        header: q.get("header").and_then(Value::as_str).map(str::to_string),
+        options,
+        multi_select: q.get("multiple").and_then(Value::as_bool).unwrap_or(false),
+        native_id: Some(id),
+        ..Default::default()
+    })
+}
+
+/// POST a permission decision to the live serve session (v1 API). `response` is
+/// `once` | `always` | `reject`.
+async fn post_permission(
+    http: &reqwest::Client,
+    base: &str,
+    native_session: &str,
+    permission_id: &str,
+    response: &str,
+) -> Result<()> {
+    http.post(format!(
+        "{base}/session/{native_session}/permissions/{permission_id}"
+    ))
+    .json(&json!({ "response": response }))
+    .send()
+    .await?
+    .error_for_status()?;
+    Ok(())
+}
+
+/// Deliver an answered card's reply to the live serve session, unblocking the
+/// paused `session.prompt` POST. Permission → `{response: once|always|reject}`;
+/// question → `{answers: [[label,...]]}` (or reject). The reply target is the
+/// card's `native_id` (the opencode permission/question request id).
+async fn reply_inline(ctx: &ResumeCtx, prompt: &WirePrompt, answer: &PromptAnswer) -> Result<()> {
+    let request_id = prompt
+        .native_id
+        .as_deref()
+        .ok_or_else(|| anyhow!("opencode prompt has no reply id"))?;
+    // The reply only lands if the turn is still paused waiting for it. If the
+    // turn already ended (errored / interrupted), serve may still accept the
+    // POST but no one is consuming the resumed stream, so the reply would be
+    // lost and the card would falsely mark resolved. Reject it instead — the
+    // card stays actionable and the user sees the turn is no longer live.
+    if !ctx.is_busy().await {
+        return Err(anyhow!(
+            "this turn is no longer running — its prompt can't be answered"
+        ));
+    }
+    // Reach the live serve child through the shared host, exactly as
+    // `ChatHost::interrupt` does — the reply goes to the same loopback serve
+    // whose `session.prompt` POST is paused on this prompt.
+    let port = ctx
+        .host
+        .opencode
+        .proxy_port()
+        .await
+        .ok_or_else(|| anyhow!("opencode serve is not running — cannot deliver the reply"))?;
+    let base = format!("http://127.0.0.1:{port}");
+    let http = ctx.http();
+
+    match prompt.kind.as_str() {
+        "permission" => {
+            // approve → "always" (so the same tool won't re-prompt this turn);
+            // reject closes it. The reply is session-scoped in opencode's v1 API.
+            let native_session = ctx.native_session_id.as_deref().ok_or_else(|| {
+                anyhow!("opencode session has no native id — cannot deliver the reply")
+            })?;
+            let response = if answer.approve { "always" } else { "reject" };
+            post_permission(http, &base, native_session, request_id, response).await?;
+        }
+        "question" => {
+            if answer.answers.is_empty() {
+                // No selection: reject the question rather than reply empty, so
+                // opencode surfaces the model's fallback path.
+                http.post(format!("{base}/question/{request_id}/reject"))
+                    .json(&json!({}))
+                    .send()
+                    .await?
+                    .error_for_status()?;
+            } else {
+                // opencode takes an array of answers, one per question; we only
+                // surface the first question, so send a single answer array.
+                http.post(format!("{base}/question/{request_id}/reply"))
+                    .json(&json!({ "answers": [&answer.answers] }))
+                    .send()
+                    .await?
+                    .error_for_status()?;
+            }
+        }
+        other => {
+            return Err(anyhow!(
+                "opencode cannot reply to a `{other}` prompt inline"
+            ))
+        }
+    }
+    Ok(())
+}
+
 async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     // Lazy bring-up: spawns serve for this project or reuses the live child.
     let status = ctx.host.opencode.ensure(&ctx.project).await?;
@@ -252,7 +446,12 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                     buf.drain(..=pos);
                     let Some(data) = line.strip_prefix("data: ") else { continue };
                     let Ok(event) = serde_json::from_str::<Value>(data) else { continue };
-                    handle_event(ctx, &native_id, &event, &mut assistant_msgs);
+                    // Interactive prompts (permission/question) pause the turn and
+                    // are handled async (emit a card, or auto-reply per mode); all
+                    // other events are message/part updates handled synchronously.
+                    if !handle_prompt_event(ctx, &native_id, &base, &event).await? {
+                        handle_event(ctx, &native_id, &event, &mut assistant_msgs);
+                    }
                 }
             }
             resp = &mut send => {
@@ -334,5 +533,84 @@ fn handle_event(
             }
         }
         _ => {}
+    }
+}
+
+/// Surface a prompt card and flush it so it renders immediately (before the
+/// turn resumes). The card's `native_id` (the reply target) is also its
+/// `WirePart` id, so the user's answer round-trips back to the right request.
+fn surface_card(ctx: &mut TurnCtx, card: WirePrompt) {
+    // `native_id` is always set by permission_card/question_card (opencode
+    // requires the request id); the fallback id only guards a malformed payload.
+    let part_id = card
+        .native_id
+        .clone()
+        .unwrap_or_else(|| format!("prompt-{}", ctx.assistant.parts.len()));
+    ctx.upsert_part(WirePart::prompt(part_id, card));
+    let _ = ctx.flush();
+}
+
+/// Handle an interactive-prompt SSE event (`permission.asked` / `question.asked`)
+/// for this session. Returns `true` if it consumed the event (so the caller
+/// skips `handle_event`), `false` otherwise.
+///
+/// Permissions honor the session's mode: `Auto`/`Bypass` auto-reply `always`
+/// over the live session (no blocking card); anything else surfaces a card and
+/// pauses. Questions always surface — there's no sensible auto-answer. A single
+/// flaky auto-reply must not lose the whole turn, so on POST failure we fall
+/// back to surfacing the card rather than propagating the error.
+async fn handle_prompt_event(
+    ctx: &mut TurnCtx,
+    native_id: &str,
+    base: &str,
+    event: &Value,
+) -> Result<bool> {
+    let props = event.get("properties").unwrap_or(&Value::Null);
+    // Only this session's prompts (the /event stream is global across sessions).
+    if props.get("sessionID").and_then(Value::as_str) != Some(native_id) {
+        // Not a match — but if it *is* a prompt event for another session, still
+        // report "not consumed" so handle_event ignores it too (it will, by id).
+        return Ok(false);
+    }
+    match event.get("type").and_then(Value::as_str) {
+        Some("permission.asked") => {
+            let Some(card) = permission_card(props) else {
+                // No request id to reply to — surface it as an error so the turn
+                // isn't silently wedged waiting on an answer no one can give.
+                ctx.push_error("opencode asked for a permission we couldn't parse".into());
+                let _ = ctx.flush();
+                return Ok(true);
+            };
+            let auto_approve = matches!(
+                ctx.permission_mode,
+                Some(PermissionMode::Auto) | Some(PermissionMode::Bypass)
+            );
+            match (auto_approve, card.native_id.as_deref()) {
+                (true, Some(id)) => {
+                    // Reply without surfacing a card — keep the turn flowing. If
+                    // the reply POST fails, don't kill the turn: fall back to a
+                    // card so the user can decide.
+                    if let Err(err) =
+                        post_permission(ctx.http(), base, native_id, id, "always").await
+                    {
+                        eprintln!("orx up: opencode auto-approve failed, surfacing card: {err}");
+                        surface_card(ctx, card);
+                    }
+                }
+                _ => surface_card(ctx, card),
+            }
+            Ok(true)
+        }
+        Some("question.asked") => {
+            match question_card(props) {
+                Some(card) => surface_card(ctx, card),
+                None => {
+                    ctx.push_error("opencode asked a question we couldn't parse".into());
+                    let _ = ctx.flush();
+                }
+            }
+            Ok(true)
+        }
+        _ => Ok(false),
     }
 }

@@ -310,14 +310,14 @@ function PromptCard({
         {done ? (
           <div className="prompt-resolved">Resolved</div>
         ) : (
-          // resumeMode values are permission-mode wire ids (currently Claude's
-          // --permission-mode strings); when other harnesses gain plan approval
-          // these should come from the harness's advertised permissionModes.
+          // resumeMode values are harness-agnostic permission-mode wire ids.
+          // Plan prompts are Claude-only today, so these resume the Claude
+          // session with the chosen mode.
           <div className="prompt-actions">
-            <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "acceptEdits" })}>
+            <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "accept-edits" })}>
               Approve &amp; auto-accept edits
             </button>
-            <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "default" })}>
+            <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "ask" })}>
               Approve &amp; ask each step
             </button>
             <button className="btn-ghost" onClick={() => respond({ approve: false })}>
@@ -343,8 +343,11 @@ function PromptCard({
         {done ? (
           <div className="prompt-resolved">Resolved</div>
         ) : (
+          // resumeMode applies to end-turn harnesses (Claude resumes under it);
+          // inline harnesses (opencode) reply once/reject keyed off `approve`
+          // and ignore it. approve=false denies either way.
           <div className="prompt-actions">
-            <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "acceptEdits" })}>
+            <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "accept-edits" })}>
               Allow
             </button>
             <button className="btn-ghost" onClick={() => respond({ approve: false })}>

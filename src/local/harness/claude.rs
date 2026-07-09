@@ -19,10 +19,11 @@ use tokio::process::Command;
 
 use super::detect::{bin_version, find_on_path, nonempty_str, read_json, HarnessInfo};
 use super::options::{HarnessOptions, PermissionMode};
-use super::Harness;
+use super::{Harness, ResumeAction};
 use crate::error::{anyhow, Result};
 use crate::local::chat::{
-    prepare_env, TurnCtx, WirePart, WirePrompt, WireQuestionOption, WireToolState,
+    prepare_env, PromptAnswer, ResumeCtx, TurnCtx, WirePart, WirePrompt, WireQuestionOption,
+    WireToolState,
 };
 use crate::local::opencode::ensure_playbook;
 
@@ -130,6 +131,29 @@ impl Harness for ClaudeCode {
             .with_reasoning_levels(&CLAUDE_EFFORT_LEVELS, "high")
     }
 
+    /// Claude ends its turn on a prompt, so every answer resumes by sending a
+    /// *new user message* under `--resume` (see `run_turn`). A denied permission
+    /// is the one case with no resume.
+    async fn resume_from_prompt(
+        &self,
+        _ctx: &ResumeCtx,
+        prompt: &WirePrompt,
+        answer: &PromptAnswer,
+    ) -> Result<ResumeAction> {
+        // A denied permission closes the card without resuming; every other
+        // answer continues the session.
+        if prompt.kind == "permission" && !answer.approve {
+            return Ok(ResumeAction::Nothing);
+        }
+        let (text, mode) = synthesize_resume(&prompt.kind, answer);
+        // Reject an empty resume (e.g. a question answered with no selection and
+        // no note) so `respond` leaves the card actionable.
+        if text.trim().is_empty() {
+            return Err(anyhow!("no answer provided"));
+        }
+        Ok(ResumeAction::SendMessage { text, mode })
+    }
+
     fn config_home(&self) -> Option<PathBuf> {
         Some(dirs::home_dir()?.join(".claude"))
     }
@@ -148,11 +172,18 @@ impl Harness for ClaudeCode {
     }
 }
 
-/// Session mode → `--permission-mode` value. The wire id already equals the
-/// CLI value (see `PermissionMode::id`), so this only supplies the `Auto`
-/// default when the session hasn't picked one.
+/// Session mode → Claude Code `--permission-mode` value. The shared wire ids are
+/// harness-agnostic (`ask`/`accept-edits`/`bypass`), so this is where the enum
+/// is spelled back into Claude's own CLI vocabulary; `Auto` is the default when
+/// the session hasn't picked a mode.
 fn claude_permission_mode(mode: Option<PermissionMode>) -> &'static str {
-    mode.unwrap_or(PermissionMode::Auto).id()
+    match mode.unwrap_or(PermissionMode::Auto) {
+        PermissionMode::Ask => "default",
+        PermissionMode::AcceptEdits => "acceptEdits",
+        PermissionMode::Plan => "plan",
+        PermissionMode::Auto => "auto",
+        PermissionMode::Bypass => "bypassPermissions",
+    }
 }
 
 /// Session reasoning id → Claude Code `--effort` value. The composer only
@@ -164,6 +195,49 @@ fn claude_effort(level: Option<&str>) -> Option<&str> {
         .iter()
         .any(|(id, _)| *id == level)
         .then_some(level)
+}
+
+/// The follow-up message + resume mode for an answered Claude prompt — Claude's
+/// resume strategy: a prompt ends the turn and the answer becomes a *new user
+/// message* that continues via `--resume`. `resume_mode` on the answer is a
+/// harness-agnostic wire id; unknown/absent ids fall through to the per-kind
+/// default (or the session's mode, applied downstream).
+fn synthesize_resume(kind: &str, req: &PromptAnswer) -> (String, Option<PermissionMode>) {
+    let note = req.note.as_deref().filter(|s| !s.trim().is_empty());
+    let chosen = req.resume_mode.as_deref().and_then(PermissionMode::from_id);
+    match kind {
+        "plan" if req.approve => {
+            let mut text = "The user approved the plan. Proceed with implementing it.".to_string();
+            if let Some(note) = note {
+                text.push_str(&format!("\n\nAdditional guidance: {note}"));
+            }
+            // Approving a plan means leaving plan mode; default to `auto`.
+            (text, chosen.or(Some(PermissionMode::Auto)))
+        }
+        "plan" => {
+            // "Keep planning" — stay in plan mode with the refinement.
+            let text = note
+                .map(|n| format!("Keep refining the plan: {n}"))
+                .unwrap_or_else(|| "Please revise the plan.".to_string());
+            (text, Some(PermissionMode::Plan))
+        }
+        "permission" => {
+            let text = "The user approved that action. Continue.".to_string();
+            (text, chosen)
+        }
+        // question (or anything else): feed the selection back as the user's reply.
+        _ => {
+            let mut text = if req.answers.is_empty() {
+                note.unwrap_or("").to_string()
+            } else {
+                req.answers.join(", ")
+            };
+            if let (false, Some(note)) = (req.answers.is_empty(), note) {
+                text.push_str(&format!("\n\n{note}"));
+            }
+            (text, None)
+        }
+    }
 }
 
 /// ExitPlanMode → a `plan` prompt (its `input.plan` is the proposed markdown).
@@ -178,14 +252,8 @@ fn plan_prompt(name: &str, input: Option<&Value>) -> Option<WirePrompt> {
         .to_string();
     Some(WirePrompt {
         kind: "plan".into(),
-        resolved: false,
         plan: Some(plan),
-        tool: None,
-        tool_input: None,
-        question: None,
-        header: None,
-        options: Vec::new(),
-        multi_select: false,
+        ..Default::default()
     })
 }
 
@@ -219,10 +287,6 @@ fn question_prompt(name: &str, input: Option<&Value>) -> Option<WirePrompt> {
         .unwrap_or_default();
     Some(WirePrompt {
         kind: "question".into(),
-        resolved: false,
-        plan: None,
-        tool: None,
-        tool_input: None,
         question: q
             .get("question")
             .and_then(Value::as_str)
@@ -233,6 +297,7 @@ fn question_prompt(name: &str, input: Option<&Value>) -> Option<WirePrompt> {
             .get("multiSelect")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        ..Default::default()
     })
 }
 
@@ -246,14 +311,9 @@ fn permission_prompt(denial: &Value) -> Option<WirePrompt> {
     }
     Some(WirePrompt {
         kind: "permission".into(),
-        resolved: false,
-        plan: None,
         tool: Some(tool),
         tool_input: denial.get("tool_input").cloned(),
-        question: None,
-        header: None,
-        options: Vec::new(),
-        multi_select: false,
+        ..Default::default()
     })
 }
 
@@ -488,4 +548,85 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn answer(
+        approve: bool,
+        resume_mode: Option<&str>,
+        answers: &[&str],
+        note: Option<&str>,
+    ) -> PromptAnswer {
+        PromptAnswer {
+            session_id: "s".into(),
+            prompt_id: "p".into(),
+            approve,
+            resume_mode: resume_mode.map(str::to_string),
+            answers: answers.iter().map(|s| s.to_string()).collect(),
+            note: note.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn permission_mode_maps_neutral_ids_to_claude_cli_strings() {
+        // The shared wire ids are neutral; claude.rs is where they're spelled
+        // back into Claude's own `--permission-mode` vocabulary.
+        assert_eq!(claude_permission_mode(Some(PermissionMode::Ask)), "default");
+        assert_eq!(
+            claude_permission_mode(Some(PermissionMode::AcceptEdits)),
+            "acceptEdits"
+        );
+        assert_eq!(claude_permission_mode(Some(PermissionMode::Plan)), "plan");
+        assert_eq!(claude_permission_mode(Some(PermissionMode::Auto)), "auto");
+        assert_eq!(
+            claude_permission_mode(Some(PermissionMode::Bypass)),
+            "bypassPermissions"
+        );
+        // No mode → Claude's balanced default.
+        assert_eq!(claude_permission_mode(None), "auto");
+    }
+
+    #[test]
+    fn plan_approve_defaults_to_auto_but_honors_chosen_mode() {
+        let (text, mode) = synthesize_resume("plan", &answer(true, None, &[], None));
+        assert!(text.contains("approved the plan"));
+        assert_eq!(mode, Some(PermissionMode::Auto));
+
+        let (_, mode) = synthesize_resume("plan", &answer(true, Some("accept-edits"), &[], None));
+        assert_eq!(mode, Some(PermissionMode::AcceptEdits));
+    }
+
+    #[test]
+    fn plan_keep_planning_stays_in_plan_mode() {
+        let (text, mode) = synthesize_resume("plan", &answer(false, None, &[], Some("tweak X")));
+        assert!(text.contains("tweak X"));
+        assert_eq!(mode, Some(PermissionMode::Plan));
+    }
+
+    #[test]
+    fn question_feeds_selections_back_with_no_mode_change() {
+        let (text, mode) = synthesize_resume("question", &answer(true, None, &["A", "B"], None));
+        assert_eq!(text, "A, B");
+        assert_eq!(mode, None);
+    }
+
+    #[test]
+    fn empty_question_yields_empty_text_so_respond_rejects_it() {
+        // No selection, no note → empty resume text; `resume_from_prompt` turns
+        // this into an error that keeps the card actionable.
+        let (text, _) = synthesize_resume("question", &answer(true, None, &[], None));
+        assert!(text.trim().is_empty());
+    }
+
+    #[test]
+    fn effort_accepts_only_claude_tiers() {
+        assert_eq!(claude_effort(Some("xhigh")), Some("xhigh"));
+        assert_eq!(claude_effort(Some("max")), Some("max"));
+        // A Codex-only id like a bare "medium" is fine (shared), but junk is not.
+        assert_eq!(claude_effort(Some("ultra")), None);
+        assert_eq!(claude_effort(None), None);
+    }
 }
