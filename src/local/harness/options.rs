@@ -3,19 +3,29 @@
 //! harness advertises which values it supports (`options()`) and maps the
 //! chosen value onto its own CLI (in its `run_turn`).
 //!
-//! Permission mode is a *shared* enum: the concept (ask / accept-edits / plan /
-//! auto / bypass) maps across harnesses. Reasoning level is deliberately NOT
-//! shared — Claude's tiers (`low`…`max`) and Codex's (`low`/`medium`/`high`)
-//! differ, so each harness owns its own list of `OptionChoice`s and interprets
-//! the chosen id itself. A harness that doesn't support an axis lists nothing
-//! for it, and the composer hides that control.
+//! The two axes are modeled differently on purpose:
+//!
+//! * Permission mode is a *shared* enum — the concept (ask / accept-edits /
+//!   plan / auto / bypass) is common enough to name once. Its wire ids happen
+//!   to equal Claude Code's `--permission-mode` values today (so Claude's map
+//!   is a no-op); a second harness maps the nearest equivalent, and if that
+//!   proves lossy the ids can be neutralized (they're the wire/store contract,
+//!   so that's a migration — do it when Codex approvals land, not speculatively).
+//! * Reasoning level is deliberately NOT shared — Claude's tiers (`low`…`max`,
+//!   via `--effort`) and a future Codex's (`low`/`medium`/`high`) genuinely
+//!   differ — so each harness owns its own `OptionChoice` list and interprets
+//!   the chosen id itself.
+//!
+//! A harness that doesn't support an axis lists nothing for it, and the composer
+//! hides that control.
 
 use serde::{Deserialize, Serialize};
 
-/// How much the harness should defer to the user before acting. Values mirror
-/// Claude Code's `--permission-mode` exactly (choices: `default`, `acceptEdits`,
-/// `plan`, `auto`, `bypassPermissions`); other harnesses map the nearest
-/// equivalent. `auto` is a distinct mode from `acceptEdits`.
+/// How much the harness should defer to the user before acting. The wire ids
+/// currently equal Claude Code's `--permission-mode` values (`default`,
+/// `acceptEdits`, `plan`, `auto`, `bypassPermissions`); other harnesses map the
+/// nearest equivalent in their `run_turn`. `auto` is distinct from `acceptEdits`
+/// (it's Claude's balanced default mode).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionMode {
@@ -120,8 +130,9 @@ impl HarnessOptions {
 
     /// Set the reasoning list from harness-owned `(id, label)` pairs. Unlike
     /// permission modes, reasoning vocabulary isn't shared — Claude's `--effort`
-    /// tiers and Codex's `reasoning_effort` differ — so each harness passes its
-    /// own choices and interprets the chosen id in its `run_turn`.
+    /// tiers and a future Codex's `reasoning_effort` would differ — so each
+    /// harness passes its own choices and interprets the chosen id in its
+    /// `run_turn`. (Only Claude advertises reasoning levels today.)
     pub fn with_reasoning_levels(
         mut self,
         levels: &[(&'static str, &'static str)],

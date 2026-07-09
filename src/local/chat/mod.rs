@@ -52,9 +52,13 @@ pub struct WireQuestionOption {
 }
 
 /// An interactive request the user must act on before the harness continues.
-/// Harness-agnostic: Claude's ExitPlanMode / denials / AskUserQuestion and
-/// Codex's approvals all normalize into these three kinds. The UI renders a card
-/// and the answer resumes the session (see `ChatHost::respond`).
+/// The three kinds (`plan` / `permission` / `question`) are derived from Claude
+/// Code's ExitPlanMode / permission_denials / AskUserQuestion — currently the
+/// only harness that emits them. They're *intended* to generalize (Codex's
+/// approval protocol should map onto `permission`/`question`), but that hasn't
+/// been validated against a second harness yet, so treat the vocabulary as
+/// Claude-shaped until Codex approvals are wired. The UI renders a card and the
+/// answer resumes the session (see `ChatHost::respond`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WirePrompt {
@@ -243,7 +247,58 @@ pub struct ChatHost {
     pub opencode: Arc<AgentHost>,
     http: reqwest::Client,
     events: broadcast::Sender<(&'static str, Value)>,
-    turns: Mutex<HashMap<String, tokio::task::AbortHandle>>,
+    /// Sessions with a turn in flight. A key present means busy; the value is
+    /// the running task's abort handle, or `None` while a turn is being set up
+    /// (reserved but not yet spawned — see `TurnGuard`).
+    turns: Mutex<HashMap<String, Option<tokio::task::AbortHandle>>>,
+}
+
+/// Reserves a session's turn slot for the duration of `send_message`'s setup.
+/// `claim` inserts a `None` reservation under the `turns` lock iff the session
+/// isn't already busy — closing the check-then-insert race. On drop (early
+/// error / panic) it clears the reservation; call `defuse` once the real abort
+/// handle has replaced it so the running turn's slot survives.
+struct TurnGuard {
+    host: Arc<ChatHost>,
+    session_id: String,
+    armed: bool,
+}
+
+impl TurnGuard {
+    /// `Some` if the slot was free and is now reserved; `None` if already busy.
+    async fn claim(host: &Arc<ChatHost>, session_id: &str) -> Option<Self> {
+        let mut turns = host.turns.lock().await;
+        if turns.contains_key(session_id) {
+            return None;
+        }
+        turns.insert(session_id.to_string(), None);
+        Some(Self {
+            host: host.clone(),
+            session_id: session_id.to_string(),
+            armed: true,
+        })
+    }
+
+    /// Hand ownership of the slot to the spawned turn — stop clearing it on drop.
+    fn defuse(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TurnGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // Setup failed before a turn was spawned: release the reservation. Only
+        // remove if it's still the unspawned reservation (None), never a live
+        // handle (some other path may have taken over).
+        if let Ok(mut turns) = self.host.turns.try_lock() {
+            if matches!(turns.get(&self.session_id), Some(None)) {
+                turns.remove(&self.session_id);
+            }
+        }
+    }
 }
 
 impl ChatHost {
@@ -281,9 +336,14 @@ impl ChatHost {
         overrides: TurnOverrides,
         images: Vec<ImageAttachment>,
     ) -> Result<()> {
-        if self.is_busy(session_id).await {
-            return Err(anyhow!("session is busy — interrupt it first"));
-        }
+        // Atomically claim the session's turn slot: the busy-check and the
+        // reservation happen under one lock so two concurrent sends (or a
+        // send racing a /respond resume) can't both spawn a turn against the
+        // same session. `_guard` releases the reservation on any early error.
+        let _guard = match TurnGuard::claim(self, session_id).await {
+            Some(guard) => guard,
+            None => return Err(anyhow!("session is busy — interrupt it first")),
+        };
         let store = Store::open()?;
         let mut session = store
             .get_chat_session(session_id)?
@@ -408,7 +468,15 @@ impl ChatHost {
             let _ = ctx.flush();
             ctx.host.finish_turn(&ctx.session_id).await;
         });
-        self.turns.lock().await.insert(sid, task.abort_handle());
+        // Replace the reservation with the running task's abort handle. The
+        // slot is already claimed (TurnGuard), so this only upgrades None→Some;
+        // defuse the guard so it doesn't clear the slot we're now handing to
+        // finish_turn/interrupt.
+        self.turns
+            .lock()
+            .await
+            .insert(sid, Some(task.abort_handle()));
+        _guard.defuse();
         Ok(())
     }
 
@@ -434,8 +502,9 @@ impl ChatHost {
     /// opencode adapter additionally gets a native abort so the serve process
     /// stops generating.
     pub async fn interrupt(&self, session_id: &str) -> Result<()> {
-        let handle = self.turns.lock().await.remove(session_id);
-        let Some(handle) = handle else {
+        // Outer None: not busy. Inner None: reserved but not yet spawned — the
+        // reservation is now cleared, so send_message's guard will abort setup.
+        let Some(handle) = self.turns.lock().await.remove(session_id) else {
             return Ok(());
         };
         if let Ok(store) = Store::open() {
@@ -450,7 +519,9 @@ impl ChatHost {
                 }
             }
         }
-        handle.abort();
+        if let Some(handle) = handle {
+            handle.abort();
+        }
         self.finish_turn(session_id).await;
         Ok(())
     }
@@ -463,26 +534,45 @@ impl ChatHost {
         if self.is_busy(&req.session_id).await {
             return Err(anyhow!("session is busy — interrupt it first"));
         }
-        // Mark the matching prompt part resolved so the card renders read-only.
-        let (found, kind) = mark_prompt_resolved(&req.session_id, &req.prompt_id)?;
-        if !found {
-            return Err(anyhow!("prompt not found"));
+        // Peek the prompt's kind (without mutating yet) so we can validate the
+        // answer before flipping it resolved — a question with no selection must
+        // not resume with an empty prompt.
+        let kind = prompt_kind(&req.session_id, &req.prompt_id)?
+            .ok_or_else(|| anyhow!("prompt not found"))?;
+
+        // A `permission` denial and a bare-reject with nothing to resume just
+        // close the card. Everything else (plan approve *and* keep-planning,
+        // question answers) resumes the session.
+        let resume = match kind.as_str() {
+            "permission" => req.approve.then(|| synthesize_resume(&kind, &req)),
+            "plan" => Some(synthesize_resume(&kind, &req)),
+            _ => Some(synthesize_resume(&kind, &req)),
+        };
+        // Reject an empty resume (e.g. a question answered with no selection and
+        // no note) before we mark anything resolved, so the card stays actionable.
+        if let Some((text, _)) = &resume {
+            if text.trim().is_empty() {
+                return Err(anyhow!("no answer provided"));
+            }
         }
 
-        // Rejections just close the card — nothing to resume.
-        if !req.approve && kind != "question" {
-            self.emit(
-                "chat.session",
-                json!({ "session": session_json(
-                    &Store::open()?.get_chat_session(&req.session_id)?
-                        .ok_or_else(|| anyhow!("session not found"))?,
-                    false,
-                ) }),
-            );
+        // Mark resolved and broadcast the updated card so it renders read-only
+        // on every client immediately (send_message only emits the new user
+        // message, never the mutated assistant one).
+        let resolved_msg = mark_prompt_resolved(&req.session_id, &req.prompt_id)?
+            .ok_or_else(|| anyhow!("prompt not found"))?;
+        self.emit("chat.message", message_json(&resolved_msg, &req.session_id));
+
+        let Some((text, mode)) = resume else {
+            // Card closed, no resume; broadcast idle so `busy` clears in the UI.
+            if let Ok(Some(session)) = Store::open()?.get_chat_session(&req.session_id) {
+                self.emit(
+                    "chat.session",
+                    json!({ "session": session_json(&session, false) }),
+                );
+            }
             return Ok(());
-        }
-
-        let (text, mode) = synthesize_resume(&kind, &req);
+        };
         let overrides = TurnOverrides {
             model: None,
             permission_mode: mode,
@@ -524,9 +614,31 @@ fn default_true() -> bool {
     true
 }
 
+/// The kind of the (unresolved) prompt part with `prompt_id`, if present —
+/// peeked before mutation so the answer can be validated first.
+fn prompt_kind(session_id: &str, prompt_id: &str) -> Result<Option<String>> {
+    let store = Store::open()?;
+    for msg in store.list_chat_messages(session_id)?.iter().rev() {
+        if msg.role != "assistant" {
+            continue;
+        }
+        let parts: Vec<WirePart> = serde_json::from_str(&msg.parts_json).unwrap_or_default();
+        if let Some(prompt) = parts
+            .iter()
+            .find(|p| p.id == prompt_id)
+            .and_then(|p| p.prompt.as_ref())
+        {
+            return Ok(Some(prompt.kind.clone()));
+        }
+    }
+    Ok(None)
+}
+
 /// Flip the `resolved` flag on the prompt part with `prompt_id` in the session's
-/// last assistant message. Returns (found, prompt-kind).
-fn mark_prompt_resolved(session_id: &str, prompt_id: &str) -> Result<(bool, String)> {
+/// last assistant message that carries it, persist it, and return the mutated
+/// message (so the caller can broadcast a `chat.message` and the card renders
+/// read-only). `None` if no such prompt part exists.
+fn mark_prompt_resolved(session_id: &str, prompt_id: &str) -> Result<Option<WireMessage>> {
     let store = Store::open()?;
     for msg in store.list_chat_messages(session_id)?.iter().rev() {
         if msg.role != "assistant" {
@@ -537,11 +649,6 @@ fn mark_prompt_resolved(session_id: &str, prompt_id: &str) -> Result<(bool, Stri
             .iter_mut()
             .find(|p| p.id == prompt_id && p.prompt.is_some())
         {
-            let kind = part
-                .prompt
-                .as_ref()
-                .map(|p| p.kind.clone())
-                .unwrap_or_default();
             if let Some(prompt) = part.prompt.as_mut() {
                 prompt.resolved = true;
             }
@@ -552,13 +659,24 @@ fn mark_prompt_resolved(session_id: &str, prompt_id: &str) -> Result<(bool, Stri
                 parts_json: serde_json::to_string(&parts)?,
                 created_at: msg.created_at,
             })?;
-            return Ok((true, kind));
+            return Ok(Some(WireMessage {
+                id: msg.id.clone(),
+                role: msg.role.clone(),
+                parts,
+                created_at: msg.created_at,
+            }));
         }
     }
-    Ok((false, String::new()))
+    Ok(None)
 }
 
-/// The follow-up message + resume mode for an approved prompt.
+/// The follow-up message + resume mode for an answered prompt.
+///
+/// NOTE: this encodes Claude Code's resume strategy — a prompt ends the turn and
+/// the answer becomes a *new user message* that continues via `--resume`. Codex
+/// and OpenCode approve inline over their own live protocol; when they gain
+/// approvals, `respond` should dispatch through the harness rather than route
+/// them here. The permission-mode strings returned here are Claude's wire ids.
 fn synthesize_resume(kind: &str, req: &PromptAnswer) -> (String, Option<String>) {
     let note = req.note.as_deref().filter(|s| !s.trim().is_empty());
     match kind {

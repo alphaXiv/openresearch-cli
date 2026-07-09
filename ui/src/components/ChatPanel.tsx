@@ -310,6 +310,9 @@ function PromptCard({
         {done ? (
           <div className="prompt-resolved">Resolved</div>
         ) : (
+          // resumeMode values are permission-mode wire ids (currently Claude's
+          // --permission-mode strings); when other harnesses gain plan approval
+          // these should come from the harness's advertised permissionModes.
           <div className="prompt-actions">
             <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "acceptEdits" })}>
               Approve &amp; auto-accept edits

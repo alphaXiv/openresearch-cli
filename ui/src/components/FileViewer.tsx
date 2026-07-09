@@ -2,41 +2,14 @@
 // refractor-highlighted, opened as a right-pane tab from chat tool rows.
 
 import { Code, FileText, RotateCw } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { refractor } from "refractor";
+import { useEffect, useMemo, useState } from "react";
 import { getProjectFile, type ProjectFile } from "../api";
 import { detectSyntaxLanguageFromFilePath } from "../syntaxLanguage";
+import { highlight } from "../syntaxHighlight";
 import { Md } from "./Md";
 
-const HIGHLIGHT_MAX_BYTES = 300_000; // above this, skip tokenizing
-
-interface HastNode {
-  type: string;
-  value?: string;
-  tagName?: string;
-  properties?: { className?: string[] };
-  children?: HastNode[];
-}
-
-function hastToReact(node: HastNode, key: number): ReactNode {
-  if (node.type === "text") return node.value ?? "";
-  if (node.type !== "element") return null;
-  return (
-    <span key={key} className={(node.properties?.className ?? []).join(" ")}>
-      {(node.children ?? []).map(hastToReact)}
-    </span>
-  );
-}
-
-function highlight(content: string, path: string): ReactNode {
-  const lang = detectSyntaxLanguageFromFilePath(path);
-  if (!lang || !refractor.registered(lang) || content.length > HIGHLIGHT_MAX_BYTES)
-    return content;
-  try {
-    return (refractor.highlight(content, lang).children as HastNode[]).map(hastToReact);
-  } catch {
-    return content; // highlighting is best-effort
-  }
+function highlightFile(content: string, path: string) {
+  return highlight(content, detectSyntaxLanguageFromFilePath(path));
 }
 
 export function FileViewer({
@@ -78,7 +51,7 @@ export function FileViewer({
   }, [projectId, path, nonce]);
 
   const rendered = useMemo(
-    () => (data && !data.notFound ? highlight(data.content, path) : null),
+    () => (data && !data.notFound ? highlightFile(data.content, path) : null),
     [data, path],
   );
 

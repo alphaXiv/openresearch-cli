@@ -6,37 +6,11 @@ import { Check, Copy, FileCode } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { refractor } from "refractor";
 import { resolveSyntaxLanguage } from "../syntaxLanguage";
+import { highlight } from "../syntaxHighlight";
 
-const HIGHLIGHT_MAX_BYTES = 100_000; // above this, skip tokenizing
-
-interface HastNode {
-  type: string;
-  value?: string;
-  properties?: { className?: string[] };
-  children?: HastNode[];
-}
-
-function hastToReact(node: HastNode, key: number): ReactNode {
-  if (node.type === "text") return node.value ?? "";
-  if (node.type !== "element") return null;
-  return (
-    <span key={key} className={(node.properties?.className ?? []).join(" ")}>
-      {(node.children ?? []).map(hastToReact)}
-    </span>
-  );
-}
-
-/** Refractor-highlight a fenced code body, best-effort. */
-function highlightCode(code: string, lang: string | null): ReactNode {
-  if (!lang || !refractor.registered(lang) || code.length > HIGHLIGHT_MAX_BYTES) return code;
-  try {
-    return (refractor.highlight(code, lang).children as HastNode[]).map(hastToReact);
-  } catch {
-    return code;
-  }
-}
+// Chat blocks are short; cap tokenizing well below the file viewer's limit.
+const HIGHLIGHT_MAX_BYTES = 100_000;
 
 /** A fenced code block: syntax-highlighted body + a copy button. */
 function CodeBlock({ code, lang }: { code: string; lang: string | null }) {
@@ -53,7 +27,7 @@ function CodeBlock({ code, lang }: { code: string; lang: string | null }) {
         {copied ? <Check size={13} /> : <Copy size={13} />}
       </button>
       <pre>
-        <code>{highlightCode(code, lang)}</code>
+        <code>{highlight(code, lang, HIGHLIGHT_MAX_BYTES)}</code>
       </pre>
     </div>
   );

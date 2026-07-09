@@ -455,14 +455,18 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                         }
                     }
                 }
+                // A plan/permission pause is NOT a failure: the CLI records the
+                // blocked tools in `permission_denials` but still reports
+                // `subtype: "success"` / `is_error: false`. So drive the error
+                // path off the result status alone — no need to special-case
+                // denials, and a genuine failure that also has denials is still
+                // surfaced (the old `denied_only` guard wrongly swallowed those).
                 let subtype = event.get("subtype").and_then(Value::as_str).unwrap_or("");
-                // A plan turn ends by *denying* ExitPlanMode — that's the pause
-                // point, not an error. Only surface genuine failures.
-                let denied_only = event
-                    .get("permission_denials")
-                    .and_then(Value::as_array)
-                    .is_some_and(|d| !d.is_empty());
-                if subtype != "success" && !denied_only {
+                let is_error = event
+                    .get("is_error")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(subtype != "success");
+                if is_error {
                     let detail = event
                         .get("result")
                         .and_then(Value::as_str)
