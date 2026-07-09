@@ -70,6 +70,50 @@ Workflow:
 4. Publish: `trackio logbook publish <hf-username>/<openreview-id>` (the OpenReview ID from the paper reference above; after later edits, `trackio logbook sync`).
 "#;
 
+const MARIMO_TEMPLATE: &str = r##"Create a marimo notebook — a reactive Python notebook stored as a plain .py file.
+
+Task: {args}
+
+Setup — verify before anything else:
+1. `marimo --version` — if missing, install with `uv pip install marimo` (or `pip install marimo`), then re-check.
+2. Discover flags with `marimo --help` / `marimo <command> --help`; do not guess.
+
+Format — a notebook is pure Python:
+
+```python
+import marimo
+
+app = marimo.App()
+
+
+@app.cell
+def _():
+    import marimo as mo
+    return (mo,)
+
+
+@app.cell
+def _(mo):
+    mo.md("# Title")
+    return
+
+
+if __name__ == "__main__":
+    app.run()
+```
+
+Rules (marimo builds a dataflow DAG from the cells; violations are load errors):
+- Each top-level name is defined in exactly one cell across the whole notebook.
+- A cell takes the names it reads as function parameters and returns the names it defines as a tuple; no cycles between cells.
+- No wildcard imports. `_`-prefixed names are cell-local and exempt from the rules above.
+- A cell's last expression is its visible output — use `mo.md(...)` for prose, bare expressions for tables/plots; end output-less cells with plain `return`.
+
+Workflow:
+1. Write the notebook to a sensibly named `.py` file in the working directory (put imports in one top cell; keep cells small so reactivity is useful).
+2. Validate with `marimo check <file>.py`; if that subcommand is unavailable in the installed version, smoke-test with `marimo export html <file>.py -o <scratch>/nb.html` instead (it executes every cell).
+3. Fix anything it flags and re-validate.
+4. Hand off: tell the user the file path and that `marimo edit <file>.py` opens it in the browser. Only launch it yourself if they ask (background it and report the printed URL)."##;
+
 pub const CATALOG: &[Skill] = &[
     Skill {
         name: "lit-review",
@@ -91,6 +135,13 @@ pub const CATALOG: &[Skill] = &[
         arg_hint: "<paper title> (OpenReview <id>)",
         template: ICML_REPRO_TEMPLATE,
         no_args: "(none given — ask the user which ICML 2026 paper to reproduce: title plus OpenReview ID)",
+    },
+    Skill {
+        name: "marimo",
+        description: "Create a marimo reactive notebook (installs marimo if missing)",
+        arg_hint: "<what the notebook should do>",
+        template: MARIMO_TEMPLATE,
+        no_args: "(none given — ask the user what the notebook should do or contain before writing it)",
     },
 ];
 
@@ -139,6 +190,14 @@ mod tests {
         assert!(out.contains("Paper: Maximum Likelihood RL (OpenReview EeuLO2BjFN)"));
         assert!(out.contains("trackio logbook publish"));
         assert!(expand("/icml-repro").unwrap().contains("ask the user"));
+    }
+
+    #[test]
+    fn expands_marimo_skill() {
+        let out = expand("/marimo explore the CIFAR-10 dataset").unwrap();
+        assert!(out.contains("Task: explore the CIFAR-10 dataset"));
+        assert!(out.contains("marimo check"));
+        assert!(expand("/marimo").unwrap().contains("ask the user"));
     }
 
     #[test]
