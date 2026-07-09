@@ -1,4 +1,4 @@
-import { CornerDownLeft, FlaskConical, PanelLeft, Package, Plus, X } from "lucide-react";
+import { ChevronRight, CornerDownLeft, FlaskConical, PanelLeft, Package, Plus, X } from "lucide-react";
 import { useEffect, useReducer, useRef, useState } from "react";
 import {
   chatAttachmentUrl,
@@ -168,41 +168,117 @@ function relTime(ts: number | undefined): string {
   return `${Math.floor(h / 24)}d`;
 }
 
-function toolSummary(part: ChatPart): string {
-  const input = part.state?.input;
-  if (typeof input?.command === "string") return input.command;
-  if (typeof input?.filePath === "string") return input.filePath;
-  if (typeof input?.description === "string") return input.description;
-  return part.state?.title ?? "";
+/** The last path segment, for compact display ("src/a/b.rs" → "b.rs"). */
+function baseName(path: string): string {
+  const trimmed = path.replace(/\/+$/, "");
+  return trimmed.slice(trimmed.lastIndexOf("/") + 1) || trimmed;
 }
 
+/** Claude-desktop-style one-liner: a verb + target, e.g. "Read hello.py",
+ * "Ran echo hello". Falls back to the raw tool name. */
+function toolLine(part: ChatPart): string {
+  const tool = part.tool ?? "tool";
+  const input = part.state?.input ?? {};
+  const cmd = typeof input.command === "string" ? input.command : null;
+  const fp = typeof input.filePath === "string" ? input.filePath : null;
+  const desc = typeof input.description === "string" ? input.description : null;
+  switch (tool) {
+    case "Bash":
+    case "bash":
+      return cmd ? `Ran ${cmd}` : "Ran command";
+    case "Read":
+      return fp ? `Read ${baseName(fp)}` : "Read file";
+    case "Edit":
+    case "Write":
+    case "NotebookEdit":
+      return fp ? `Edited ${baseName(fp)}` : "Edited file";
+    case "Grep":
+      return typeof input.pattern === "string" ? `Searched “${input.pattern}”` : "Searched";
+    case "Glob":
+      return typeof input.pattern === "string" ? `Found ${input.pattern}` : "Listed files";
+    case "WebFetch":
+    case "WebSearch":
+      return desc ?? "Searched the web";
+    case "Task":
+      return desc ?? "Ran a subagent";
+    case "error":
+      return "Error";
+    default: {
+      const detail = desc ?? fp ?? cmd ?? part.state?.title ?? "";
+      return detail ? `${tool}: ${detail}` : tool;
+    }
+  }
+}
+
+/** One expandable tool row inside a group: gray summary line, click to reveal
+ * the input + output. */
 function ToolRow({ part, onOpenFile }: { part: ChatPart; onOpenFile?: (path: string) => void }) {
   const state = part.state;
   const output = state?.error || state?.output || "";
+  const cmd = typeof state?.input?.command === "string" ? state.input.command : null;
   const filePath = typeof state?.input?.filePath === "string" ? state.input.filePath : null;
+  const hasDetail = Boolean(output || cmd || filePath);
   return (
-    <details className="tool-row">
+    <details className="tool-row" open={false}>
       <summary>
         <span className={toolStatusClass(state?.status)} />
-        <span className="tool-name">{part.tool ?? "tool"}</span>
-        {filePath && onOpenFile ? (
+        <span className="tool-line">{toolLine(part)}</span>
+        {filePath && onOpenFile && (
           <button
-            className="tool-cmd file-link"
+            className="tool-open file-link"
             title={`Open ${filePath}`}
             onClick={(e) => {
-              e.preventDefault(); // keep the <details> from toggling
+              e.preventDefault();
               e.stopPropagation();
               onOpenFile(filePath);
             }}
           >
-            {filePath}
+            open
           </button>
-        ) : (
-          <span className="tool-cmd">{toolSummary(part)}</span>
         )}
       </summary>
-      {output ? <div className="tool-output">{output.slice(0, 20000)}</div> : null}
+      {hasDetail && (
+        <div className="tool-detail">
+          {cmd && <div className="tool-cmd-full">{cmd}</div>}
+          {output && <div className="tool-output">{output.slice(0, 20000)}</div>}
+        </div>
+      )}
     </details>
+  );
+}
+
+/** A run of consecutive tool calls, collapsed into one gray line like the
+ * Claude desktop app ("Read hello.py" for one, "Used N tools" for several).
+ * Clicking expands every row; a still-running tool auto-expands. */
+function ToolGroup({ parts, onOpenFile }: { parts: ChatPart[]; onOpenFile?: (path: string) => void }) {
+  const running = parts.some((p) => p.state?.status === "running");
+  const errored = parts.some((p) => p.state?.status === "error");
+  const [open, setOpen] = useState(false);
+  // While a tool is in flight, show it live; collapse once the run settles.
+  const expanded = open || running;
+
+  const summary =
+    parts.length === 1
+      ? toolLine(parts[0])
+      : running
+        ? toolLine(parts.find((p) => p.state?.status === "running") ?? parts[parts.length - 1])
+        : `Used ${parts.length} tools`;
+
+  return (
+    <div className={`tool-group ${errored ? "has-error" : ""}`}>
+      <button className="tool-group-summary" onClick={() => setOpen((v) => !v)}>
+        <span className={toolStatusClass(running ? "running" : errored ? "error" : "completed")} />
+        <span className="tool-line">{summary}</span>
+        <ChevronRight size={12} className={`tool-chevron ${expanded ? "open" : ""}`} />
+      </button>
+      {expanded && (
+        <div className="tool-group-rows">
+          {parts.map((p) => (
+            <ToolRow key={p.id} part={p} onOpenFile={onOpenFile} />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -355,33 +431,40 @@ function Message({
       </div>
     );
   }
-  return (
-    <div className="msg-assistant">
-      {message.parts.map((part) => {
-        if (part.type === "text" && part.text)
-          return <Md key={part.id} text={part.text} onOpenFile={onOpenFile} />;
-        if (part.type === "reasoning" && part.text)
-          return (
-            <details key={part.id} className="reasoning">
-              <summary>thinking…</summary>
-              {part.text}
-            </details>
-          );
-        if (part.type === "tool")
-          return <ToolRow key={part.id} part={part} onOpenFile={onOpenFile} />;
-        if (part.type === "prompt" && part.prompt)
-          return (
-            <PromptCard
-              key={part.id}
-              part={part}
-              onRespond={onRespond}
-              onOpenFile={onOpenFile}
-            />
-          );
-        return null;
-      })}
-    </div>
-  );
+  // Coalesce consecutive tool parts into one collapsed group (Claude-desktop
+  // style); text / reasoning / prompt parts break a run and render inline.
+  const rendered: React.ReactNode[] = [];
+  let toolRun: ChatPart[] = [];
+  const flushTools = () => {
+    if (toolRun.length === 0) return;
+    rendered.push(
+      <ToolGroup key={`tg-${toolRun[0].id}`} parts={toolRun} onOpenFile={onOpenFile} />,
+    );
+    toolRun = [];
+  };
+  for (const part of message.parts) {
+    if (part.type === "tool") {
+      toolRun.push(part);
+      continue;
+    }
+    flushTools();
+    if (part.type === "text" && part.text)
+      rendered.push(<Md key={part.id} text={part.text} onOpenFile={onOpenFile} />);
+    else if (part.type === "reasoning" && part.text)
+      rendered.push(
+        <details key={part.id} className="reasoning">
+          <summary>thinking…</summary>
+          {part.text}
+        </details>,
+      );
+    else if (part.type === "prompt" && part.prompt)
+      rendered.push(
+        <PromptCard key={part.id} part={part} onRespond={onRespond} onOpenFile={onOpenFile} />,
+      );
+  }
+  flushTools();
+
+  return <div className="msg-assistant">{rendered}</div>;
 }
 
 // --- panel -------------------------------------------------------------------
