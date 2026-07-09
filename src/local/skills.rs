@@ -53,6 +53,23 @@ Using the CLI:
 - For anything destructive (deleting repos/files, overwriting), confirm with the user first.
 "#;
 
+const ICML_REPRO_TEMPLATE: &str = r#"Reproduce an ICML 2026 paper for the agent reproduction challenge and publish a Trackio logbook.
+
+Paper: {args}
+
+Setup — verify before anything else:
+1. `hf version` — if missing, install with `curl -LsSf https://hf.co/cli/install.sh | sh` (or `pip install -U "huggingface_hub[cli]"`), then re-check.
+2. `hf auth whoami` — HF_TOKEN is usually already in the environment (synced from the orx up settings). If unauthenticated, ask the user to add their token in the orx up settings (Hugging Face section) or run `hf auth login`. Note the username — the logbook publishes under it.
+3. `trackio --version` — if missing, `pip install --upgrade trackio`.
+
+Workflow:
+1. Fetch the challenge guide and follow it — it is the authoritative rulebook (metadata tags, claim verdicts, judging criteria):
+   `curl -sL https://huggingface.co/datasets/ICML-2026-agent-repro/challenge/resolve/main/README.md`
+2. Open a logbook for the paper: `trackio logbook open --title "Repro: <paper title>"`. For logbook command details, run `trackio logbook --help` — do not guess flags.
+3. Reproduce the paper claim by claim on the Hugging Face harness (`hf jobs`), one logbook page per claim. Simplified setups and toy-scale runs are allowed per the guide; record honest verdicts and compute costs.
+4. Publish: `trackio logbook publish <hf-username>/<openreview-id>` (the OpenReview ID from the paper reference above; after later edits, `trackio logbook sync`).
+"#;
+
 pub const CATALOG: &[Skill] = &[
     Skill {
         name: "lit-review",
@@ -67,6 +84,13 @@ pub const CATALOG: &[Skill] = &[
         arg_hint: "<task>",
         template: HF_TEMPLATE,
         no_args: "(none given — ask the user what they want to do on the Hugging Face Hub)",
+    },
+    Skill {
+        name: "icml-repro",
+        description: "Reproduce an ICML 2026 paper and publish a Trackio logbook",
+        arg_hint: "<paper title> (OpenReview <id>)",
+        template: ICML_REPRO_TEMPLATE,
+        no_args: "(none given — ask the user which ICML 2026 paper to reproduce: title plus OpenReview ID)",
     },
 ];
 
@@ -107,6 +131,14 @@ mod tests {
         assert!(out.contains("hf version"));
         let bare = expand("/hf").unwrap();
         assert!(bare.contains("ask the user"));
+    }
+
+    #[test]
+    fn expands_icml_repro_skill() {
+        let out = expand("/icml-repro Maximum Likelihood RL (OpenReview EeuLO2BjFN)").unwrap();
+        assert!(out.contains("Paper: Maximum Likelihood RL (OpenReview EeuLO2BjFN)"));
+        assert!(out.contains("trackio logbook publish"));
+        assert!(expand("/icml-repro").unwrap().contains("ask the user"));
     }
 
     #[test]
