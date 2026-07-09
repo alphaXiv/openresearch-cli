@@ -111,6 +111,16 @@ export const listExperiments = (projectId: string) =>
 export const listRuns = (projectId: string) =>
   get<{ runs: Run[] }>(`/api/projects/${projectId}/runs`).then((r) => r.runs);
 
+/** A run viewed as compute: every run across all projects, tagged with the
+ *  name of the project that launched it. `projectName` is enriched only on the
+ *  /api/instances snapshot — it is absent from the `run.updated` SSE payload. */
+export interface Instance extends Run {
+  projectName?: string;
+}
+
+export const listInstances = () =>
+  get<{ instances: Instance[] }>("/api/instances").then((r) => r.instances);
+
 export interface NewExperiment {
   parentExperimentId: string;
   slug: string;
@@ -567,6 +577,35 @@ export function timeAgo(ms: number): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+/** "42s" / "18m" / "2h 28m" / "1d 4h" — an elapsed duration, not a timestamp. */
+export function fmtDuration(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
 export function shortId(id: string): string {
   return id.length > 10 ? `${id.slice(0, 10)}…` : id;
+}
+
+/** The backend kind from a run's `backend` descriptor ("modal_job", "hf_job", …). */
+export function backendKind(backend: Run["backend"]): string {
+  if (!backend) return "";
+  if (typeof backend.kind === "string") return backend.kind;
+  if (typeof backend.type === "string") return backend.type;
+  return "";
+}
+
+/** The flavor / manifest / host that qualifies a backend, if any. k8s runs
+ *  carry a manifest path instead of a flavor; ssh a host in `namespace`. */
+export function backendDetail(backend: Run["backend"]): string {
+  if (!backend) return "";
+  if (typeof backend.flavor === "string" && backend.flavor) return backend.flavor;
+  if (typeof backend.manifest === "string" && backend.manifest) return backend.manifest;
+  if (typeof backend.namespace === "string" && backend.namespace) return backend.namespace;
+  return "";
 }

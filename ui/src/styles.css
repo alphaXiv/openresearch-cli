@@ -1483,6 +1483,82 @@ textarea::placeholder {
   font-size: 11.5px;
 }
 
+/* Instances tab: Running / Past section headers. */
+.instances-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 22px 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.instances-section-title .count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--text);
+}
+/* Normal-flow wrapper: the shared .runs-table-wrap is position:absolute (it
+   fills the experiments panel); in the settings pane the table sits in flow and
+   just needs horizontal-scroll safety on narrow viewports. */
+.instances-table-wrap {
+  overflow-x: auto;
+}
+/* In-flow empty state (the shared .empty-state is position:absolute and would
+   cover the whole pane, overlapping the other section). */
+.instances-empty {
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--base);
+  color: var(--subtext);
+  font-size: 12.5px;
+}
+
+/* Badge plus the optional job-page link (HF only — Modal stores no URL). */
+.backend-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.backend-cell .icon-btn {
+  width: 22px;
+  height: 22px;
+}
+
+/* Backend cell: brand logo + name + flavor detail. */
+.backend-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.backend-badge svg {
+  flex: none;
+  display: block;
+}
+.backend-badge .backend-name {
+  font-weight: 500;
+}
+.backend-badge .backend-detail {
+  color: var(--muted);
+}
+.backend-badge.muted {
+  color: var(--muted);
+}
+
 /* legacy chip — StatusBadge supersedes this */
 .status-chip {
   display: inline-flex;
@@ -2530,17 +2606,43 @@ textarea::placeholder {
   color: var(--text);
   background: var(--surface);
 }
+/* The pane cap moves inside the scroller: .settings-pane un-caps .chat-pane so
+   the scroll container (and its scrollbar) reaches the pane's right edge, and
+   .settings-view re-applies the readable width from within. */
+.settings-pane {
+  max-width: none;
+}
 .settings-view-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
 }
 .settings-view {
+  max-width: 760px;
+  margin: 0 auto;
   padding: 24px 32px 60px;
 }
 .settings-view h1 {
   margin: 0 0 6px;
   font-size: 22px;
+}
+.settings-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.settings-head-row h1 {
+  margin: 0;
+}
+/* Errors shown directly in a settings tab (outside a .form wrapper), e.g. the
+   Instances load error. Mirrors `.form .error`. */
+.settings-view > .error {
+  color: var(--accent-red);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  text-transform: none;
+  margin: 0 0 12px;
 }
 .settings-sub {
   margin: 0 0 18px;
