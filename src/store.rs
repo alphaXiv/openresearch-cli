@@ -127,6 +127,8 @@ impl Store {
                 native_session_id TEXT,
                 title             TEXT,
                 model             TEXT,
+                permission_mode   TEXT,
+                reasoning_level   TEXT,
                 created_at        INTEGER NOT NULL,
                 updated_at        INTEGER NOT NULL
             );
@@ -146,6 +148,8 @@ impl Store {
             "ALTER TABLE runs ADD COLUMN commit_sha TEXT",
             "ALTER TABLE runs ADD COLUMN result_markdown TEXT",
             "ALTER TABLE runs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE chat_sessions ADD COLUMN permission_mode TEXT",
+            "ALTER TABLE chat_sessions ADD COLUMN reasoning_level TEXT",
         ] {
             let _ = conn.execute(ddl, []);
         }
@@ -418,8 +422,8 @@ impl Store {
     pub fn create_chat_session(&self, s: &StoredChatSession) -> Result<()> {
         self.conn.execute(
             "INSERT INTO chat_sessions (id, project_id, harness, native_session_id, title, model,
-                                        created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                                        permission_mode, reasoning_level, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 s.id,
                 s.project_id,
@@ -427,6 +431,8 @@ impl Store {
                 s.native_session_id,
                 s.title,
                 s.model,
+                s.permission_mode,
+                s.reasoning_level,
                 s.created_at,
                 s.updated_at,
             ],
@@ -476,6 +482,22 @@ impl Store {
         self.conn.execute(
             "UPDATE chat_sessions SET model = ?2, updated_at = ?3 WHERE id = ?1",
             params![id, model, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_chat_session_permission_mode(&self, id: &str, mode: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE chat_sessions SET permission_mode = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, mode, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_chat_session_reasoning_level(&self, id: &str, level: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE chat_sessions SET reasoning_level = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, level, now_ms()],
         )?;
         Ok(())
     }
@@ -537,6 +559,10 @@ pub struct StoredChatSession {
     pub native_session_id: Option<String>,
     pub title: Option<String>,
     pub model: Option<String>,
+    /// Permission-mode wire id (`"auto"` / `"plan"` / …); None = harness default.
+    pub permission_mode: Option<String>,
+    /// Reasoning-level wire id (`"low"` / `"medium"` / `"high"`); None = default.
+    pub reasoning_level: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -553,8 +579,8 @@ pub struct StoredChatMessage {
     pub created_at: i64,
 }
 
-const CHAT_SESSION_COLS: &str =
-    "id, project_id, harness, native_session_id, title, model, created_at, updated_at";
+const CHAT_SESSION_COLS: &str = "id, project_id, harness, native_session_id, title, model, \
+     permission_mode, reasoning_level, created_at, updated_at";
 
 fn row_to_chat_session(
     row: &rusqlite::Row<'_>,
@@ -566,8 +592,10 @@ fn row_to_chat_session(
         native_session_id: row.get(3)?,
         title: row.get(4)?,
         model: row.get(5)?,
-        created_at: row.get(6)?,
-        updated_at: row.get(7)?,
+        permission_mode: row.get(6)?,
+        reasoning_level: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
     })
 }
 

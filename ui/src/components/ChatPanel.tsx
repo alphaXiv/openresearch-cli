@@ -1,4 +1,4 @@
-import { CornerDownLeft, FlaskConical, PanelLeft, Package, Plus, X } from "lucide-react";
+import { ChevronRight, CornerDownLeft, FlaskConical, PanelLeft, Package, Plus, X } from "lucide-react";
 import { useEffect, useReducer, useRef, useState } from "react";
 import {
   chatAttachmentUrl,
@@ -7,12 +7,15 @@ import {
   getSkills,
   interruptChat,
   listChatSessions,
+  respondChat,
   sendChatMessage,
   type ChatImageAttachment,
   type ChatMessage,
   type ChatPart,
+  type ChatPrompt,
   type ChatSession,
   type Harness,
+  type PromptAnswer,
   type SkillInfo,
 } from "../api";
 import { onChatEvent } from "../events";
@@ -23,6 +26,7 @@ import {
   defaultSelection,
   HARNESS_LABELS,
   ModelPicker,
+  OptionPicker,
   type ModelSelection,
 } from "./ModelPicker";
 
@@ -164,50 +168,247 @@ function relTime(ts: number | undefined): string {
   return `${Math.floor(h / 24)}d`;
 }
 
-function toolSummary(part: ChatPart): string {
-  const input = part.state?.input;
-  if (typeof input?.command === "string") return input.command;
-  if (typeof input?.filePath === "string") return input.filePath;
-  if (typeof input?.description === "string") return input.description;
-  return part.state?.title ?? "";
+/** The last path segment, for compact display ("src/a/b.rs" → "b.rs"). */
+function baseName(path: string): string {
+  const trimmed = path.replace(/\/+$/, "");
+  return trimmed.slice(trimmed.lastIndexOf("/") + 1) || trimmed;
 }
 
+/** Claude-desktop-style one-liner: a verb + target, e.g. "Read hello.py",
+ * "Ran echo hello". Falls back to the raw tool name. */
+function toolLine(part: ChatPart): string {
+  const tool = part.tool ?? "tool";
+  const input = part.state?.input ?? {};
+  const cmd = typeof input.command === "string" ? input.command : null;
+  const fp = typeof input.filePath === "string" ? input.filePath : null;
+  const desc = typeof input.description === "string" ? input.description : null;
+  switch (tool) {
+    case "Bash":
+    case "bash":
+      return cmd ? `Ran ${cmd}` : "Ran command";
+    case "Read":
+      return fp ? `Read ${baseName(fp)}` : "Read file";
+    case "Edit":
+    case "Write":
+    case "NotebookEdit":
+      return fp ? `Edited ${baseName(fp)}` : "Edited file";
+    case "Grep":
+      return typeof input.pattern === "string" ? `Searched “${input.pattern}”` : "Searched";
+    case "Glob":
+      return typeof input.pattern === "string" ? `Found ${input.pattern}` : "Listed files";
+    case "WebFetch":
+    case "WebSearch":
+      return desc ?? "Searched the web";
+    case "Task":
+      return desc ?? "Ran a subagent";
+    case "error":
+      return "Error";
+    default: {
+      const detail = desc ?? fp ?? cmd ?? part.state?.title ?? "";
+      return detail ? `${tool}: ${detail}` : tool;
+    }
+  }
+}
+
+/** One expandable tool row inside a group: gray summary line, click to reveal
+ * the input + output. */
 function ToolRow({ part, onOpenFile }: { part: ChatPart; onOpenFile?: (path: string) => void }) {
   const state = part.state;
   const output = state?.error || state?.output || "";
+  const cmd = typeof state?.input?.command === "string" ? state.input.command : null;
   const filePath = typeof state?.input?.filePath === "string" ? state.input.filePath : null;
+  const hasDetail = Boolean(output || cmd || filePath);
   return (
-    <details className="tool-row">
+    <details className="tool-row" open={false}>
       <summary>
         <span className={toolStatusClass(state?.status)} />
-        <span className="tool-name">{part.tool ?? "tool"}</span>
-        {filePath && onOpenFile ? (
+        <span className="tool-line">{toolLine(part)}</span>
+        {filePath && onOpenFile && (
           <button
-            className="tool-cmd file-link"
+            className="tool-open file-link"
             title={`Open ${filePath}`}
             onClick={(e) => {
-              e.preventDefault(); // keep the <details> from toggling
+              e.preventDefault();
               e.stopPropagation();
               onOpenFile(filePath);
             }}
           >
-            {filePath}
+            open
           </button>
-        ) : (
-          <span className="tool-cmd">{toolSummary(part)}</span>
         )}
       </summary>
-      {output ? <div className="tool-output">{output.slice(0, 20000)}</div> : null}
+      {hasDetail && (
+        <div className="tool-detail">
+          {cmd && <div className="tool-cmd-full">{cmd}</div>}
+          {output && <div className="tool-output">{output.slice(0, 20000)}</div>}
+        </div>
+      )}
     </details>
+  );
+}
+
+/** A run of consecutive tool calls, collapsed into one gray line like the
+ * Claude desktop app ("Read hello.py" for one, "Used N tools" for several).
+ * Clicking expands every row; a still-running tool auto-expands. */
+function ToolGroup({ parts, onOpenFile }: { parts: ChatPart[]; onOpenFile?: (path: string) => void }) {
+  const running = parts.some((p) => p.state?.status === "running");
+  const errored = parts.some((p) => p.state?.status === "error");
+  const [open, setOpen] = useState(false);
+  // While a tool is in flight, show it live; collapse once the run settles.
+  const expanded = open || running;
+
+  const summary =
+    parts.length === 1
+      ? toolLine(parts[0])
+      : running
+        ? toolLine(parts.find((p) => p.state?.status === "running") ?? parts[parts.length - 1])
+        : `Used ${parts.length} tools`;
+
+  return (
+    <div className={`tool-group ${errored ? "has-error" : ""}`}>
+      <button className="tool-group-summary" onClick={() => setOpen((v) => !v)}>
+        <span className={toolStatusClass(running ? "running" : errored ? "error" : "completed")} />
+        <span className="tool-line">{summary}</span>
+        <ChevronRight size={12} className={`tool-chevron ${expanded ? "open" : ""}`} />
+      </button>
+      {expanded && (
+        <div className="tool-group-rows">
+          {parts.map((p) => (
+            <ToolRow key={p.id} part={p} onOpenFile={onOpenFile} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Interactive card for a plan / permission / question prompt. Approving (or
+ * answering) resumes the session; the card renders read-only once resolved. */
+function PromptCard({
+  part,
+  onRespond,
+  onOpenFile,
+}: {
+  part: ChatPart;
+  onRespond?: (answer: PromptAnswer) => void;
+  onOpenFile?: (path: string) => void;
+}) {
+  const p = part.prompt as ChatPrompt;
+  const [picked, setPicked] = useState<string[]>([]);
+  const done = p.resolved || !onRespond;
+
+  const respond = (answer: Omit<PromptAnswer, "promptId">) =>
+    onRespond?.({ promptId: part.id, ...answer });
+
+  if (p.kind === "plan") {
+    return (
+      <div className={`prompt-card plan ${done ? "resolved" : ""}`}>
+        <div className="prompt-head">Proposed plan</div>
+        <div className="prompt-plan">
+          <Md text={p.plan ?? ""} onOpenFile={onOpenFile} />
+        </div>
+        {done ? (
+          <div className="prompt-resolved">Resolved</div>
+        ) : (
+          // resumeMode values are permission-mode wire ids (currently Claude's
+          // --permission-mode strings); when other harnesses gain plan approval
+          // these should come from the harness's advertised permissionModes.
+          <div className="prompt-actions">
+            <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "acceptEdits" })}>
+              Approve &amp; auto-accept edits
+            </button>
+            <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "default" })}>
+              Approve &amp; ask each step
+            </button>
+            <button className="btn-ghost" onClick={() => respond({ approve: false })}>
+              Keep planning
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (p.kind === "permission") {
+    const summary =
+      (typeof p.toolInput?.command === "string" && p.toolInput.command) ||
+      (typeof p.toolInput?.filePath === "string" && p.toolInput.filePath) ||
+      "";
+    return (
+      <div className={`prompt-card permission ${done ? "resolved" : ""}`}>
+        <div className="prompt-head">
+          Permission needed: <code>{p.tool}</code>
+        </div>
+        {summary && <div className="prompt-sub">{summary}</div>}
+        {done ? (
+          <div className="prompt-resolved">Resolved</div>
+        ) : (
+          <div className="prompt-actions">
+            <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "acceptEdits" })}>
+              Allow
+            </button>
+            <button className="btn-ghost" onClick={() => respond({ approve: false })}>
+              Deny
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // question
+  const toggle = (label: string) =>
+    setPicked((cur) =>
+      p.multiSelect
+        ? cur.includes(label)
+          ? cur.filter((l) => l !== label)
+          : [...cur, label]
+        : [label],
+    );
+  return (
+    <div className={`prompt-card question ${done ? "resolved" : ""}`}>
+      {p.header && <div className="prompt-head">{p.header}</div>}
+      {p.question && <div className="prompt-q">{p.question}</div>}
+      <div className="prompt-options">
+        {(p.options ?? []).map((o) => {
+          const sel = picked.includes(o.label);
+          return (
+            <button
+              key={o.label}
+              className={`prompt-option ${sel ? "sel" : ""}`}
+              disabled={done}
+              onClick={() => (done ? undefined : p.multiSelect ? toggle(o.label) : respond({ answers: [o.label] }))}
+            >
+              <span className="prompt-option-label">{o.label}</span>
+              {o.description && <span className="prompt-option-desc">{o.description}</span>}
+            </button>
+          );
+        })}
+      </div>
+      {p.multiSelect && !done && (
+        <div className="prompt-actions">
+          <button
+            className="btn-primary"
+            disabled={picked.length === 0}
+            onClick={() => respond({ answers: picked })}
+          >
+            Submit
+          </button>
+        </div>
+      )}
+      {done && <div className="prompt-resolved">Resolved</div>}
+    </div>
   );
 }
 
 function Message({
   message,
   onOpenFile,
+  onRespond,
 }: {
   message: ChatMessage;
   onOpenFile?: (path: string) => void;
+  onRespond?: (answer: PromptAnswer) => void;
 }) {
   if (message.role === "user") {
     const text = message.parts
@@ -233,24 +434,40 @@ function Message({
       </div>
     );
   }
-  return (
-    <div className="msg-assistant">
-      {message.parts.map((part) => {
-        if (part.type === "text" && part.text)
-          return <Md key={part.id} text={part.text} onOpenFile={onOpenFile} />;
-        if (part.type === "reasoning" && part.text)
-          return (
-            <details key={part.id} className="reasoning">
-              <summary>thinking…</summary>
-              {part.text}
-            </details>
-          );
-        if (part.type === "tool")
-          return <ToolRow key={part.id} part={part} onOpenFile={onOpenFile} />;
-        return null;
-      })}
-    </div>
-  );
+  // Coalesce consecutive tool parts into one collapsed group (Claude-desktop
+  // style); text / reasoning / prompt parts break a run and render inline.
+  const rendered: React.ReactNode[] = [];
+  let toolRun: ChatPart[] = [];
+  const flushTools = () => {
+    if (toolRun.length === 0) return;
+    rendered.push(
+      <ToolGroup key={`tg-${toolRun[0].id}`} parts={toolRun} onOpenFile={onOpenFile} />,
+    );
+    toolRun = [];
+  };
+  for (const part of message.parts) {
+    if (part.type === "tool") {
+      toolRun.push(part);
+      continue;
+    }
+    flushTools();
+    if (part.type === "text" && part.text)
+      rendered.push(<Md key={part.id} text={part.text} onOpenFile={onOpenFile} />);
+    else if (part.type === "reasoning" && part.text)
+      rendered.push(
+        <details key={part.id} className="reasoning">
+          <summary>thinking…</summary>
+          {part.text}
+        </details>,
+      );
+    else if (part.type === "prompt" && part.prompt)
+      rendered.push(
+        <PromptCard key={part.id} part={part} onRespond={onRespond} onOpenFile={onOpenFile} />,
+      );
+  }
+  flushTools();
+
+  return <div className="msg-assistant">{rendered}</div>;
 }
 
 // --- panel -------------------------------------------------------------------
@@ -352,6 +569,21 @@ export function ChatPanel({
     localStorage.setItem(SELECTION_STORAGE_KEY, JSON.stringify(next));
   };
 
+  // The selection used for composing (falls back to the first ready harness),
+  // and that harness's advertised toggle vocabulary.
+  const activeSelection = selection ?? defaultSelection(harnesses);
+  const activeHarness = activeSelection
+    ? harnesses.find((h) => h.id === activeSelection.harness)
+    : undefined;
+  const opts = activeHarness?.options;
+
+  const setPermissionMode = (id: string) => {
+    if (activeSelection) selectModel({ ...activeSelection, permissionMode: id });
+  };
+  const setReasoningLevel = (id: string) => {
+    if (activeSelection) selectModel({ ...activeSelection, reasoningLevel: id });
+  };
+
   // Reset everything when the project changes.
   useEffect(() => {
     setSessions([]);
@@ -426,11 +658,11 @@ export function ChatPanel({
     let sid = activeId;
     try {
       if (!sid) {
-        const session = await createChatSession(
-          projectId,
-          effective!.harness,
-          effective!.model,
-        );
+        const session = await createChatSession(projectId, effective!.harness, {
+          model: effective!.model,
+          permissionMode: effective!.permissionMode,
+          reasoningLevel: effective!.reasoningLevel,
+        });
         loadedSessions.current.add(session.id);
         setSessions((cur) => [session, ...cur]);
         setActiveId(session.id);
@@ -445,16 +677,20 @@ export function ChatPanel({
       dispatch({ type: "busy", sessionId: sid, busy: true });
       stickToBottom.current = true;
       const current = sessions.find((s) => s.id === sid);
-      // Model overrides only apply within the session's own harness.
-      const model =
-        effective && (!current || current.harness === effective.harness)
-          ? effective.model
-          : undefined;
+      // Composer overrides only apply within the session's own harness.
+      const sameHarness = effective && (!current || current.harness === effective.harness);
+      const turnOpts = sameHarness
+        ? {
+            model: effective.model,
+            permissionMode: effective.permissionMode,
+            reasoningLevel: effective.reasoningLevel,
+          }
+        : {};
       const images: ChatImageAttachment[] = pending.map((a) => ({
         mediaType: a.mediaType,
         dataBase64: a.dataUrl.slice(a.dataUrl.indexOf(",") + 1),
       }));
-      await sendChatMessage(sid, text, model, images.length ? images : undefined);
+      await sendChatMessage(sid, text, turnOpts, images.length ? images : undefined);
     } catch {
       if (sid) dispatch({ type: "busy", sessionId: sid, busy: false });
     }
@@ -462,6 +698,15 @@ export function ChatPanel({
 
   function stop() {
     if (activeId) void interruptChat(activeId);
+  }
+
+  function respond(answer: PromptAnswer) {
+    if (!activeId) return;
+    // The resumed turn streams over SSE; optimistically mark busy.
+    dispatch({ type: "busy", sessionId: activeId, busy: true });
+    void respondChat(activeId, answer).catch(() => {
+      if (activeId) dispatch({ type: "busy", sessionId: activeId, busy: false });
+    });
   }
 
   const rail = (
@@ -599,7 +844,7 @@ export function ChatPanel({
           }}
         >
           {messages.map((m) => (
-            <Message key={m.id} message={m} onOpenFile={onOpenFile} />
+            <Message key={m.id} message={m} onOpenFile={onOpenFile} onRespond={respond} />
           ))}
           {busy && (
             <div className="working">
@@ -685,8 +930,31 @@ export function ChatPanel({
             }}
           />
           <div className="composer-actions">
-            <ModelPicker value={selection} onSelect={selectModel} onHarnesses={setHarnesses} />
+            {/* Bottom-left: permission mode. */}
+            <OptionPicker
+              choices={opts?.permissionModes ?? []}
+              value={activeSelection?.permissionMode ?? null}
+              defaultId={opts?.defaultPermissionMode ?? null}
+              header="Mode"
+              align="left"
+              variant="pill"
+              numbered
+              title="Permission mode for this chat"
+              onSelect={setPermissionMode}
+            />
             <div style={{ flex: 1 }} />
+            {/* Bottom-right: model, then reasoning level. */}
+            <ModelPicker value={selection} onSelect={selectModel} onHarnesses={setHarnesses} />
+            <OptionPicker
+              choices={opts?.reasoningLevels ?? []}
+              value={activeSelection?.reasoningLevel ?? null}
+              defaultId={opts?.defaultReasoningLevel ?? null}
+              header="Reasoning"
+              align="right"
+              variant="bare"
+              title="Reasoning level for this chat"
+              onSelect={setReasoningLevel}
+            />
             {busy ? (
               <button className="send-btn stop" title="Stop" aria-label="Stop" onClick={stop}>
                 <X size={16} />

@@ -8,10 +8,6 @@
 //! normalized parts into the per-turn assistant message; every flush persists
 //! the message and broadcasts it as a `chat.message` SSE event.
 
-mod claude;
-mod codex;
-mod opencode;
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,8 +21,6 @@ use crate::error::{anyhow, Result};
 use crate::local::model::LocalProject;
 use crate::local::opencode::AgentHost;
 use crate::store::{now_ms, Store, StoredChatMessage, StoredChatSession};
-
-pub const HARNESS_IDS: [&str; 3] = ["claude-code", "codex", "opencode"];
 
 /// Min interval between mid-turn persist+broadcast flushes (streaming parts
 /// can update many times a second; the final flush is always unconditional).
@@ -48,18 +42,65 @@ pub struct WireToolState {
     pub title: Option<String>,
 }
 
+/// One option in an AskUserQuestion prompt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireQuestionOption {
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// An interactive request the user must act on before the harness continues.
+/// The three kinds (`plan` / `permission` / `question`) are derived from Claude
+/// Code's ExitPlanMode / permission_denials / AskUserQuestion — currently the
+/// only harness that emits them. They're *intended* to generalize (Codex's
+/// approval protocol should map onto `permission`/`question`), but that hasn't
+/// been validated against a second harness yet, so treat the vocabulary as
+/// Claude-shaped until Codex approvals are wired. The UI renders a card and the
+/// answer resumes the session (see `ChatHost::respond`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WirePrompt {
+    /// `plan` | `permission` | `question`.
+    pub kind: String,
+    /// Whether this prompt has been answered (answered cards render read-only).
+    #[serde(default)]
+    pub resolved: bool,
+    /// plan: the proposed plan markdown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    /// permission: the tool the harness was blocked from using, + its input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_input: Option<Value>,
+    /// question: the prompt text + selectable options.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub options: Vec<WireQuestionOption>,
+    #[serde(default)]
+    pub multi_select: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WirePart {
     pub id: String,
     #[serde(rename = "type")]
-    pub kind: String, // text | reasoning | tool
+    pub kind: String, // text | reasoning | tool | prompt
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<WireToolState>,
+    /// Present only on `prompt` parts — the interactive request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<WirePrompt>,
 }
 
 impl WirePart {
@@ -70,6 +111,7 @@ impl WirePart {
             text: Some(text.into()),
             tool: None,
             state: None,
+            prompt: None,
         }
     }
 
@@ -85,6 +127,18 @@ impl WirePart {
         Self {
             kind: "image".into(),
             ..Self::text(id, name)
+        }
+    }
+
+    /// An interactive prompt part (plan / permission / question).
+    pub fn prompt(id: impl Into<String>, prompt: WirePrompt) -> Self {
+        Self {
+            id: id.into(),
+            kind: "prompt".into(),
+            text: None,
+            tool: None,
+            state: None,
+            prompt: Some(prompt),
         }
     }
 }
@@ -164,6 +218,8 @@ pub fn session_json(s: &StoredChatSession, busy: bool) -> Value {
         "harness": s.harness,
         "title": s.title,
         "model": s.model,
+        "permissionMode": s.permission_mode,
+        "reasoningLevel": s.reasoning_level,
         "createdAt": s.created_at,
         "updatedAt": s.updated_at,
         "busy": busy,
@@ -191,7 +247,65 @@ pub struct ChatHost {
     pub opencode: Arc<AgentHost>,
     http: reqwest::Client,
     events: broadcast::Sender<(&'static str, Value)>,
-    turns: Mutex<HashMap<String, tokio::task::AbortHandle>>,
+    /// Sessions with a turn in flight. A key present means busy; the value is
+    /// the running task's abort handle, or `None` while a turn is being set up
+    /// (reserved but not yet spawned — see `TurnGuard`).
+    turns: Mutex<HashMap<String, Option<tokio::task::AbortHandle>>>,
+}
+
+/// Reserves a session's turn slot for the duration of `send_message`'s setup.
+/// `claim` inserts a `None` reservation under the `turns` lock iff the session
+/// isn't already busy — closing the check-then-insert race. On drop (early
+/// error / panic) it clears the reservation; call `defuse` once the real abort
+/// handle has replaced it so the running turn's slot survives.
+struct TurnGuard {
+    host: Arc<ChatHost>,
+    session_id: String,
+    armed: bool,
+}
+
+impl TurnGuard {
+    /// `Some` if the slot was free and is now reserved; `None` if already busy.
+    async fn claim(host: &Arc<ChatHost>, session_id: &str) -> Option<Self> {
+        let mut turns = host.turns.lock().await;
+        if turns.contains_key(session_id) {
+            return None;
+        }
+        turns.insert(session_id.to_string(), None);
+        Some(Self {
+            host: host.clone(),
+            session_id: session_id.to_string(),
+            armed: true,
+        })
+    }
+
+    /// Hand ownership of the slot to the spawned turn — stop clearing it on drop.
+    fn defuse(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TurnGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // Setup failed before a turn was spawned: release the reservation. Only
+        // remove if it's still the unspawned reservation (None), never a live
+        // handle (some other path may have taken over).
+        //
+        // `try_lock` is safe here rather than a leak risk: an armed guard only
+        // drops on an early return from send_message's prologue, which never
+        // holds the `turns` lock (claim releases it immediately, and it's only
+        // re-acquired at the final upgrade after the guard is defused). So the
+        // lock is always free when an armed guard drops — the fallible lock can't
+        // actually fail in this path.
+        if let Ok(mut turns) = self.host.turns.try_lock() {
+            if matches!(turns.get(&self.session_id), Some(None)) {
+                turns.remove(&self.session_id);
+            }
+        }
+    }
 }
 
 impl ChatHost {
@@ -226,12 +340,17 @@ impl ChatHost {
         self: &Arc<Self>,
         session_id: &str,
         text: String,
-        model_override: Option<String>,
+        overrides: TurnOverrides,
         images: Vec<ImageAttachment>,
     ) -> Result<()> {
-        if self.is_busy(session_id).await {
-            return Err(anyhow!("session is busy — interrupt it first"));
-        }
+        // Atomically claim the session's turn slot: the busy-check and the
+        // reservation happen under one lock so two concurrent sends (or a
+        // send racing a /respond resume) can't both spawn a turn against the
+        // same session. `_guard` releases the reservation on any early error.
+        let _guard = match TurnGuard::claim(self, session_id).await {
+            Some(guard) => guard,
+            None => return Err(anyhow!("session is busy — interrupt it first")),
+        };
         let store = Store::open()?;
         let mut session = store
             .get_chat_session(session_id)?
@@ -240,10 +359,24 @@ impl ChatHost {
             .get_local_project(&session.project_id)?
             .ok_or_else(|| anyhow!("project not found"))?;
 
-        if let Some(model) = model_override.filter(|m| !m.is_empty()) {
+        // Composer selections are sticky: an override that differs from the
+        // stored value is persisted so the next turn (and a reload) keep it.
+        if let Some(model) = overrides.model.filter(|m| !m.is_empty()) {
             if session.model.as_deref() != Some(model.as_str()) {
                 store.set_chat_session_model(&session.id, &model)?;
                 session.model = Some(model);
+            }
+        }
+        if let Some(mode) = overrides.permission_mode.filter(|m| !m.is_empty()) {
+            if session.permission_mode.as_deref() != Some(mode.as_str()) {
+                store.set_chat_session_permission_mode(&session.id, &mode)?;
+                session.permission_mode = Some(mode);
+            }
+        }
+        if let Some(level) = overrides.reasoning_level.filter(|l| !l.is_empty()) {
+            if session.reasoning_level.as_deref() != Some(level.as_str()) {
+                store.set_chat_session_reasoning_level(&session.id, &level)?;
+                session.reasoning_level = Some(level);
             }
         }
         let saved_images = save_images(&images)?;
@@ -316,6 +449,11 @@ impl ChatHost {
             harness: session.harness.clone(),
             native_session_id: session.native_session_id.clone(),
             model: session.model.clone(),
+            permission_mode: session
+                .permission_mode
+                .as_deref()
+                .and_then(crate::local::harness::PermissionMode::from_id),
+            reasoning_level: session.reasoning_level.clone(),
             project,
             text: turn_text,
             assistant: WireMessage {
@@ -327,11 +465,9 @@ impl ChatHost {
             last_flush: Instant::now() - FLUSH_INTERVAL,
         };
         let task = tokio::spawn(async move {
-            let result = match ctx.harness.as_str() {
-                "claude-code" => claude::run_turn(&mut ctx).await,
-                "codex" => codex::run_turn(&mut ctx).await,
-                "opencode" => opencode::run_turn(&mut ctx).await,
-                other => Err(anyhow!("unknown harness: {other}")),
+            let result = match crate::local::harness::chat_harness(&ctx.harness) {
+                Some(harness) => harness.run_turn(&mut ctx).await,
+                None => Err(anyhow!("unknown harness: {}", ctx.harness)),
             };
             if let Err(err) = result {
                 ctx.push_error(format!("{err}"));
@@ -339,7 +475,26 @@ impl ChatHost {
             let _ = ctx.flush();
             ctx.host.finish_turn(&ctx.session_id).await;
         });
-        self.turns.lock().await.insert(sid, task.abort_handle());
+        // Upgrade the reservation None→Some(handle), atomically re-checking that
+        // it's still ours: an `interrupt` racing the prologue above may have
+        // removed the reservation (and already emitted idle). If so, the freshly
+        // spawned task must be aborted — never re-inserted — or it would run to
+        // completion uninterruptible while the UI shows the session idle.
+        {
+            let mut turns = self.turns.lock().await;
+            if matches!(turns.get(&sid), Some(None)) {
+                turns.insert(sid, Some(task.abort_handle()));
+            } else {
+                // Reservation gone (interrupted) or already replaced — honor the
+                // interrupt: abort the task (its finish_turn won't run) and leave
+                // the slot exactly as interrupt left it.
+                task.abort();
+            }
+            // Defuse in BOTH branches while still holding the lock: the guard's
+            // Drop must never run after this, or a same-session send that claims
+            // a fresh reservation in the gap before Drop could have it clobbered.
+            _guard.defuse();
+        }
         Ok(())
     }
 
@@ -365,8 +520,9 @@ impl ChatHost {
     /// opencode adapter additionally gets a native abort so the serve process
     /// stops generating.
     pub async fn interrupt(&self, session_id: &str) -> Result<()> {
-        let handle = self.turns.lock().await.remove(session_id);
-        let Some(handle) = handle else {
+        // Outer None: not busy. Inner None: reserved but not yet spawned — the
+        // reservation is now cleared, so send_message's guard will abort setup.
+        let Some(handle) = self.turns.lock().await.remove(session_id) else {
             return Ok(());
         };
         if let Ok(store) = Store::open() {
@@ -381,9 +537,67 @@ impl ChatHost {
                 }
             }
         }
-        handle.abort();
+        if let Some(handle) = handle {
+            handle.abort();
+        }
         self.finish_turn(session_id).await;
         Ok(())
+    }
+
+    /// Answer an interactive prompt (plan / permission / question) and resume
+    /// the session. The prompt part is marked resolved in the transcript, then
+    /// a synthesized follow-up message continues the turn — for plan/permission
+    /// approvals with the caller's chosen permission mode.
+    pub async fn respond(self: &Arc<Self>, req: PromptAnswer) -> Result<()> {
+        if self.is_busy(&req.session_id).await {
+            return Err(anyhow!("session is busy — interrupt it first"));
+        }
+        // Peek the prompt's kind (without mutating yet) so we can validate the
+        // answer before flipping it resolved — a question with no selection must
+        // not resume with an empty prompt.
+        let kind = prompt_kind(&req.session_id, &req.prompt_id)?
+            .ok_or_else(|| anyhow!("prompt not found"))?;
+
+        // Only a *denied* permission closes the card without resuming; every
+        // other answer (plan approve and keep-planning, question selections)
+        // resumes the session with a synthesized follow-up.
+        let resume = if kind == "permission" && !req.approve {
+            None
+        } else {
+            Some(synthesize_resume(&kind, &req))
+        };
+        // Reject an empty resume (e.g. a question answered with no selection and
+        // no note) before we mark anything resolved, so the card stays actionable.
+        if let Some((text, _)) = &resume {
+            if text.trim().is_empty() {
+                return Err(anyhow!("no answer provided"));
+            }
+        }
+
+        // Mark resolved and broadcast the updated card so it renders read-only
+        // on every client immediately (send_message only emits the new user
+        // message, never the mutated assistant one).
+        let resolved_msg = mark_prompt_resolved(&req.session_id, &req.prompt_id)?
+            .ok_or_else(|| anyhow!("prompt not found"))?;
+        self.emit("chat.message", message_json(&resolved_msg, &req.session_id));
+
+        let Some((text, mode)) = resume else {
+            // Card closed, no resume; broadcast idle so `busy` clears in the UI.
+            if let Ok(Some(session)) = Store::open()?.get_chat_session(&req.session_id) {
+                self.emit(
+                    "chat.session",
+                    json!({ "session": session_json(&session, false) }),
+                );
+            }
+            return Ok(());
+        };
+        let overrides = TurnOverrides {
+            model: None,
+            permission_mode: mode,
+            reasoning_level: None,
+        };
+        self.send_message(&req.session_id, text, overrides, Vec::new())
+            .await
     }
 
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
@@ -393,7 +607,144 @@ impl ChatHost {
     }
 }
 
+/// A user's answer to an interactive prompt.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptAnswer {
+    pub session_id: String,
+    pub prompt_id: String,
+    /// Approve (proceed) vs reject (dismiss). For questions, always true.
+    #[serde(default = "default_true")]
+    pub approve: bool,
+    /// For plan/permission approval: the permission mode to resume under
+    /// (e.g. `"auto"`, `"acceptEdits"`). None keeps the session's mode.
+    #[serde(default)]
+    pub resume_mode: Option<String>,
+    /// For questions: the chosen option labels.
+    #[serde(default)]
+    pub answers: Vec<String>,
+    /// Optional freeform note the user added (plan refinement / extra context).
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// The kind of the (unresolved) prompt part with `prompt_id`, if present —
+/// peeked before mutation so the answer can be validated first.
+fn prompt_kind(session_id: &str, prompt_id: &str) -> Result<Option<String>> {
+    let store = Store::open()?;
+    for msg in store.list_chat_messages(session_id)?.iter().rev() {
+        if msg.role != "assistant" {
+            continue;
+        }
+        let parts: Vec<WirePart> = serde_json::from_str(&msg.parts_json).unwrap_or_default();
+        if let Some(prompt) = parts
+            .iter()
+            .find(|p| p.id == prompt_id)
+            .and_then(|p| p.prompt.as_ref())
+        {
+            return Ok(Some(prompt.kind.clone()));
+        }
+    }
+    Ok(None)
+}
+
+/// Flip the `resolved` flag on the prompt part with `prompt_id` in the session's
+/// last assistant message that carries it, persist it, and return the mutated
+/// message (so the caller can broadcast a `chat.message` and the card renders
+/// read-only). `None` if no such prompt part exists.
+fn mark_prompt_resolved(session_id: &str, prompt_id: &str) -> Result<Option<WireMessage>> {
+    let store = Store::open()?;
+    for msg in store.list_chat_messages(session_id)?.iter().rev() {
+        if msg.role != "assistant" {
+            continue;
+        }
+        let mut parts: Vec<WirePart> = serde_json::from_str(&msg.parts_json).unwrap_or_default();
+        if let Some(part) = parts
+            .iter_mut()
+            .find(|p| p.id == prompt_id && p.prompt.is_some())
+        {
+            if let Some(prompt) = part.prompt.as_mut() {
+                prompt.resolved = true;
+            }
+            store.upsert_chat_message(&StoredChatMessage {
+                id: msg.id.clone(),
+                session_id: session_id.to_string(),
+                role: msg.role.clone(),
+                parts_json: serde_json::to_string(&parts)?,
+                created_at: msg.created_at,
+            })?;
+            return Ok(Some(WireMessage {
+                id: msg.id.clone(),
+                role: msg.role.clone(),
+                parts,
+                created_at: msg.created_at,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// The follow-up message + resume mode for an answered prompt.
+///
+/// NOTE: this encodes Claude Code's resume strategy — a prompt ends the turn and
+/// the answer becomes a *new user message* that continues via `--resume`. Codex
+/// and OpenCode approve inline over their own live protocol; when they gain
+/// approvals, `respond` should dispatch through the harness rather than route
+/// them here. The permission-mode strings returned here are Claude's wire ids.
+fn synthesize_resume(kind: &str, req: &PromptAnswer) -> (String, Option<String>) {
+    let note = req.note.as_deref().filter(|s| !s.trim().is_empty());
+    match kind {
+        "plan" if req.approve => {
+            let mut text = "The user approved the plan. Proceed with implementing it.".to_string();
+            if let Some(note) = note {
+                text.push_str(&format!("\n\nAdditional guidance: {note}"));
+            }
+            // Approving a plan means leaving plan mode; default to `auto`.
+            (
+                text,
+                req.resume_mode.clone().or_else(|| Some("auto".into())),
+            )
+        }
+        "plan" => {
+            // "Keep planning" — stay in plan mode with the refinement.
+            let text = note
+                .map(|n| format!("Keep refining the plan: {n}"))
+                .unwrap_or_else(|| "Please revise the plan.".to_string());
+            (text, Some("plan".into()))
+        }
+        "permission" => {
+            let text = "The user approved that action. Continue.".to_string();
+            (text, req.resume_mode.clone())
+        }
+        // question (or anything else): feed the selection back as the user's reply.
+        _ => {
+            let mut text = if req.answers.is_empty() {
+                note.unwrap_or("").to_string()
+            } else {
+                req.answers.join(", ")
+            };
+            if let (false, Some(note)) = (req.answers.is_empty(), note) {
+                text.push_str(&format!("\n\n{note}"));
+            }
+            (text, None)
+        }
+    }
+}
+
 // --- per-turn context handed to adapters --------------------------------------
+
+/// Composer selections a single message can override, mirroring the sticky
+/// per-session settings. Empty/None fields leave the stored value in place.
+#[derive(Debug, Default)]
+pub struct TurnOverrides {
+    pub model: Option<String>,
+    pub permission_mode: Option<String>,
+    pub reasoning_level: Option<String>,
+}
 
 pub struct TurnCtx {
     pub host: Arc<ChatHost>,
@@ -401,6 +752,12 @@ pub struct TurnCtx {
     pub harness: String,
     pub native_session_id: Option<String>,
     pub model: Option<String>,
+    /// Effective permission mode for this turn (session value; harness applies
+    /// its own default when `None`).
+    pub permission_mode: Option<crate::local::harness::PermissionMode>,
+    /// Effective reasoning-level wire id for this turn (harness-owned vocabulary;
+    /// the harness interprets it, e.g. Claude → `--effort`). Default when `None`.
+    pub reasoning_level: Option<String>,
     pub project: LocalProject,
     pub text: String,
     pub assistant: WireMessage,
@@ -468,6 +825,7 @@ impl TurnCtx {
                 error: Some(message),
                 title: None,
             }),
+            prompt: None,
         });
     }
 
@@ -561,7 +919,10 @@ pub async fn watch_runs(chat: Arc<ChatHost>) {
                  continue the loop.",
                 run.id, run.status, run.project_id, run.id
             );
-            if let Err(err) = chat.send_message(&session.id, text, None, Vec::new()).await {
+            if let Err(err) = chat
+                .send_message(&session.id, text, TurnOverrides::default(), Vec::new())
+                .await
+            {
                 eprintln!("orx up: run watcher: {err}");
             }
         }

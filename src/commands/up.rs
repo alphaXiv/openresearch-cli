@@ -152,6 +152,7 @@ fn router(state: AppState) -> Router {
         .route("/api/chat/sessions/{id}/messages", get(chat_messages))
         .route("/api/chat/sessions/{id}/message", post(send_chat_message))
         .route("/api/chat/sessions/{id}/interrupt", post(interrupt_chat))
+        .route("/api/chat/sessions/{id}/respond", post(respond_chat))
         .route("/api/chat/attachments/{name}", get(chat_attachment))
         .route("/api/agent/status", get(agent_status))
         .fallback(spa)
@@ -1408,23 +1409,28 @@ struct CreateChatSessionReq {
     project_id: String,
     harness: String,
     model: Option<String>,
+    permission_mode: Option<String>,
+    reasoning_level: Option<String>,
 }
 
 async fn create_chat_session(Json(req): Json<CreateChatSessionReq>) -> ApiResult {
-    if !local::chat::HARNESS_IDS.contains(&req.harness.as_str()) {
+    if !local::harness::is_chat_harness(&req.harness) {
         return Err(bad_request(format!("unknown harness: {}", req.harness)));
     }
     let store = Store::open()?;
     store
         .get_local_project(&req.project_id)?
         .ok_or_else(|| not_found("project"))?;
+    let nonempty = |s: Option<String>| s.filter(|v| !v.trim().is_empty());
     let session = StoredChatSession {
         id: format!("chat_{}", uuid::Uuid::new_v4()),
         project_id: req.project_id,
         harness: req.harness,
         native_session_id: None,
         title: None,
-        model: req.model.filter(|m| !m.trim().is_empty()),
+        model: nonempty(req.model),
+        permission_mode: nonempty(req.permission_mode),
+        reasoning_level: nonempty(req.reasoning_level),
         created_at: now_ms(),
         updated_at: now_ms(),
     };
@@ -1448,9 +1454,12 @@ async fn chat_messages(Path(id): Path<String>) -> ApiResult {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SendChatReq {
     text: String,
     model: Option<String>,
+    permission_mode: Option<String>,
+    reasoning_level: Option<String>,
     #[serde(default)]
     images: Vec<local::chat::ImageAttachment>,
 }
@@ -1464,10 +1473,15 @@ async fn send_chat_message(
     if text.is_empty() && req.images.is_empty() {
         return Err(bad_request("text is required"));
     }
+    let overrides = local::chat::TurnOverrides {
+        model: req.model,
+        permission_mode: req.permission_mode,
+        reasoning_level: req.reasoning_level,
+    };
     // The turn runs in the background; progress streams over /api/events.
     state
         .chat
-        .send_message(&id, text, req.model, req.images)
+        .send_message(&id, text, overrides, req.images)
         .await
         .map_err(bad_request)?;
     Ok(Json(json!({ "ok": true })))
@@ -1504,6 +1518,45 @@ async fn chat_attachment(Path(name): Path<String>) -> std::result::Result<Respon
 
 async fn interrupt_chat(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
     state.chat.interrupt(&id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RespondReq {
+    prompt_id: String,
+    #[serde(default = "default_true")]
+    approve: bool,
+    #[serde(default)]
+    resume_mode: Option<String>,
+    #[serde(default)]
+    answers: Vec<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Answer an interactive prompt (plan / permission / question) on a session.
+async fn respond_chat(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RespondReq>,
+) -> ApiResult {
+    state
+        .chat
+        .respond(local::chat::PromptAnswer {
+            session_id: id,
+            prompt_id: req.prompt_id,
+            approve: req.approve,
+            resume_mode: req.resume_mode,
+            answers: req.answers,
+            note: req.note,
+        })
+        .await
+        .map_err(bad_request)?;
     Ok(Json(json!({ "ok": true })))
 }
 

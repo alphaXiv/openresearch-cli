@@ -847,7 +847,9 @@ select:focus {
 }
 
 .msg-assistant {
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.62;
+  color: var(--text);
   min-width: 0;
 }
 
@@ -867,48 +869,86 @@ select:focus {
 }
 
 /* tool calls: bordered surface card, one row per call */
+/* ---- tool calls: compact, coalesced, gray (Claude-desktop style) ---- */
+.tool-group {
+  margin: 2px 0;
+}
+.tool-group-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 2px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-align: left;
+  border-radius: 6px;
+}
+.tool-group-summary:hover {
+  color: var(--subtext);
+  background: var(--surface);
+}
+.tool-group.has-error .tool-group-summary {
+  color: var(--accent-red);
+}
+.tool-chevron {
+  flex-shrink: 0;
+  color: var(--muted);
+  transition: transform 0.12s ease;
+}
+.tool-chevron.open {
+  transform: rotate(90deg);
+}
+.tool-group-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 4px 7px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border-variant);
+}
 .tool-row {
   display: flex;
   flex-direction: column;
-  margin: 3px 0;
-  border: 1px solid var(--border-variant);
-  background: var(--surface);
-  overflow: hidden;
-  font-size: 12px;
 }
 .tool-row summary {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
+  gap: 8px;
+  padding: 3px 4px;
   cursor: pointer;
   list-style: none;
   user-select: none;
   min-width: 0;
+  border-radius: 5px;
+}
+.tool-row summary:hover {
+  background: var(--surface);
 }
 .tool-row summary::-webkit-details-marker {
   display: none;
 }
-.tool-name {
-  font-family: var(--mono);
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--text);
-  flex-shrink: 0;
-}
-.tool-cmd {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--subtext);
+.tool-line {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--subtext);
+}
+.tool-open {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--primary);
+}
+.tool-open:hover {
+  text-decoration: underline;
 }
 .tool-status {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
   background: var(--muted);
@@ -918,11 +958,24 @@ select:focus {
   animation: pulse 1.2s ease-in-out infinite;
 }
 .tool-status.error {
-  background: var(--error);
+  background: var(--accent-red);
+}
+.tool-detail {
+  margin: 2px 0 4px 14px;
+}
+.tool-cmd-full {
+  padding: 6px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  background: var(--surface);
+  border-radius: 5px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .tool-output {
-  border-top: 1px solid var(--border-variant);
-  padding: 8px 14px;
+  margin-top: 3px;
+  padding: 6px 10px;
   font-family: var(--mono);
   font-size: 11px;
   color: var(--subtext);
@@ -931,8 +984,9 @@ select:focus {
   max-height: 260px;
   overflow-y: auto;
   background: var(--base);
+  border: 1px solid var(--border-variant);
+  border-radius: 5px;
 }
-
 .working {
   display: flex;
   align-items: center;
@@ -1067,7 +1121,8 @@ select:focus {
 .md {
   min-width: 0;
   word-break: break-word;
-  color: var(--subtext);
+  color: var(--text);
+  line-height: 1.62;
 }
 .md > *:first-child {
   margin-top: 0;
@@ -1076,7 +1131,7 @@ select:focus {
   margin-bottom: 0;
 }
 .md p {
-  margin: 6px 0;
+  margin: 10px 0;
 }
 .md strong {
   color: var(--text);
@@ -1138,6 +1193,38 @@ select:focus {
   padding: 0;
   font-weight: 400;
 }
+
+.md-code {
+  position: relative;
+  margin: 10px 0;
+}
+.md-code pre {
+  margin: 0;
+}
+.md-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  color: var(--muted);
+  background: var(--base);
+  border: 1px solid var(--border-variant);
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease;
+}
+.md-code:hover .md-code-copy {
+  opacity: 1;
+}
+.md-code-copy:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
 .md h1,
 .md h2,
 .md h3,
@@ -1159,17 +1246,31 @@ select:focus {
 }
 .md table {
   border-collapse: collapse;
-  font-size: 12.5px;
+  width: 100%;
+  font-size: 13px;
+  margin: 10px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
 }
 .md th,
 .md td {
-  border-bottom: 1px solid var(--border);
-  padding: 4px 10px 4px 0;
+  border-bottom: 1px solid var(--border-variant);
+  padding: 8px 14px;
   text-align: left;
   color: var(--text);
 }
-.md th {
+.md tr:last-child td {
+  border-bottom: none;
+}
+.md thead th {
+  background: var(--surface);
   font-weight: 500;
+  color: var(--subtext);
+  border-bottom: 1px solid var(--border);
+}
+.md tbody tr:hover td {
+  background: var(--surface-bright);
 }
 .md blockquote {
   margin: 6px 0;
@@ -2563,10 +2664,13 @@ select:focus {
 
 /* ---- composer model picker ---- */
 
-.model-picker {
+.model-picker,
+.option-picker {
   position: relative;
+  display: inline-flex;
 }
-.model-btn {
+/* Boxed composer control (permission mode, model). */
+.composer-pill {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -2576,15 +2680,28 @@ select:focus {
   padding: 5px 8px;
   border-radius: 6px;
 }
-.model-btn:hover {
+.composer-pill:hover {
   background: var(--surface);
   color: var(--text);
 }
-.model-menu {
+/* Text-only composer control (reasoning level) — sits beside the model label. */
+.composer-bare {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11.5px;
+  color: var(--subtext);
+  padding: 5px 4px;
+  border-radius: 6px;
+}
+.composer-bare:hover {
+  color: var(--text);
+}
+.model-menu,
+.option-menu {
   position: absolute;
   bottom: calc(100% + 8px);
   left: 0;
-  width: 320px;
   max-height: 380px;
   display: flex;
   flex-direction: column;
@@ -2594,6 +2711,36 @@ select:focus {
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
   z-index: 50;
   overflow: hidden;
+}
+.model-menu {
+  width: 320px;
+}
+.option-menu {
+  min-width: 190px;
+  padding: 6px;
+}
+/* Right-anchored menus (bottom-right controls) open toward the left edge. */
+.model-menu.align-right,
+.option-menu.align-right {
+  left: auto;
+  right: 0;
+}
+/* "· Default" note on the pinned default row. */
+.option-default {
+  color: var(--muted);
+  font-weight: 400;
+}
+/* Separator under the default row. */
+.option-sep {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--border-variant);
+}
+/* Right-aligned 1-based number hints in the mode menu. */
+.option-num {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 .model-menu input {
   border: none;
@@ -2683,17 +2830,6 @@ select:focus {
 
 /* --- file viewer (right-pane tab opened from chat tool rows) ------------- */
 
-.tool-cmd.file-link {
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  text-align: left;
-}
-.tool-cmd.file-link:hover {
-  color: var(--primary);
-  text-decoration: underline;
-}
 
 .file-view {
   display: flex;

@@ -2,9 +2,36 @@
 // MarkdownContent: `<file path="..." lines="20-40"/>` tags (and plain relative
 // links) render as chips that open the file as a right-pane tab.
 
-import { FileCode } from "lucide-react";
-import type { ReactNode } from "react";
+import { Check, Copy, FileCode } from "lucide-react";
+import { useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { resolveSyntaxLanguage } from "../syntaxLanguage";
+import { highlight } from "../syntaxHighlight";
+
+// Chat blocks are short; cap tokenizing well below the file viewer's limit.
+const HIGHLIGHT_MAX_BYTES = 100_000;
+
+/** A fenced code block: syntax-highlighted body + a copy button. */
+function CodeBlock({ code, lang }: { code: string; lang: string | null }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard?.writeText(code).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <div className="md-code">
+      <button className="md-code-copy" title="Copy" aria-label="Copy code" onClick={copy}>
+        {copied ? <Check size={13} /> : <Copy size={13} />}
+      </button>
+      <pre>
+        <code>{highlight(code, lang, HIGHLIGHT_MAX_BYTES)}</code>
+      </pre>
+    </div>
+  );
+}
 
 interface MdastNode {
   children?: MdastNode[];
@@ -126,11 +153,33 @@ export function Md({ text, onOpenFile }: { text: string; onOpenFile?: (path: str
         </a>
       );
     },
+    // Fenced blocks (language-*) become highlighted CodeBlocks; inline code
+    // (no language / single line) stays a plain <code> chip.
+    code: ({ node: _node, className, children, ...rest }: any) => {
+      const cls: string = className ?? "";
+      const match = /language-(\w+)/.exec(cls);
+      const raw = String(children ?? "").replace(/\n$/, "");
+      const isBlock = match != null || raw.includes("\n");
+      if (!isBlock) {
+        return (
+          <code className={cls} {...rest}>
+            {children}
+          </code>
+        );
+      }
+      const lang = match ? resolveSyntaxLanguage(match[1]) : null;
+      return <CodeBlock code={raw} lang={lang} />;
+    },
+    // The <pre> wrapper is handled inside CodeBlock; unwrap react-markdown's.
+    pre: ({ children }: any) => <>{children}</>,
   };
 
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={[remarkFileMentions]} components={components as any}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkFileMentions]}
+        components={components as any}
+      >
         {text}
       </ReactMarkdown>
     </div>
