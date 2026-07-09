@@ -299,11 +299,11 @@ mod tests {
     /// must be the neutralized (harness-agnostic) permission-mode spellings.
     #[test]
     fn advertised_options_per_harness() {
+        // Claude: only the modes headless `--print` honors. `ask`/`accept-edits`
+        // are dropped — headless has no interactive approval, so they'd deny
+        // non-edit tools with no way to grant them.
         let claude = options_for("claude-code");
-        assert_eq!(
-            mode_ids(&claude),
-            ["ask", "accept-edits", "plan", "auto", "bypass"]
-        );
+        assert_eq!(mode_ids(&claude), ["plan", "auto", "bypass"]);
         assert_eq!(claude.default_permission_mode, Some("auto"));
         assert_eq!(
             reasoning_ids(&claude),

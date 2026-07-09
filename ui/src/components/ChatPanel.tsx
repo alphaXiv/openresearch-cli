@@ -310,15 +310,16 @@ function PromptCard({
         {done ? (
           <div className="prompt-resolved">Resolved</div>
         ) : (
+          // Plan prompts are Claude-only. Approving leaves plan mode to actually
+          // run the work, so the two modes offered are the ones headless honors
+          // for that: Auto (balanced — runs tools) and Bypass (no sandbox).
           // resumeMode values are harness-agnostic permission-mode wire ids.
-          // Plan prompts are Claude-only today, so these resume the Claude
-          // session with the chosen mode.
           <div className="prompt-actions">
-            <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "accept-edits" })}>
-              Approve &amp; auto-accept edits
+            <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "auto" })}>
+              Approve &amp; run
             </button>
-            <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "ask" })}>
-              Approve &amp; ask each step
+            <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "bypass" })}>
+              Approve &amp; bypass all
             </button>
             <button className="btn-ghost" onClick={() => respond({ approve: false })}>
               Keep planning

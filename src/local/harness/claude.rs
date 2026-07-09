@@ -115,12 +115,17 @@ impl Harness for ClaudeCode {
     }
 
     fn options(&self) -> HarnessOptions {
+        // Only the modes headless `claude --print` actually honors are offered.
+        // Headless has NO interactive approval channel — "ask"/"accept-edits"
+        // can't grant a blocked tool in place (verified: they just deny non-edit
+        // Bash), so offering them would be a leaky simulation of a capability the
+        // CLI doesn't have. The three that are genuinely meaningful:
+        //   * Plan  — read-only; proposes via an ExitPlanMode card you approve.
+        //   * Auto  — the balanced default; runs tools without prompting.
+        //   * Bypass— runs everything, no sandbox.
         HarnessOptions::none()
-            // Matches the Claude Code composer's mode menu, Auto is the default.
             .with_permission_modes(
                 &[
-                    PermissionMode::Ask,
-                    PermissionMode::AcceptEdits,
                     PermissionMode::Plan,
                     PermissionMode::Auto,
                     PermissionMode::Bypass,
@@ -309,22 +314,6 @@ fn question_prompt(name: &str, input: Option<&Value>) -> Option<WirePrompt> {
     })
 }
 
-/// A blocked tool (from `result.permission_denials`) → a `permission` prompt.
-fn permission_prompt(denial: &Value) -> Option<WirePrompt> {
-    let tool = denial.get("tool_name").and_then(Value::as_str)?.to_string();
-    // ExitPlanMode / AskUserQuestion denials already rendered as their own plan
-    // / question cards (from the tool_use block); don't clobber them.
-    if tool == "ExitPlanMode" || tool == "AskUserQuestion" {
-        return None;
-    }
-    Some(WirePrompt {
-        kind: "permission".into(),
-        tool: Some(tool),
-        tool_input: denial.get("tool_input").cloned(),
-        ..Default::default()
-    })
-}
-
 /// Claude's tool inputs are snake_case; the UI summarizes via `filePath`.
 fn normalize_input(input: &Value) -> Value {
     let mut input = input.clone();
@@ -509,26 +498,19 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                 if let Some(sid) = event.get("session_id").and_then(Value::as_str) {
                     ctx.set_native_session_id(sid);
                 }
-                // Tools the CLI blocked this turn become permission cards. Keyed
-                // by the tool_use_id so they upsert over the pending tool row.
-                if let Some(denials) = event.get("permission_denials").and_then(Value::as_array) {
-                    for denial in denials {
-                        if let Some(prompt) = permission_prompt(denial) {
-                            let id = denial
-                                .get("tool_use_id")
-                                .and_then(Value::as_str)
-                                .map(str::to_string)
-                                .unwrap_or_else(|| format!("perm-{}", ctx.assistant.parts.len()));
-                            ctx.upsert_part(WirePart::prompt(id, prompt));
-                        }
-                    }
-                }
-                // A plan/permission pause is NOT a failure: the CLI records the
-                // blocked tools in `permission_denials` but still reports
-                // `subtype: "success"` / `is_error: false`. So drive the error
-                // path off the result status alone — no need to special-case
-                // denials, and a genuine failure that also has denials is still
-                // surfaced (the old `denied_only` guard wrongly swallowed those).
+                // We deliberately do NOT turn `permission_denials` into approve-me
+                // cards. Headless has no interactive approval, and of the modes we
+                // offer, only Plan produces denials — and those are *expected*
+                // (read-only by design). Surfacing an "Allow" that re-ran the turn
+                // under bypass would silently defeat plan mode. The model already
+                // narrates the block in text; the recourse is approving the plan
+                // (the ExitPlanMode card), which leaves plan mode. Auto/Bypass
+                // never deny in the first place.
+                //
+                // A plan pause is NOT a failure: the CLI records the blocked tools
+                // in `permission_denials` but still reports `subtype: "success"` /
+                // `is_error: false`. So drive the error path off the result status
+                // alone — a genuine failure is still surfaced.
                 let subtype = event.get("subtype").and_then(Value::as_str).unwrap_or("");
                 let is_error = event
                     .get("is_error")

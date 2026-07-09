@@ -170,6 +170,16 @@ impl Store {
                 params![old, new],
             );
         }
+        // Claude Code stopped offering `ask` / `accept-edits`: headless
+        // `claude --print` has no interactive approval, so those can't grant a
+        // blocked tool and just leave the session denying everything. Move any
+        // Claude session still parked on them to `auto` (the balanced default).
+        // Scoped to Claude — opencode legitimately uses `ask`.
+        let _ = conn.execute(
+            "UPDATE chat_sessions SET permission_mode = 'auto'
+             WHERE harness = 'claude-code' AND permission_mode IN ('ask', 'accept-edits')",
+            [],
+        );
         Ok(Self { conn })
     }
 
