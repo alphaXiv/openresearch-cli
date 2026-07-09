@@ -141,6 +141,12 @@ select:focus {
   border-color: var(--text);
 }
 
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted);
+  opacity: 1; /* Firefox dims placeholders on its own */
+}
+
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -1999,7 +2005,8 @@ select:focus {
   gap: 10px;
   margin-top: 6px;
 }
-.form .error {
+.form .error,
+.settings-card > .error {
   color: var(--accent-red);
   font-size: 12.5px;
   white-space: pre-wrap;
@@ -2719,19 +2726,52 @@ select:focus {
   background: var(--accent-amber);
 }
 
-/* env var table */
+/* env var table — fixed layout so buttons appearing never reflow columns */
 .env-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 12.5px;
+  table-layout: fixed;
 }
+.env-table td:first-child {
+  width: 32%;
+  overflow-wrap: anywhere;
+}
+.env-table .badge {
+  margin-left: 8px;
+}
+/* inline edit/add inputs read as table cells, not boxes; the underline is the
+   focus indicator the removed border would otherwise provide */
+.env-table input {
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+.env-table input:focus {
+  box-shadow: 0 1px 0 0 var(--text);
+}
+/* fixed row height: inline inputs and buttons appear without shifting rows */
 .env-table td {
-  padding: 5px 10px 5px 0;
+  height: 36px;
+  padding: 0 10px 0 0;
+  vertical-align: middle;
   border-bottom: 1px solid var(--border-variant);
 }
 .env-table td:last-child {
-  width: 30px;
+  width: 116px;
+  white-space: nowrap;
   text-align: right;
+}
+/* a full-width colspan cell (hint row) is also :last-child — undo the
+   action-column styling so the note wraps and aligns normally */
+.env-table td[colspan] {
+  white-space: normal;
+  text-align: left;
+}
+.env-table .icon-btn {
+  margin-left: 8px;
+  vertical-align: middle;
 }
 .env-table .icon-btn:hover {
   color: var(--accent-red);
