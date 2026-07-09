@@ -293,6 +293,13 @@ impl Drop for TurnGuard {
         // Setup failed before a turn was spawned: release the reservation. Only
         // remove if it's still the unspawned reservation (None), never a live
         // handle (some other path may have taken over).
+        //
+        // `try_lock` is safe here rather than a leak risk: an armed guard only
+        // drops on an early return from send_message's prologue, which never
+        // holds the `turns` lock (claim releases it immediately, and it's only
+        // re-acquired at the final upgrade after the guard is defused). So the
+        // lock is always free when an armed guard drops — the fallible lock can't
+        // actually fail in this path.
         if let Ok(mut turns) = self.host.turns.try_lock() {
             if matches!(turns.get(&self.session_id), Some(None)) {
                 turns.remove(&self.session_id);
@@ -468,15 +475,24 @@ impl ChatHost {
             let _ = ctx.flush();
             ctx.host.finish_turn(&ctx.session_id).await;
         });
-        // Replace the reservation with the running task's abort handle. The
-        // slot is already claimed (TurnGuard), so this only upgrades None→Some;
-        // defuse the guard so it doesn't clear the slot we're now handing to
-        // finish_turn/interrupt.
-        self.turns
-            .lock()
-            .await
-            .insert(sid, Some(task.abort_handle()));
-        _guard.defuse();
+        // Upgrade the reservation None→Some(handle), atomically re-checking that
+        // it's still ours: an `interrupt` racing the prologue above may have
+        // removed the reservation (and already emitted idle). If so, the freshly
+        // spawned task must be aborted — never re-inserted — or it would run to
+        // completion uninterruptible while the UI shows the session idle.
+        {
+            let mut turns = self.turns.lock().await;
+            if matches!(turns.get(&sid), Some(None)) {
+                turns.insert(sid, Some(task.abort_handle()));
+                _guard.defuse();
+            } else {
+                // Reservation gone (interrupted) or already replaced — honor the
+                // interrupt: abort the task (its finish_turn won't run) and leave
+                // the slot as interrupt left it. Guard is already defused-by-move
+                // below via drop (slot isn't Some(None), so Drop is a no-op).
+                task.abort();
+            }
+        }
         Ok(())
     }
 
@@ -540,13 +556,13 @@ impl ChatHost {
         let kind = prompt_kind(&req.session_id, &req.prompt_id)?
             .ok_or_else(|| anyhow!("prompt not found"))?;
 
-        // A `permission` denial and a bare-reject with nothing to resume just
-        // close the card. Everything else (plan approve *and* keep-planning,
-        // question answers) resumes the session.
-        let resume = match kind.as_str() {
-            "permission" => req.approve.then(|| synthesize_resume(&kind, &req)),
-            "plan" => Some(synthesize_resume(&kind, &req)),
-            _ => Some(synthesize_resume(&kind, &req)),
+        // Only a *denied* permission closes the card without resuming; every
+        // other answer (plan approve and keep-planning, question selections)
+        // resumes the session with a synthesized follow-up.
+        let resume = if kind == "permission" && !req.approve {
+            None
+        } else {
+            Some(synthesize_resume(&kind, &req))
         };
         // Reject an empty resume (e.g. a question answered with no selection and
         // no note) before we mark anything resolved, so the card stays actionable.
