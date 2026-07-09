@@ -115,21 +115,18 @@ impl Harness for ClaudeCode {
     }
 
     fn options(&self) -> HarnessOptions {
-        // Only the modes headless `claude --print` actually honors are offered.
-        // Headless has NO interactive approval channel — "ask"/"accept-edits"
-        // can't grant a blocked tool in place (verified: they just deny non-edit
-        // Bash), so offering them would be a leaky simulation of a capability the
-        // CLI doesn't have. The three that are genuinely meaningful:
-        //   * Plan  — read-only; proposes via an ExitPlanMode card you approve.
+        // Only Auto + Bypass. Headless `claude --print` has no interactive
+        // approval, so `ask`/`accept-edits` can't grant a blocked tool (they just
+        // deny). And `plan` — a hard read-only gate — fights the orx workflow:
+        // it blocks the read-only `orx` inspection the agent needs to plan *and*
+        // the launches that are the whole point, so "propose then approve"
+        // happens better in conversation (the agent describes its plan and asks
+        // before running `orx exp run`) than via a mode that can't run orx.
         //   * Auto  — the balanced default; runs tools without prompting.
         //   * Bypass— runs everything, no sandbox.
         HarnessOptions::none()
             .with_permission_modes(
-                &[
-                    PermissionMode::Plan,
-                    PermissionMode::Auto,
-                    PermissionMode::Bypass,
-                ],
+                &[PermissionMode::Auto, PermissionMode::Bypass],
                 PermissionMode::Auto,
             )
             // Claude Code's `--effort` tiers (default `high` on current models).
@@ -189,44 +186,6 @@ fn claude_permission_mode(mode: Option<PermissionMode>) -> &'static str {
         PermissionMode::Auto => "auto",
         PermissionMode::Bypass => "bypassPermissions",
     }
-}
-
-/// POSIX single-quote a string for safe embedding in a shell command (handles
-/// spaces and every metacharacter). A literal `'` becomes `'\''`.
-fn shell_single_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-/// Inline `--settings` JSON registering a PreToolUse hook that auto-approves
-/// read-only `orx` commands (`orx hook-approve`). This is what lets the agent run
-/// `orx projects` / `orx runs` / `orx logs` to inform a plan even in `plan` mode,
-/// where an `--allowedTools` rule would be ignored — a hook's `allow` decision is
-/// the one lever that pierces plan mode's read-only gate. State-changing `orx`
-/// (and everything else) still falls through to the mode's normal gate.
-///
-/// Uses the absolute path to *this* orx binary so the hook never depends on the
-/// agent shell's PATH. The path is single-quoted for the shell (Claude runs the
-/// hook `command` through a shell) so a path with spaces still works. `None` if
-/// we can't resolve our own exe (then no hook is wired and behavior is exactly
-/// as before).
-fn claude_hook_settings() -> Option<String> {
-    let exe = std::env::current_exe().ok()?;
-    let exe = exe.canonicalize().unwrap_or(exe);
-    let orx = exe.to_str()?;
-    Some(
-        serde_json::json!({
-            "hooks": {
-                "PreToolUse": [{
-                    "matcher": "Bash",
-                    "hooks": [{
-                        "type": "command",
-                        "command": format!("{} hook-approve", shell_single_quote(orx))
-                    }]
-                }]
-            }
-        })
-        .to_string(),
-    )
 }
 
 /// Session reasoning id → Claude Code `--effort` value. The composer only
@@ -410,11 +369,6 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     // Reasoning level maps directly to Claude Code's `--effort` flag.
     if let Some(effort) = claude_effort(ctx.reasoning_level.as_deref()) {
         cmd.args(["--effort", effort]);
-    }
-    // Auto-approve read-only `orx` inspection commands via a PreToolUse hook —
-    // the only way to let them run in `plan` mode (see `claude_hook_settings`).
-    if let Some(settings) = claude_hook_settings() {
-        cmd.args(["--settings", &settings]);
     }
     if let Some(native_id) = &ctx.native_session_id {
         cmd.args(["--resume", native_id]);
@@ -674,32 +628,5 @@ mod tests {
         // A Codex-only id like a bare "medium" is fine (shared), but junk is not.
         assert_eq!(claude_effort(Some("ultra")), None);
         assert_eq!(claude_effort(None), None);
-    }
-
-    #[test]
-    fn shell_single_quote_handles_spaces_and_quotes() {
-        assert_eq!(shell_single_quote("/usr/bin/orx"), "'/usr/bin/orx'");
-        // A path with a space still parses as a single shell word.
-        assert_eq!(
-            shell_single_quote("/Users/John Doe/orx"),
-            "'/Users/John Doe/orx'"
-        );
-        // An embedded single quote is escaped via the '\'' idiom.
-        assert_eq!(shell_single_quote("a'b"), "'a'\\''b'");
-    }
-
-    #[test]
-    fn hook_settings_wires_the_pretooluse_hook() {
-        // We can't assume current_exe() in the test harness, but when it resolves
-        // the settings must be valid JSON with a Bash PreToolUse hook whose
-        // command is single-quoted and ends in `hook-approve`.
-        if let Some(json) = claude_hook_settings() {
-            let v: Value = serde_json::from_str(&json).unwrap();
-            let hook = &v["hooks"]["PreToolUse"][0];
-            assert_eq!(hook["matcher"], "Bash");
-            let cmd = hook["hooks"][0]["command"].as_str().unwrap();
-            assert!(cmd.ends_with(" hook-approve"), "cmd was {cmd}");
-            assert!(cmd.starts_with('\''), "path should be single-quoted: {cmd}");
-        }
     }
 }
