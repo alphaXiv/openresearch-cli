@@ -1193,6 +1193,38 @@ select:focus {
   padding: 0;
   font-weight: 400;
 }
+
+.md-code {
+  position: relative;
+  margin: 10px 0;
+}
+.md-code pre {
+  margin: 0;
+}
+.md-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  color: var(--muted);
+  background: var(--base);
+  border: 1px solid var(--border-variant);
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease;
+}
+.md-code:hover .md-code-copy {
+  opacity: 1;
+}
+.md-code-copy:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
 .md h1,
 .md h2,
 .md h3,
@@ -1214,17 +1246,31 @@ select:focus {
 }
 .md table {
   border-collapse: collapse;
-  font-size: 12.5px;
+  width: 100%;
+  font-size: 13px;
+  margin: 10px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
 }
 .md th,
 .md td {
-  border-bottom: 1px solid var(--border);
-  padding: 4px 10px 4px 0;
+  border-bottom: 1px solid var(--border-variant);
+  padding: 8px 14px;
   text-align: left;
   color: var(--text);
 }
-.md th {
+.md tr:last-child td {
+  border-bottom: none;
+}
+.md thead th {
+  background: var(--surface);
   font-weight: 500;
+  color: var(--subtext);
+  border-bottom: 1px solid var(--border);
+}
+.md tbody tr:hover td {
+  background: var(--surface-bright);
 }
 .md blockquote {
   margin: 6px 0;
