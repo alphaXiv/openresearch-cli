@@ -316,9 +316,10 @@ mod tests {
         assert_eq!(codex.default_permission_mode, Some("auto"));
         assert_eq!(reasoning_ids(&codex), ["low", "medium", "high"]);
 
-        // OpenCode: inline-approval subset (Ask/Auto/Bypass), no reasoning axis.
+        // OpenCode: Plan (the native plan agent) + inline-approval modes
+        // (Ask/Auto/Bypass), no reasoning axis.
         let opencode = options_for("opencode");
-        assert_eq!(mode_ids(&opencode), ["ask", "auto", "bypass"]);
+        assert_eq!(mode_ids(&opencode), ["plan", "ask", "auto", "bypass"]);
         assert_eq!(opencode.default_permission_mode, Some("ask"));
         assert!(opencode.reasoning_levels.is_empty());
     }

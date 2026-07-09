@@ -89,14 +89,18 @@ impl Harness for OpenCode {
     }
 
     fn options(&self) -> HarnessOptions {
-        // opencode approves inline (see module docs), so permission modes gate
-        // whether a `permission.asked` surfaces a card or is auto-replied. We
-        // advertise the subset that maps: Ask (surface & wait — opencode's own
-        // default), Auto/Bypass (auto-approve). `Plan`/`AcceptEdits` have no
-        // serve-level equivalent, so they're omitted. No reasoning control:
-        // reasoning is a model property in opencode, not a per-turn flag.
+        // opencode has TWO native axes and we fold both onto the one Mode toggle:
+        //  * which built-in agent runs — `plan` (read-only: allows inspection like
+        //    `orx …`, denies edits) vs `build` (the default). This is a real,
+        //    clean plan mode, unlike Claude/Codex — verified live.
+        //  * how `permission.asked` is answered — surface a card vs auto-reply.
+        // So: `Plan` → plan agent (+ surface cards); `Ask` → build agent + cards
+        // (opencode's own default); `Auto`/`Bypass` → build agent + auto-approve.
+        // `AcceptEdits` has no serve equivalent. No reasoning control — reasoning
+        // is a model property in opencode, not a per-turn flag.
         HarnessOptions::none().with_permission_modes(
             &[
+                PermissionMode::Plan,
                 PermissionMode::Ask,
                 PermissionMode::Auto,
                 PermissionMode::Bypass,
@@ -375,6 +379,17 @@ async fn reply_inline(ctx: &ResumeCtx, prompt: &WirePrompt, answer: &PromptAnswe
     Ok(())
 }
 
+/// Session mode → opencode built-in agent name. `Plan` runs the read-only
+/// `plan` agent (denies edits, allows inspection); everything else runs the
+/// default `build` agent. The permission-reply behavior (surface vs auto-reply)
+/// is a separate axis handled in `handle_prompt_event`.
+fn opencode_agent(mode: Option<PermissionMode>) -> &'static str {
+    match mode {
+        Some(PermissionMode::Plan) => "plan",
+        _ => "build",
+    }
+}
+
 async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     // Lazy bring-up: spawns serve for this project or reuses the live child.
     let status = ctx.host.opencode.ensure(&ctx.project).await?;
@@ -415,7 +430,14 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
         .error_for_status()?;
     let mut stream = events.bytes_stream();
 
-    let mut body = json!({ "parts": [{ "type": "text", "text": ctx.text }] });
+    let mut body = json!({
+        "parts": [{ "type": "text", "text": ctx.text }],
+        // Select opencode's built-in agent from the session's mode: `plan` (the
+        // read-only planning agent — allows inspection, denies edits) vs `build`
+        // (the default). The message endpoint takes `agent` directly (verified),
+        // so no separate switch call is needed.
+        "agent": opencode_agent(ctx.permission_mode),
+    });
     if let Some(model) = &ctx.model {
         if let Some((provider, model_id)) = model.split_once('/') {
             body["model"] = json!({ "providerID": provider, "modelID": model_id });
@@ -612,5 +634,20 @@ async fn handle_prompt_event(
             Ok(true)
         }
         _ => Ok(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_mode_uses_the_plan_agent_others_build() {
+        assert_eq!(opencode_agent(Some(PermissionMode::Plan)), "plan");
+        assert_eq!(opencode_agent(Some(PermissionMode::Ask)), "build");
+        assert_eq!(opencode_agent(Some(PermissionMode::Auto)), "build");
+        assert_eq!(opencode_agent(Some(PermissionMode::Bypass)), "build");
+        // No mode set → the default build agent, never plan.
+        assert_eq!(opencode_agent(None), "build");
     }
 }
