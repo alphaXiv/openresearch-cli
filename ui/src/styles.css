@@ -3043,3 +3043,172 @@ textarea::placeholder {
   color: var(--primary);
   background: var(--surface);
 }
+
+/* --- interactive prompt cards (plan / permission / question) ------------------
+   Emitted by the harness when the agent asks for a plan approval, a permission,
+   or a choice. Neo-brutalist to match .btn: 2px text borders, hard offset
+   shadow, square corners, with a per-kind accent stripe down the left edge. */
+.prompt-card {
+  margin: 8px 0;
+  padding: 14px 16px;
+  border: 2px solid var(--text);
+  border-left-width: 6px;
+  border-radius: 0;
+  background: var(--surface-bright);
+  box-shadow: 3px 3px 0 0 var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.prompt-card.plan {
+  border-left-color: var(--accent-blue);
+}
+.prompt-card.permission {
+  border-left-color: var(--accent-amber);
+}
+.prompt-card.question {
+  border-left-color: var(--accent-purple);
+}
+/* A resolved card is read-only history: mute it and drop the shadow. */
+.prompt-card.resolved {
+  opacity: 0.62;
+  box-shadow: none;
+  background: var(--surface);
+}
+
+.prompt-head {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--subtext);
+}
+.prompt-head code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  text-transform: none;
+  color: var(--text);
+}
+.prompt-sub {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--subtext);
+  word-break: break-word;
+}
+.prompt-q {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text);
+}
+.prompt-plan {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text);
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+/* Question options: each is a full-width button with the label on its own line
+   and the (optional) description block beneath it — never inline, or the two
+   run together ("labelDescription…"). */
+.prompt-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.prompt-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  padding: 9px 12px;
+  text-align: left;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 0;
+  background: var(--base);
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    border-color 80ms ease,
+    background 80ms ease;
+}
+.prompt-option:hover:not(:disabled) {
+  border-color: var(--text);
+  background: var(--highlight);
+}
+.prompt-option.sel {
+  border-color: var(--primary);
+  background: var(--primary-subtle);
+}
+.prompt-option:disabled {
+  cursor: default;
+}
+.prompt-option-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+}
+.prompt-option-desc {
+  display: block;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  color: var(--subtext);
+}
+
+/* Action row (plan approve / permission allow-deny / multi-select submit). */
+.prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.prompt-actions .btn-primary,
+.prompt-actions .btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  border: 2px solid var(--text);
+  border-radius: 0;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 0 var(--text);
+  transition:
+    transform 80ms ease,
+    box-shadow 80ms ease;
+}
+.prompt-actions .btn-primary {
+  background: var(--primary);
+  color: var(--base);
+}
+.prompt-actions .btn-ghost {
+  background: var(--base);
+  color: var(--text);
+}
+.prompt-actions .btn-primary:hover:not(:disabled),
+.prompt-actions .btn-ghost:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 0 var(--text);
+}
+.prompt-actions .btn-primary:active:not(:disabled),
+.prompt-actions .btn-ghost:active:not(:disabled) {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 0 var(--text);
+}
+.prompt-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+  box-shadow: 1px 1px 0 0 var(--text);
+}
+
+.prompt-resolved {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
