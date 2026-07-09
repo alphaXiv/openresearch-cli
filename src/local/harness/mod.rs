@@ -316,11 +316,12 @@ mod tests {
         assert_eq!(codex.default_permission_mode, Some("auto"));
         assert_eq!(reasoning_ids(&codex), ["low", "medium", "high"]);
 
-        // OpenCode: Plan (the native plan agent) + inline-approval modes
-        // (Ask/Auto/Bypass), no reasoning axis.
+        // OpenCode: Plan (the native plan agent) + Auto (its permissive default)
+        // + Bypass. No `ask` — opencode's default rarely prompts, so a dedicated
+        // ask mode would be hollow. No reasoning axis.
         let opencode = options_for("opencode");
-        assert_eq!(mode_ids(&opencode), ["plan", "ask", "auto", "bypass"]);
-        assert_eq!(opencode.default_permission_mode, Some("ask"));
+        assert_eq!(mode_ids(&opencode), ["plan", "auto", "bypass"]);
+        assert_eq!(opencode.default_permission_mode, Some("auto"));
         assert!(opencode.reasoning_levels.is_empty());
     }
 

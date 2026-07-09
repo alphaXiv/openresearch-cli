@@ -13,9 +13,9 @@
 //! still open — the turn is paused, not finished. We surface those as
 //! `permission` / `question` cards and reply over the live session
 //! (`resume_from_prompt` → [`ResumeAction::Handled`]), which unblocks the same
-//! POST. Permission cards can also be auto-resolved from the session's mode
-//! (Auto/Bypass reply "always" without a blocking card); questions always need a
-//! human, so they always surface regardless of mode.
+//! POST. `Bypass` mode auto-resolves permission cards (replies "always" without
+//! a blocking card); `Auto`/`Plan` surface them. Questions always need a human,
+//! so they always surface regardless of mode.
 //!
 //! Detection: opencode's `auth.json` is `{provider: {type}}`; the signed-in
 //! providers are its account line, and `opencode models` is the model list.
@@ -89,23 +89,27 @@ impl Harness for OpenCode {
     }
 
     fn options(&self) -> HarnessOptions {
-        // opencode has TWO native axes and we fold both onto the one Mode toggle:
-        //  * which built-in agent runs — `plan` (read-only: allows inspection like
-        //    `orx …`, denies edits) vs `build` (the default). This is a real,
-        //    clean plan mode, unlike Claude/Codex — verified live.
-        //  * how `permission.asked` is answered — surface a card vs auto-reply.
-        // So: `Plan` → plan agent (+ surface cards); `Ask` → build agent + cards
-        // (opencode's own default); `Auto`/`Bypass` → build agent + auto-approve.
-        // `AcceptEdits` has no serve equivalent. No reasoning control — reasoning
-        // is a model property in opencode, not a per-turn flag.
+        // Two native OpenCode axes folded onto the one Mode toggle:
+        //  * which built-in agent runs — `plan` (read-only: allows inspection
+        //    like `orx …`, denies edits) vs `build` (the default). A real, clean
+        //    plan mode, unlike Claude/Codex — verified live.
+        //  * how a `permission.asked` is answered. NOTE opencode's default is
+        //    permissive (`allow *`); it only prompts on a few risky cases
+        //    (runaway loops, out-of-workspace writes, `.env` reads), so a
+        //    dedicated "ask for everything" mode would be hollow (cards would
+        //    almost never fire). So we don't offer one:
+        //      * Plan   → plan agent, and surface the rare cards that do fire.
+        //      * Auto   → build agent, opencode's permissive default (still
+        //                 surfaces those rare cards / questions).
+        //      * Bypass → build agent, auto-approve even those.
+        // No reasoning control — reasoning is a model property in opencode.
         HarnessOptions::none().with_permission_modes(
             &[
                 PermissionMode::Plan,
-                PermissionMode::Ask,
                 PermissionMode::Auto,
                 PermissionMode::Bypass,
             ],
-            PermissionMode::Ask,
+            PermissionMode::Auto,
         )
     }
 
@@ -603,10 +607,10 @@ async fn handle_prompt_event(
                 let _ = ctx.flush();
                 return Ok(true);
             };
-            let auto_approve = matches!(
-                ctx.permission_mode,
-                Some(PermissionMode::Auto) | Some(PermissionMode::Bypass)
-            );
+            // Only Bypass auto-approves. Auto is opencode's permissive default —
+            // the rare card it does raise (out-of-workspace write, `.env` read)
+            // is worth surfacing; Plan surfaces them too.
+            let auto_approve = matches!(ctx.permission_mode, Some(PermissionMode::Bypass));
             match (auto_approve, card.native_id.as_deref()) {
                 (true, Some(id)) => {
                     // Reply without surfacing a card — keep the turn flowing. If
