@@ -847,7 +847,9 @@ select:focus {
 }
 
 .msg-assistant {
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.62;
+  color: var(--text);
   min-width: 0;
 }
 
@@ -1119,7 +1121,8 @@ select:focus {
 .md {
   min-width: 0;
   word-break: break-word;
-  color: var(--subtext);
+  color: var(--text);
+  line-height: 1.62;
 }
 .md > *:first-child {
   margin-top: 0;
@@ -1128,7 +1131,7 @@ select:focus {
   margin-bottom: 0;
 }
 .md p {
-  margin: 6px 0;
+  margin: 10px 0;
 }
 .md strong {
   color: var(--text);
