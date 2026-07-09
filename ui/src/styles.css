@@ -3046,19 +3046,18 @@ textarea::placeholder {
 
 /* --- interactive prompt cards (plan / permission / question) ------------------
    Emitted by the harness when the agent asks for a plan approval, a permission,
-   or a choice. Neo-brutalist to match .btn: 2px text borders, hard offset
-   shadow, square corners, with a per-kind accent stripe down the left edge. */
+   or a choice. Kept quiet: a hairline border, a thin per-kind left accent, no
+   shadow — it should read as an inline aside, not a callout that shouts. */
 .prompt-card {
   margin: 8px 0;
-  padding: 14px 16px;
-  border: 2px solid var(--text);
-  border-left-width: 6px;
-  border-radius: 0;
-  background: var(--surface-bright);
-  box-shadow: 3px 3px 0 0 var(--text);
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 9px;
 }
 .prompt-card.plan {
   border-left-color: var(--accent-blue);
@@ -3069,19 +3068,17 @@ textarea::placeholder {
 .prompt-card.question {
   border-left-color: var(--accent-purple);
 }
-/* A resolved card is read-only history: mute it and drop the shadow. */
+/* A resolved card is read-only history: mute it further. */
 .prompt-card.resolved {
-  opacity: 0.62;
-  box-shadow: none;
-  background: var(--surface);
+  opacity: 0.6;
 }
 
 .prompt-head {
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  font-weight: 600;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
-  color: var(--subtext);
+  color: var(--muted);
 }
 .prompt-head code {
   font-family: var(--mono);
@@ -3121,12 +3118,12 @@ textarea::placeholder {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 3px;
+  gap: 2px;
   width: 100%;
-  padding: 9px 12px;
+  padding: 8px 11px;
   text-align: left;
-  border: 1.5px solid var(--border-strong);
-  border-radius: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
   background: var(--base);
   color: var(--text);
   cursor: pointer;
@@ -3135,8 +3132,8 @@ textarea::placeholder {
     background 80ms ease;
 }
 .prompt-option:hover:not(:disabled) {
-  border-color: var(--text);
-  background: var(--highlight);
+  border-color: var(--border-strong);
+  background: var(--surface);
 }
 .prompt-option.sel {
   border-color: var(--primary);
@@ -3148,7 +3145,7 @@ textarea::placeholder {
 .prompt-option-label {
   display: block;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .prompt-option-desc {
   display: block;
@@ -3169,46 +3166,41 @@ textarea::placeholder {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 14px;
+  padding: 6px 13px;
   font-family: inherit;
   font-size: 12px;
-  font-weight: 700;
-  border: 2px solid var(--text);
-  border-radius: 0;
+  font-weight: 600;
+  border: 1px solid transparent;
+  border-radius: 5px;
   cursor: pointer;
-  box-shadow: 2px 2px 0 0 var(--text);
   transition:
-    transform 80ms ease,
-    box-shadow 80ms ease;
+    background 80ms ease,
+    border-color 80ms ease;
 }
 .prompt-actions .btn-primary {
   background: var(--primary);
   color: var(--base);
 }
+.prompt-actions .btn-primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
 .prompt-actions .btn-ghost {
-  background: var(--base);
-  color: var(--text);
+  background: transparent;
+  border-color: var(--border);
+  color: var(--subtext);
 }
-.prompt-actions .btn-primary:hover:not(:disabled),
 .prompt-actions .btn-ghost:hover:not(:disabled) {
-  transform: translate(-1px, -1px);
-  box-shadow: 3px 3px 0 0 var(--text);
-}
-.prompt-actions .btn-primary:active:not(:disabled),
-.prompt-actions .btn-ghost:active:not(:disabled) {
-  transform: translate(1px, 1px);
-  box-shadow: 1px 1px 0 0 var(--text);
+  border-color: var(--border-strong);
+  color: var(--text);
+  background: var(--surface);
 }
 .prompt-actions button:disabled {
   opacity: 0.5;
   cursor: default;
-  box-shadow: 1px 1px 0 0 var(--text);
 }
 
 .prompt-resolved {
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-weight: 600;
   color: var(--muted);
 }
