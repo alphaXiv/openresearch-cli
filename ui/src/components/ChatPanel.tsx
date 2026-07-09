@@ -518,6 +518,12 @@ export function ChatPanel({
   });
   const [harnesses, setHarnesses] = useState<Harness[]>([]);
   const [selection, setSelection] = useState<ModelSelection | null>(loadSelection);
+  // Unsent composer tweaks (model/mode/reasoning) for the *open* session — the
+  // session's harness is fixed, so these override only its mutable settings and
+  // are applied (and persisted server-side) on the next send. Cleared when the
+  // active session changes. Distinct from `selection`, which is the sticky
+  // global preference that seeds *new* sessions.
+  const [sessionOverride, setSessionOverride] = useState<Partial<ModelSelection>>({});
   const loadedSessions = useRef(new Set<string>());
   const threadRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -569,24 +575,46 @@ export function ChatPanel({
     }
   }
 
-  const selectModel = (next: ModelSelection) => {
-    setSelection(next);
-    localStorage.setItem(SELECTION_STORAGE_KEY, JSON.stringify(next));
-  };
+  // The open session, if any (its harness is locked; its model/mode/reasoning
+  // are what the composer should reflect and edit).
+  const openSession = sessions.find((s) => s.id === activeId);
 
-  // The selection used for composing (falls back to the first ready harness),
-  // and that harness's advertised toggle vocabulary.
-  const activeSelection = selection ?? defaultSelection(harnesses);
-  const activeHarness = activeSelection
-    ? harnesses.find((h) => h.id === activeSelection.harness)
+  // The selection the composer displays and edits:
+  //  * with a session open — that session's stored settings, with any unsent
+  //    picker tweaks layered on. The harness is the session's, not the global.
+  //  * with no session — the sticky global preference (seeds a new session).
+  const composerSelection: ModelSelection | null = openSession
+    ? {
+        harness: openSession.harness,
+        model: sessionOverride.model ?? openSession.model,
+        permissionMode: sessionOverride.permissionMode ?? openSession.permissionMode,
+        reasoningLevel: sessionOverride.reasoningLevel ?? openSession.reasoningLevel,
+      }
+    : (selection ?? defaultSelection(harnesses));
+  const activeHarness = composerSelection
+    ? harnesses.find((h) => h.id === composerSelection.harness)
     : undefined;
   const opts = activeHarness?.options;
 
+  // Editing the pickers: a session-scoped tweak when a session is open (applied
+  // on next send), else an update to the sticky global preference.
+  const selectModel = (next: ModelSelection) => {
+    if (openSession) {
+      setSessionOverride({
+        model: next.model,
+        permissionMode: next.permissionMode,
+        reasoningLevel: next.reasoningLevel,
+      });
+    } else {
+      setSelection(next);
+      localStorage.setItem(SELECTION_STORAGE_KEY, JSON.stringify(next));
+    }
+  };
   const setPermissionMode = (id: string) => {
-    if (activeSelection) selectModel({ ...activeSelection, permissionMode: id });
+    if (composerSelection) selectModel({ ...composerSelection, permissionMode: id });
   };
   const setReasoningLevel = (id: string) => {
-    if (activeSelection) selectModel({ ...activeSelection, reasoningLevel: id });
+    if (composerSelection) selectModel({ ...composerSelection, reasoningLevel: id });
   };
 
   // Reset everything when the project changes.
@@ -644,7 +672,11 @@ export function ChatPanel({
 
   const messages = activeId ? (state.messagesBySession[activeId] ?? []) : [];
   const busy = activeId ? state.busySessions.has(activeId) : false;
-  const activeSession = sessions.find((s) => s.id === activeId);
+  const activeSession = openSession;
+
+  // Drop any unsent composer tweak when switching sessions, so it never bleeds
+  // from one session's pickers onto another's.
+  useEffect(() => setSessionOverride({}), [activeId]);
 
   // Autoscroll while pinned to the bottom.
   useEffect(() => {
@@ -656,7 +688,9 @@ export function ChatPanel({
     const text = draft.trim();
     const pending = attachments;
     if ((!text && pending.length === 0) || busy) return;
-    const effective = selection ?? defaultSelection(harnesses);
+    // `composerSelection` already resolves to the open session's settings (+ any
+    // unsent tweak) or, for a new session, the global preference.
+    const effective = composerSelection;
     if (!effective && !activeId) return; // no harness available at all
     setDraft("");
     setAttachments([]);
@@ -681,16 +715,17 @@ export function ChatPanel({
       });
       dispatch({ type: "busy", sessionId: sid, busy: true });
       stickToBottom.current = true;
-      const current = sessions.find((s) => s.id === sid);
-      // Composer overrides only apply within the session's own harness.
-      const sameHarness = effective && (!current || current.harness === effective.harness);
-      const turnOpts = sameHarness
+      // `effective.harness` is always the target session's harness (locked once
+      // it exists), so these overrides are always valid — the backend persists
+      // them as the session's sticky settings. Clear the unsent tweak now.
+      const turnOpts = effective
         ? {
             model: effective.model,
             permissionMode: effective.permissionMode,
             reasoningLevel: effective.reasoningLevel,
           }
         : {};
+      setSessionOverride({});
       const images: ChatImageAttachment[] = pending.map((a) => ({
         mediaType: a.mediaType,
         dataBase64: a.dataUrl.slice(a.dataUrl.indexOf(",") + 1),
@@ -941,7 +976,7 @@ export function ChatPanel({
             {/* Bottom-left: permission mode. */}
             <OptionPicker
               choices={opts?.permissionModes ?? []}
-              value={activeSelection?.permissionMode ?? null}
+              value={composerSelection?.permissionMode ?? null}
               defaultId={opts?.defaultPermissionMode ?? null}
               header="Mode"
               align="left"
@@ -951,11 +986,18 @@ export function ChatPanel({
               onSelect={setPermissionMode}
             />
             <div style={{ flex: 1 }} />
-            {/* Bottom-right: model, then reasoning level. */}
-            <ModelPicker value={selection} onSelect={selectModel} onHarnesses={setHarnesses} />
+            {/* Bottom-right: model, then reasoning level. The picker reflects the
+                open session (harness locked once it exists); the global default
+                only applies before the first message. */}
+            <ModelPicker
+              value={composerSelection}
+              onSelect={selectModel}
+              onHarnesses={setHarnesses}
+              lockHarness={!!openSession}
+            />
             <OptionPicker
               choices={opts?.reasoningLevels ?? []}
-              value={activeSelection?.reasoningLevel ?? null}
+              value={composerSelection?.reasoningLevel ?? null}
               defaultId={opts?.defaultReasoningLevel ?? null}
               header="Reasoning"
               align="right"
