@@ -140,7 +140,14 @@ impl Store {
                 created_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session
-                ON chat_messages(session_id, created_at);",
+                ON chat_messages(session_id, created_at);
+            CREATE TABLE IF NOT EXISTS ssh_host_tests (
+                host      TEXT PRIMARY KEY,
+                reachable INTEGER NOT NULL,
+                git_found INTEGER NOT NULL,
+                error     TEXT,
+                tested_at INTEGER NOT NULL
+            );",
         )?;
         // Best-effort migrations for pre-existing dbs; re-runs fail with
         // "duplicate column name", which is exactly the no-op we want.
@@ -547,6 +554,48 @@ impl Store {
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
+
+    pub fn record_ssh_host_test(&self, t: &SshHostTest) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO ssh_host_tests (host, reachable, git_found, error, tested_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(host) DO UPDATE SET
+               reachable = excluded.reachable,
+               git_found = excluded.git_found,
+               error = excluded.error,
+               tested_at = excluded.tested_at",
+            params![t.host, t.reachable, t.git_found, t.error, t.tested_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_ssh_host_tests(&self) -> Result<Vec<SshHostTest>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT host, reachable, git_found, error, tested_at FROM ssh_host_tests")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SshHostTest {
+                host: row.get(0)?,
+                reachable: row.get(1)?,
+                git_found: row.get(2)?,
+                error: row.get(3)?,
+                tested_at: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+}
+
+/// Most recent preflight result per ssh host alias (Settings → Compute → SSH).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshHostTest {
+    pub host: String,
+    pub reachable: bool,
+    pub git_found: bool,
+    pub error: Option<String>,
+    /// Unix millis.
+    pub tested_at: i64,
 }
 
 /// One chat thread with a harness. `native_session_id` is the harness's own

@@ -2795,6 +2795,37 @@ textarea::placeholder {
   border-bottom: 1px solid var(--border-variant);
 }
 
+/* ssh hosts table — fixed layout with anywhere-wrapping so long aliases and
+   key paths can never push the action column outside the card */
+.ssh-table {
+  table-layout: fixed;
+}
+.ssh-table th:nth-child(1) {
+  width: 20%;
+}
+.ssh-table th:nth-child(2) {
+  width: 26%;
+}
+.ssh-table th:nth-child(4) {
+  width: 108px;
+}
+.ssh-table th:nth-child(5) {
+  width: 52px;
+}
+.ssh-table td {
+  overflow-wrap: anywhere;
+}
+.ssh-table td:last-child {
+  padding-right: 0;
+  text-align: right;
+}
+.ssh-tested-at {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 @keyframes settings-spin {
   to {
     transform: rotate(360deg);

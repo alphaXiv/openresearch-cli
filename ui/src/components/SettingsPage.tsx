@@ -401,12 +401,21 @@ function ModalSection() {
 type HostTest = "testing" | SshPreflight;
 
 function HostTestCell({ test }: { test: HostTest | undefined }) {
-  if (test === undefined) return <span className="muted">—</span>;
+  if (test === undefined) return <span className="muted">never tested</span>;
   if (test === "testing") return <span className="spinner" />;
-  if (!test.reachable)
-    return <span className="badge err" title={test.error ?? undefined}>unreachable</span>;
-  if (!test.gitFound) return <span className="badge err">no git</span>;
-  return <span className="badge ok">ready</span>;
+  const badge = !test.reachable ? (
+    <span className="badge err" title={test.error ?? undefined}>unreachable</span>
+  ) : !test.gitFound ? (
+    <span className="badge err">no git</span>
+  ) : (
+    <span className="badge ok">ready</span>
+  );
+  return (
+    <>
+      {badge}
+      <span className="ssh-tested-at">{timeAgo(test.testedAt)}</span>
+    </>
+  );
 }
 
 function SshSection() {
@@ -415,7 +424,17 @@ function SshSection() {
 
   useEffect(() => {
     getSshHosts()
-      .then(setHosts)
+      .then((hs) => {
+        setHosts(hs);
+        // Seed from the persisted results so "last tested" survives restarts.
+        setTests((t) => {
+          const seeded = { ...t };
+          for (const h of hs) {
+            if (h.lastTest && seeded[h.host] === undefined) seeded[h.host] = h.lastTest;
+          }
+          return seeded;
+        });
+      })
       .catch(() => setHosts([]));
   }, []);
 
@@ -427,7 +446,12 @@ function SshSection() {
     } catch (err) {
       setTests((t) => ({
         ...t,
-        [host]: { reachable: false, gitFound: false, error: err instanceof Error ? err.message : String(err) },
+        [host]: {
+          reachable: false,
+          gitFound: false,
+          error: err instanceof Error ? err.message : String(err),
+          testedAt: Date.now(),
+        },
       }));
     }
   }
@@ -448,7 +472,7 @@ function SshSection() {
       ) : hosts.length === 0 ? (
         <p className="settings-empty">No hosts found in ~/.ssh/config.</p>
       ) : (
-        <table className="flavor-table">
+        <table className="flavor-table ssh-table">
           <thead>
             <tr>
               <th>Host</th>
