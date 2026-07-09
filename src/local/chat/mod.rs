@@ -484,14 +484,16 @@ impl ChatHost {
             let mut turns = self.turns.lock().await;
             if matches!(turns.get(&sid), Some(None)) {
                 turns.insert(sid, Some(task.abort_handle()));
-                _guard.defuse();
             } else {
                 // Reservation gone (interrupted) or already replaced — honor the
                 // interrupt: abort the task (its finish_turn won't run) and leave
-                // the slot as interrupt left it. Guard is already defused-by-move
-                // below via drop (slot isn't Some(None), so Drop is a no-op).
+                // the slot exactly as interrupt left it.
                 task.abort();
             }
+            // Defuse in BOTH branches while still holding the lock: the guard's
+            // Drop must never run after this, or a same-session send that claims
+            // a fresh reservation in the gap before Drop could have it clobbered.
+            _guard.defuse();
         }
         Ok(())
     }
