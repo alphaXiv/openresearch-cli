@@ -99,6 +99,7 @@ fn router(state: AppState) -> Router {
             get(list_experiments).post(create_experiment),
         )
         .route("/api/projects/{id}/runs", get(list_project_runs))
+        .route("/api/instances", get(list_instances))
         .route("/api/experiments/{id}/run", post(run_experiment))
         .route("/api/runs/{id}/cancel", post(cancel_run))
         .route("/api/runs/{id}/log", get(run_log))
@@ -436,6 +437,35 @@ async fn list_project_runs(Path(id): Path<String>) -> ApiResult {
         .map(ApiRun::from)
         .collect();
     Ok(Json(json!({ "runs": runs })))
+}
+
+/// Newest-first cap for the cross-project instances list. Generous: the store
+/// is a local single-user SQLite db, so this only bounds pathological history.
+const INSTANCES_LIMIT: usize = 500;
+
+/// Every run across all projects (running first on the client), each tagged
+/// with its owning project's name — the "instances" view of compute the agents
+/// have spun up (Modal / HF / SSH / K8s), regardless of which project launched
+/// it. Includes finished runs as history; the client surfaces live ones first.
+async fn list_instances() -> ApiResult {
+    let store = Store::open()?;
+    let names: HashMap<String, String> = store
+        .list_local_projects()?
+        .into_iter()
+        .map(|p| (p.id, p.name))
+        .collect();
+    let mut instances: Vec<Value> = Vec::new();
+    for run in store.list_runs(INSTANCES_LIMIT)? {
+        // ApiRun is a plain serializable struct, so this can't realistically
+        // fail; propagate rather than emit a malformed row if it ever does.
+        let mut value = serde_json::to_value(ApiRun::from(&run))
+            .map_err(|e| anyhow!("serialize run {}: {e}", run.id))?;
+        if let (Some(obj), Some(name)) = (value.as_object_mut(), names.get(&run.project_id)) {
+            obj.insert("projectName".into(), json!(name));
+        }
+        instances.push(value);
+    }
+    Ok(Json(json!({ "instances": instances })))
 }
 
 #[derive(Deserialize)]

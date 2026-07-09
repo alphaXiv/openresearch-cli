@@ -1,33 +1,40 @@
 import {
   Blocks,
   Cpu,
+  ExternalLink,
   GitBranch,
   RefreshCw,
+  Server,
   SquareTerminal,
   Trash2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   deleteEnvVar,
+  fmtDuration,
   getEnvVars,
   getGitSettings,
   getHarnesses,
   getK8sSettings,
   getModalSettings,
   getSshHosts,
+  listInstances,
   provisionModal,
   removeGitToken,
   saveGitSettings,
   saveHfToken,
   saveK8sSettings,
   setEnvVar,
+  shortId,
   sshPreflight,
+  timeAgo,
   type EnvVar,
   type GitSettings,
   type Harness,
   type HarnessId,
   type HfSettings,
   type HfTokenSource,
+  type Instance,
   type K8sSettings,
   type ModalSettings,
   type ModalTokenSource,
@@ -36,8 +43,10 @@ import {
   modelLabel,
 } from "../api";
 import { GitTokenForm } from "./GitTokenForm";
+import { BackendBadge } from "./BackendLogos";
+import { StatusBadge } from "./StatusBadge";
 
-export type SettingsTab = "harnesses" | "compute" | "environment" | "git";
+export type SettingsTab = "harnesses" | "compute" | "instances" | "environment" | "git";
 type Tab = SettingsTab;
 
 // --- harnesses ---------------------------------------------------------------
@@ -876,12 +885,148 @@ function GitTab() {
   );
 }
 
+// --- instances ---------------------------------------------------------------
+
+const isLive = (status: string) => status === "running" || status === "starting";
+
+/** Runtime: live instances show elapsed-so-far, finished ones total duration.
+ *  Both start at submission time, so provisioning/queue time is included —
+ *  that's the span the provider bills for. */
+function runtimeLabel(inst: Instance): string {
+  if (isLive(inst.status)) return fmtDuration(Date.now() - inst.createdAt);
+  if (inst.endedAt) return fmtDuration(inst.endedAt - inst.createdAt);
+  return "—";
+}
+
+/** One section's table: backend (logo + flavor), project, status, started, runtime. */
+function InstancesTable({ instances, emptyLabel }: { instances: Instance[]; emptyLabel: string }) {
+  if (instances.length === 0) {
+    return <p className="instances-empty">{emptyLabel}</p>;
+  }
+  return (
+    <div className="instances-table-wrap">
+      <table className="runs-table">
+        <thead>
+          <tr>
+            <th>Backend</th>
+            <th>Project</th>
+            <th>Status</th>
+            <th>Started</th>
+            <th>Runtime</th>
+          </tr>
+        </thead>
+        <tbody>
+          {instances.map((inst) => {
+            // HF jobs carry their dashboard URL; Modal stores only a sandbox id.
+            const url = typeof inst.backend?.url === "string" ? inst.backend.url : undefined;
+            return (
+              <tr key={inst.id}>
+                <td>
+                  <span className="backend-cell">
+                    <BackendBadge backend={inst.backend} />
+                    {url && (
+                      <a
+                        className="icon-btn"
+                        href={url}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="Open job page"
+                        aria-label="Open job page"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <ExternalLink size={12} />
+                      </a>
+                    )}
+                  </span>
+                </td>
+                <td>{inst.projectName ?? shortId(inst.projectId)}</td>
+                <td>
+                  <StatusBadge status={inst.status} />
+                </td>
+                <td>{timeAgo(inst.createdAt)}</td>
+                <td className="mono">{runtimeLabel(inst)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function InstancesTab() {
+  const [instances, setInstances] = useState<Instance[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Re-render every 30s so live rows' Runtime keeps counting (client-side
+  // only — the minute-level display doesn't warrant a refetch).
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Point-in-time snapshot: the tab remounts (and so refetches) on every open,
+  // and this button refreshes in place while sitting on it — the run.updated
+  // SSE stream carries no projectName, so it can't drive this list directly.
+  const load = () => {
+    setRefreshing(true);
+    listInstances()
+      .then((rows) => {
+        setInstances(rows);
+        setError(null);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+        setInstances((prev) => prev ?? []);
+      })
+      .finally(() => setRefreshing(false));
+  };
+  useEffect(() => load(), []);
+
+  const byRecent = (a: Instance, b: Instance) => b.createdAt - a.createdAt;
+  const running = instances?.filter((i) => isLive(i.status)).sort(byRecent);
+  const past = instances?.filter((i) => !isLive(i.status)).sort(byRecent);
+
+  return (
+    <>
+      <div className="settings-head-row">
+        <h1>Instances</h1>
+        <button className="btn sm" onClick={load} disabled={refreshing}>
+          <RefreshCw size={12} className={refreshing ? "spin" : ""} /> Refresh
+        </button>
+      </div>
+      <p className="settings-sub">
+        Compute spun up across all projects — Modal, Hugging Face, SSH, and Kubernetes.
+      </p>
+      {error && <div className="error">{error}</div>}
+      {!running || !past ? (
+        <div className="settings-loading">
+          <span className="spinner" /> Loading…
+        </div>
+      ) : (
+        <>
+          <h2 className="instances-section-title">
+            Running
+            {running.length > 0 && <span className="count-badge">{running.length}</span>}
+          </h2>
+          <InstancesTable instances={running} emptyLabel="Nothing running right now." />
+          <h2 className="instances-section-title">Past</h2>
+          <InstancesTable instances={past} emptyLabel="No past instances yet." />
+        </>
+      )}
+    </>
+  );
+}
+
 // --- embedded view -----------------------------------------------------------
 
 /** Rail nav entries, one per settings section (rendered in the agents rail). */
 export const SETTINGS_NAV: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "harnesses", label: "Harnesses", icon: <Blocks size={15} /> },
   { id: "compute", label: "Compute", icon: <Cpu size={15} /> },
+  { id: "instances", label: "Instances", icon: <Server size={15} /> },
   { id: "environment", label: "Environment", icon: <SquareTerminal size={15} /> },
   { id: "git", label: "Git", icon: <GitBranch size={15} /> },
 ];
@@ -917,6 +1062,7 @@ export function SettingsView({
           <EnvVarsSection />
         </>
       )}
+      {tab === "instances" && <InstancesTab />}
       {tab === "git" && <GitTab />}
     </div>
   );
