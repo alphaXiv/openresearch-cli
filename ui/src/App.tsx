@@ -3,13 +3,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   cancelRun,
   getArtifacts,
-  getHfSettings,
   listExperiments,
   listProjects,
   listRuns,
   type Artifacts,
   type Experiment,
-  type HfSettings,
   type Project,
   type Run,
 } from "./api";
@@ -105,8 +103,6 @@ export default function App() {
   // What the middle pane shows: the agent chat, the project's artifacts, or
   // one settings section (picked from the rail nav — no separate pages).
   const [mainView, setMainView] = useState<"chat" | "artifacts" | SettingsTab>("chat");
-  const [hfSettings, setHfSettings] = useState<HfSettings | null>(null);
-  const [hfLoading, setHfLoading] = useState(true);
   const [onboarded, setOnboarded] = useState(() => {
     try {
       return localStorage.getItem(ONBOARDED_KEY) === "1";
@@ -126,14 +122,6 @@ export default function App() {
         setProjectId((cur) => cur ?? list[0]?.id ?? null);
       })
       .catch(() => setProjects([]));
-  }, []);
-
-  // HF token status, once on load; refetched via onHfSettingsUpdated after save.
-  useEffect(() => {
-    getHfSettings()
-      .then(setHfSettings)
-      .catch(() => {})
-      .finally(() => setHfLoading(false));
   }, []);
 
   // Shrinking the window can push a fixed-width panel past its usable max —
@@ -380,12 +368,7 @@ export default function App() {
                 ) : null;
               })()
             ) : mainView !== "chat" ? (
-              <SettingsView
-                tab={mainView}
-                hfSettings={hfSettings}
-                hfLoading={hfLoading}
-                onHfSettingsUpdated={setHfSettings}
-              />
+              <SettingsView tab={mainView} />
             ) : null}
           </ChatPanel>
         )}

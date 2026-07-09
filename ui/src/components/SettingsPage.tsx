@@ -2,16 +2,19 @@ import {
   Blocks,
   Cpu,
   GitBranch,
+  Plus,
   RefreshCw,
   SquareTerminal,
   Trash2,
+  X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   deleteEnvVar,
   getEnvVars,
   getGitSettings,
   getHarnesses,
+  getHfSettings,
   getK8sSettings,
   getModalSettings,
   getSshHosts,
@@ -487,15 +490,7 @@ const COMPUTE_SUBS: { id: ComputeSub; label: string }[] = [
   { id: "ssh", label: "SSH" },
 ];
 
-function ComputeTab({
-  hfSettings,
-  hfLoading,
-  onHfSettingsUpdated,
-}: {
-  hfSettings: HfSettings | null;
-  hfLoading: boolean;
-  onHfSettingsUpdated: (settings: HfSettings) => void;
-}) {
+function ComputeTab() {
   const [sub, setSub] = useState<ComputeSub>("hf");
   return (
     <>
@@ -515,9 +510,7 @@ function ComputeTab({
           </button>
         ))}
       </div>
-      {sub === "hf" && (
-        <HfSection settings={hfSettings} loading={hfLoading} onUpdated={onHfSettingsUpdated} />
-      )}
+      {sub === "hf" && <HfSection />}
       {sub === "modal" && <ModalSection />}
       {sub === "k8s" && <K8sSection />}
       {sub === "ssh" && <SshSection />}
@@ -533,27 +526,41 @@ const SOURCE_LABELS: Record<HfTokenSource, string> = {
   hfCache: "~/.cache/huggingface/token (hf auth login)",
 };
 
-function HfJobsBadge({ settings }: { settings: HfSettings }) {
-  if (!settings.configured) return null;
+function HfStatusBadge({ settings }: { settings: HfSettings }) {
+  if (!settings.configured) return <span className="badge">not configured</span>;
   if (!settings.valid) return <span className="badge err">invalid token</span>;
+  return <span className="badge ok">connected</span>;
+}
+
+/** Jobs-permission detail only — configured/valid state is HfStatusBadge's job. */
+function HfJobsBadge({ settings }: { settings: HfSettings }) {
+  if (!settings.configured || !settings.valid) return null;
   if (settings.jobsWrite === true) return <span className="badge ok">jobs: write OK</span>;
   if (settings.jobsWrite === false)
     return <span className="badge err">no job.write permission</span>;
   return <span className="badge">jobs permission unknown</span>;
 }
 
-function HfSection({
-  settings,
-  loading,
-  onUpdated,
-}: {
-  settings: HfSettings | null;
-  loading: boolean;
-  onUpdated: (settings: HfSettings) => void;
-}) {
+function HfSection() {
+  const [settings, setSettings] = useState<HfSettings | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [token, setToken] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A save that lands before the slow mount fetch resolves must win over it.
+  const savedRef = useRef(false);
+
+  // Fetched on mount (every visit remounts) so a token set anywhere else —
+  // the Environment tab, `hf auth login`, the process env — shows up here.
+  useEffect(() => {
+    getHfSettings()
+      .then((s) => {
+        if (!savedRef.current) setSettings(s);
+      })
+      .catch((err) => {
+        if (!savedRef.current) setLoadError(err instanceof Error ? err.message : String(err));
+      });
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -561,7 +568,10 @@ function HfSection({
     setSaving(true);
     setError(null);
     try {
-      onUpdated(await saveHfToken(token.trim()));
+      const next = await saveHfToken(token.trim());
+      savedRef.current = true;
+      setSettings(next);
+      setLoadError(null);
       setToken("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -572,17 +582,23 @@ function HfSection({
 
   return (
     <div className="settings-card">
-      <h3>Hugging Face Jobs</h3>
+      <div className="settings-card-head">
+        <h3>Hugging Face Jobs</h3>
+        <div className="spacer" style={{ flex: 1 }} />
+        {settings && <HfStatusBadge settings={settings} />}
+      </div>
       <p className="settings-sub">
         Run experiments on your Hugging Face account with{" "}
         <code>--backend hf --flavor &lt;name&gt;</code> (t4-small, a10g-small, a100-large, …).
         Billed to HF per minute.
       </p>
-      {loading && !settings ? (
+      {loadError ? (
+        <div className="error">{loadError}</div>
+      ) : !settings ? (
         <div className="settings-loading">
           <span className="spinner" /> Loading status…
         </div>
-      ) : settings ? (
+      ) : (
         <>
           <div className="kv">
             <span className="k">Account</span>
@@ -596,7 +612,7 @@ function HfSection({
             <span className="k">Jobs</span>
             <span className="v">
               <HfJobsBadge settings={settings} />
-              {!settings.configured && "not configured"}
+              {(!settings.configured || !settings.valid) && "—"}
             </span>
           </div>
           {settings.source === "env" && (
@@ -604,13 +620,22 @@ function HfSection({
               HF_TOKEN is set in the environment and overrides any token saved here.
             </p>
           )}
+          {settings.valid && settings.jobsWrite === null && (
+            <p className="settings-note">
+              This token is valid but doesn&apos;t report whether it can launch Jobs — OAuth
+              tokens from <code>hf auth login</code> never do. Launches may still work; for a
+              definitive check, save a write-scoped token from{" "}
+              <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer">
+                huggingface.co/settings/tokens
+              </a>
+              .
+            </p>
+          )}
         </>
-      ) : (
-        <div className="settings-loading">Could not load Hugging Face status.</div>
       )}
       <form className="form settings-form" onSubmit={submit}>
         <label>
-          New token
+          {settings?.configured ? "Replace token" : "New token"}
           <input
             type="password"
             value={token}
@@ -630,116 +655,287 @@ function HfSection({
   );
 }
 
-function EnvVarsSection() {
-  const [vars, setVars] = useState<EnvVar[] | null>(null);
-  const [key, setKey] = useState("");
+// HF user access tokens are `hf_` + alphanumeric. Compute runs resolve the
+// token strictly by the name HF_TOKEN, so an hf_… value saved under any other
+// key is invisible to them — worth a (non-blocking) warning.
+const HF_TOKEN_RE = /^hf_[A-Za-z0-9]{10,}$/;
+
+/** The wrong-key warning shown when an hf_… value is headed somewhere else. */
+function HfHintRow() {
+  return (
+    <tr>
+      {/* colSpan tracks the EnvRow/AddVarRow column count */}
+      <td colSpan={3}>
+        <p className="settings-note">
+          This value looks like a Hugging Face token — compute runs only read it from{" "}
+          <code>HF_TOKEN</code>. Save it under that key if it&apos;s meant for HF Jobs.
+        </p>
+      </td>
+    </tr>
+  );
+}
+
+// Keys runs typically need (HF_TOKEN is also read by orx itself), always
+// shown as rows alongside custom variables.
+const RECOMMENDED_ENV_KEYS = ["HF_TOKEN", "WANDB_API_KEY"];
+
+/** One variable row. Set: masked value + delete. Unset: inline value input. */
+function EnvRow({
+  name,
+  entry,
+  onVars,
+  onError,
+}: {
+  name: string;
+  entry: EnvVar | undefined;
+  onVars: (vars: EnvVar[]) => void;
+  onError: (msg: string) => void;
+}) {
   const [value, setValue] = useState("");
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    getEnvVars()
-      .then(setVars)
-      .catch(() => setVars([]));
-  }, []);
+  // Errors share one card-level slot, so name the row they came from.
+  const fail = (err: unknown) =>
+    onError(`${name}: ${err instanceof Error ? err.message : String(err)}`);
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!key.trim() || !value.trim() || saving) return;
+  async function save() {
+    if (!value.trim() || saving) return;
     setSaving(true);
-    setError(null);
     try {
-      setVars(await setEnvVar(key.trim(), value.trim()));
-      setKey("");
+      onVars(await setEnvVar(name, value.trim()));
       setValue("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      fail(err);
     } finally {
       setSaving(false);
     }
   }
 
-  async function remove(k: string) {
+  async function remove() {
+    if (saving) return;
+    setSaving(true);
     try {
-      setVars(await deleteEnvVar(k));
+      onVars(await deleteEnvVar(name));
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      fail(err);
+    } finally {
+      setSaving(false);
     }
   }
 
   return (
-    <div className="settings-card">
-      <h3>Environment variables</h3>
-      <p className="settings-sub">
-        Stored in <code>~/.openresearch/env</code> and passed to the research agent (API keys,
-        tokens). Variables set in orx's own environment win on conflicts.
-      </p>
-      {vars === null ? (
-        <div className="settings-loading">
-          <span className="spinner" /> Loading…
-        </div>
-      ) : vars.length === 0 ? (
-        <p className="settings-empty">No variables saved yet.</p>
-      ) : (
-        <table className="env-table">
-          <tbody>
-            {vars.map((v) => (
-              <tr key={v.key}>
-                <td className="mono">{v.key}</td>
-                <td className="mono muted">{v.maskedValue}</td>
-                <td>{v.inProcessEnv && <span className="badge">overridden by env</span>}</td>
-                <td>
-                  <button
-                    className="icon-btn"
-                    title={`Delete ${v.key}`}
-                    aria-label={`Delete ${v.key}`}
-                    onClick={() => void remove(v.key)}
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      <form className="form settings-form" onSubmit={submit}>
-        <div className="row2">
-          <label>
-            Key
-            <input
-              className="mono"
-              type="text"
-              value={key}
-              onChange={(e) => setKey(e.target.value)}
-              placeholder="WANDB_API_KEY"
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </label>
-          <label>
-            Value
+    <>
+      <tr>
+        <td className="mono">{name}</td>
+        <td className="mono muted">
+          {entry ? (
+            <>
+              {entry.maskedValue}
+              {entry.inProcessEnv && <span className="badge">overridden by env</span>}
+            </>
+          ) : (
             <input
               className="mono"
               type="password"
               value={value}
               onChange={(e) => setValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void save();
+                }
+                if (e.key === "Escape" && !saving) setValue("");
+              }}
               placeholder="value"
-              autoComplete="off"
+              aria-label={`Value for ${name}`}
+              autoComplete="new-password"
+              disabled={saving}
             />
-          </label>
-        </div>
-        {error && <div className="error">{error}</div>}
-        <div className="actions">
+          )}
+        </td>
+        <td>
+          {entry ? (
+            <button
+              className="icon-btn"
+              title={`Delete ${name}`}
+              aria-label={`Delete ${name}`}
+              onClick={() => void remove()}
+              disabled={saving}
+            >
+              <Trash2 size={13} />
+            </button>
+          ) : (
+            value.trim() && (
+              <button className="btn sm" onClick={() => void save()} disabled={saving}>
+                {saving ? "Saving…" : "Save"}
+              </button>
+            )
+          )}
+        </td>
+      </tr>
+      {!entry && name !== "HF_TOKEN" && HF_TOKEN_RE.test(value.trim()) && <HfHintRow />}
+    </>
+  );
+}
+
+/** The in-table row for a new custom variable (opened by “Add variable”). */
+function AddVarRow({
+  onVars,
+  onError,
+  onDone,
+}: {
+  onVars: (vars: EnvVar[]) => void;
+  onError: (msg: string) => void;
+  onDone: () => void;
+}) {
+  const [key, setKey] = useState("");
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    if (!key.trim() || !value.trim() || saving) return;
+    setSaving(true);
+    try {
+      onVars(await setEnvVar(key.trim(), value.trim()));
+      onDone();
+    } catch (err) {
+      onError(`${key.trim()}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void save();
+    }
+    if (e.key === "Escape" && !saving) onDone();
+  };
+
+  return (
+    <>
+      <tr>
+        <td>
+          <input
+            autoFocus
+            className="mono"
+            type="text"
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="MY_API_KEY"
+            aria-label="New variable key"
+            autoComplete="off"
+            spellCheck={false}
+            disabled={saving}
+          />
+        </td>
+        <td>
+          <input
+            className="mono"
+            type="password"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="value"
+            aria-label="New variable value"
+            autoComplete="new-password"
+            disabled={saving}
+          />
+        </td>
+        <td>
           <button
-            type="submit"
-            className="btn primary"
-            disabled={!key.trim() || !value.trim() || saving}
+            className="btn sm"
+            onClick={() => void save()}
+            disabled={saving || !key.trim() || !value.trim()}
           >
-            {saving ? "Saving…" : "Add variable"}
+            {saving ? "Saving…" : "Save"}
           </button>
+          <button
+            className="icon-btn"
+            title="Cancel"
+            aria-label="Cancel new variable"
+            onClick={onDone}
+            disabled={saving}
+          >
+            <X size={13} />
+          </button>
+        </td>
+      </tr>
+      {key.trim() !== "HF_TOKEN" && HF_TOKEN_RE.test(value.trim()) && <HfHintRow />}
+    </>
+  );
+}
+
+function EnvVarsSection() {
+  const [vars, setVars] = useState<EnvVar[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getEnvVars()
+      .then(setVars)
+      .catch((err) => setLoadError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  // Every mutation returns the fresh full list; success clears a stale error.
+  const applyVars = (v: EnvVar[]) => {
+    setVars(v);
+    setError(null);
+  };
+
+  // Recommended keys first (fixed order), then custom variables in file order.
+  const customKeys =
+    vars === null ? [] : vars.map((v) => v.key).filter((k) => !RECOMMENDED_ENV_KEYS.includes(k));
+  const names = [...RECOMMENDED_ENV_KEYS, ...customKeys];
+
+  return (
+    <div className="settings-card">
+      <div className="settings-card-head">
+        <h3>Environment variables</h3>
+        <div className="spacer" style={{ flex: 1 }} />
+        <button
+          className="btn sm"
+          onClick={() => setAdding(true)}
+          disabled={adding || vars === null}
+        >
+          <Plus size={12} /> Add variable
+        </button>
+      </div>
+      <p className="settings-sub">
+        Stored in <code>~/.openresearch/env</code> and passed to runs and the research agent.{" "}
+        <code>HF_TOKEN</code> and <code>WANDB_API_KEY</code> are always listed since runs
+        typically need them. Variables set in orx's own environment win on conflicts.
+      </p>
+      {loadError ? (
+        <div className="error">{loadError}</div>
+      ) : vars === null ? (
+        <div className="settings-loading">
+          <span className="spinner" /> Loading…
         </div>
-      </form>
+      ) : (
+        <table className="env-table">
+          <tbody>
+            {names.map((name) => (
+              <EnvRow
+                key={name}
+                name={name}
+                entry={vars.find((v) => v.key === name)}
+                onVars={applyVars}
+                onError={setError}
+              />
+            ))}
+            {adding && (
+              // onDone deliberately leaves the error slot alone — cancelling
+              // the add row must not wipe another row's failure message.
+              <AddVarRow onVars={applyVars} onError={setError} onDone={() => setAdding(false)} />
+            )}
+          </tbody>
+        </table>
+      )}
+      {error && <div className="error">{error}</div>}
     </div>
   );
 }
@@ -887,27 +1083,11 @@ export const SETTINGS_NAV: { id: Tab; label: string; icon: React.ReactNode }[] =
 ];
 
 /** One settings section's content, shown in the middle pane in place of chat. */
-export function SettingsView({
-  tab,
-  hfSettings,
-  hfLoading,
-  onHfSettingsUpdated,
-}: {
-  tab: Tab;
-  hfSettings: HfSettings | null;
-  hfLoading: boolean;
-  onHfSettingsUpdated: (settings: HfSettings) => void;
-}) {
+export function SettingsView({ tab }: { tab: Tab }) {
   return (
     <div className="settings-view">
       {tab === "harnesses" && <HarnessesTab />}
-      {tab === "compute" && (
-        <ComputeTab
-          hfSettings={hfSettings}
-          hfLoading={hfLoading}
-          onHfSettingsUpdated={onHfSettingsUpdated}
-        />
-      )}
+      {tab === "compute" && <ComputeTab />}
       {tab === "environment" && (
         <>
           <h1>Environment</h1>
