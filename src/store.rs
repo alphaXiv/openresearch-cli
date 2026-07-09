@@ -170,14 +170,17 @@ impl Store {
                 params![old, new],
             );
         }
-        // Claude Code only offers `auto` / `bypass`. `ask`/`accept-edits` were
-        // never truly grantable headless, and `plan` (a hard read-only gate)
-        // fought the orx workflow, so all three were dropped. Move any Claude
-        // session still parked on a retired mode to `auto` (the balanced
-        // default). Scoped to Claude — opencode legitimately uses `ask`.
+        // Claude Code and Codex both offer only `auto` / `bypass` now:
+        // `ask`/`accept-edits` were never grantable in their headless CLIs, and
+        // `plan` (read-only) fought the orx workflow — blocking the `orx`
+        // inspection the agent needs *and* the launches that are the point — so
+        // all three were dropped for both. Move any of their sessions still
+        // parked on a retired mode to `auto` (the balanced default). Scoped to
+        // those two harnesses — opencode legitimately uses `ask` and `plan`
+        // was never offered there.
         let _ = conn.execute(
             "UPDATE chat_sessions SET permission_mode = 'auto'
-             WHERE harness = 'claude-code'
+             WHERE harness IN ('claude-code', 'codex')
                AND permission_mode IN ('ask', 'accept-edits', 'plan')",
             [],
         );

@@ -103,20 +103,20 @@ impl Harness for Codex {
     }
 
     fn options(&self) -> HarnessOptions {
-        // `codex exec` is non-interactive — it has no approval channel to prompt
-        // over (verified: on-request emits no approval event; the sandbox just
-        // allows or denies). So permission modes map onto the *sandbox policy*,
-        // not interactive cards. We advertise only the modes that yield a
-        // genuinely distinct sandbox level, rather than several that collapse to
-        // the same policy: Plan = read-only, Auto = workspace-write (balanced
-        // default), Bypass = full access. Ask/AcceptEdits are Claude-only here.
+        // `codex exec` is non-interactive — no approval channel to prompt over
+        // (verified: on-request emits no approval event; the sandbox just allows
+        // or denies), so permission modes map onto the *sandbox policy*. We offer
+        // only Auto + Bypass, matching Claude. A `Plan`→`read-only` sandbox was
+        // considered but dropped for the same reason plan mode was dropped for
+        // Claude: read-only blocks the `orx` inspection the agent needs *and* the
+        // launches that are the point. (Codex has a real first-class Plan mode,
+        // but only over `app-server`/the TUI — `codex exec` doesn't honor it;
+        // verified `-c collaboration_mode="plan"` is accepted but ignored.)
+        //   * Auto  — workspace-write (the balanced default).
+        //   * Bypass— full access (`--dangerously-bypass-approvals-and-sandbox`).
         HarnessOptions::none()
             .with_permission_modes(
-                &[
-                    PermissionMode::Plan,
-                    PermissionMode::Auto,
-                    PermissionMode::Bypass,
-                ],
+                &[PermissionMode::Auto, PermissionMode::Bypass],
                 PermissionMode::Auto,
             )
             // Codex's own reasoning tiers via `-c model_reasoning_effort`.

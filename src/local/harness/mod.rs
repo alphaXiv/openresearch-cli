@@ -309,9 +309,10 @@ mod tests {
             ["low", "medium", "high", "xhigh", "max"]
         );
 
-        // Codex: sandbox-mapped subset (Plan/Auto/Bypass), codex reasoning tiers.
+        // Codex: Auto + Bypass (matches Claude — `plan`/read-only dropped for the
+        // same reason; `codex exec` has no real plan mode). Codex reasoning tiers.
         let codex = options_for("codex");
-        assert_eq!(mode_ids(&codex), ["plan", "auto", "bypass"]);
+        assert_eq!(mode_ids(&codex), ["auto", "bypass"]);
         assert_eq!(codex.default_permission_mode, Some("auto"));
         assert_eq!(reasoning_ids(&codex), ["low", "medium", "high"]);
 
