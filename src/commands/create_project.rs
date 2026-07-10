@@ -1,18 +1,18 @@
 //!
-//! Creates a project in an organization, then its baseline (root node) on the
-//! bound repo — one command yields a project ready to hang experiments off.
-//! Two shapes, picked by flags:
+//! Creates a project in an organization, bound to a GitHub repo. Two shapes,
+//! picked by flags:
 //!   --repo <owner/repo>  -> bound to that GitHub repo (your own repo, or a
 //!                           fresh copy when it's only readable)
 //!   (no repo)            -> a fresh blank repo (stub root commit on `main`),
 //!                           for projects that start from scratch
 //! A name is always required.
 //!
-//! The baseline import is a separate API call; if it fails after the project
-//! was created, we print the `orx create-experiment` retry instead of failing
-//! the whole command (so a re-run doesn't mint a duplicate project).
+//! The project starts with an empty experiment tree. The first experiment —
+//! created with `orx create-experiment <projectId> --title "<title>"` (no
+//! `--parent`), by you or by the agent — is the baseline: the control every
+//! variant is measured against.
 
-use crate::client::{create_project, import_baseline, CreateProjectBody, ImportBaselineBody};
+use crate::client::{create_project, CreateProjectBody};
 use crate::error::{require_credentials, Result};
 
 const USAGE: &str = "Usage: orx create-project <orgId> --name \"<name>\" [--repo <owner/repo|url>] [--branch <branch>] [--description \"<text>\"]";
@@ -57,53 +57,28 @@ pub async fn run(args: crate::CreateProjectArgs) -> Result<()> {
     println!("  name: {}", project.name);
     println!("  repo: {}/{}", project.github_owner, project.github_repo);
 
-    // The root node: a baseline experiment on the repo we just bound.
-    let baseline = import_baseline(
-        &creds,
-        &project.id,
-        &ImportBaselineBody {
-            title: None,
-            description: None,
-            generate_suggestions: None,
-        },
-    )
-    .await;
-    let experiment = match baseline {
-        Ok(envelope) => envelope.experiment,
-        Err(err) => {
-            // The project exists; failing here would invite a duplicate-project
-            // retry. Surface the recovery command instead.
-            eprintln!();
-            eprintln!(
-                "Project created, but its baseline (root node) failed: {}",
-                err
-            );
-            eprintln!("Create it with:");
-            eprintln!("  orx create-experiment {} --title \"<title>\"", project.id);
-            return Ok(());
-        }
-    };
-
-    println!();
-    println!("\u{2713} Created baseline (root node)");
-    println!("  id:     {}", experiment.id);
-    println!("  title:  {}", experiment.title);
-    println!("  branch: {}", experiment.branch_name);
     println!();
     if from_repo {
-        println!("Add child experiments off the baseline with:");
+        println!("The project starts with an empty experiment tree. Create the baseline");
+        println!("experiment (the root node — the control variants are measured against) with:");
         println!(
-            "  orx create-experiment {} --title \"<title>\" --parent {}",
-            project.id, experiment.id
+            "  orx create-experiment {} --title \"Baseline\"",
+            project.id
         );
+        println!("or ask the agent to create and run it.");
     } else {
-        println!("The baseline starts empty (a stub README). Push your starting code to it:");
+        println!("The repo starts empty (a stub README on its default branch). Push your");
+        println!("starting code first:");
         println!(
-            "  git clone https://github.com/{}/{} && git checkout {}",
-            project.github_owner, project.github_repo, experiment.branch_name
+            "  git clone https://github.com/{}/{}",
+            project.github_owner, project.github_repo
         );
-        println!("  # …add code, commit, then…");
-        println!("  git push -u origin {}", experiment.branch_name);
+        println!("  # …add code, commit, push…");
+        println!("then create the baseline experiment (the root node) with:");
+        println!(
+            "  orx create-experiment {} --title \"Baseline\"",
+            project.id
+        );
     }
     Ok(())
 }

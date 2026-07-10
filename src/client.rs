@@ -482,15 +482,15 @@ pub struct CreateChildBody {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ImportBaselineBody {
+pub struct CreateBaselineExperimentBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Auto-generate suggested first experiments off the baseline. Defaults to
-    /// true server-side when omitted.
+    /// Run command seeded onto the baseline so it's launchable immediately.
+    /// Omit to set it later (`orx exp cmd`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub generate_suggestions: Option<bool>,
+    pub run_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -504,8 +504,8 @@ pub struct CreateProjectBody {
     /// project on a fresh blank repo (a stub root commit on `main`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo_full_name: Option<String>,
-    /// Branch the baseline imports from (only with `repo_full_name`). Omit for
-    /// the repo's default branch.
+    /// Branch of the repo the project binds to (only with `repo_full_name`) —
+    /// the baseline experiment branches off it. Omit for the repo's default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
 }
@@ -877,17 +877,19 @@ pub async fn create_child_experiment(
     .await
 }
 
-pub async fn import_baseline(
+pub async fn create_baseline_experiment(
     creds: &Credentials,
     project_id: &str,
-    body: &ImportBaselineBody,
+    body: &CreateBaselineExperimentBody,
 ) -> Result<ExperimentEnvelope> {
-    // Repo is bound at project creation; this just materializes the baseline on
-    // it. `None` fields are omitted so the server applies its defaults.
+    // Repo is bound at project creation; this materializes a baseline (root
+    // node) on it. `None` fields are omitted so the server applies its
+    // defaults. Repeat calls create additional roots — projects may hold
+    // multiple baselines.
     let json = serde_json::to_value(body)?;
     api_post(
         creds,
-        &format!("/projects/{}/import-baseline", project_id),
+        &format!("/projects/{}/baseline-experiment", project_id),
         json,
     )
     .await

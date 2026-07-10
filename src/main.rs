@@ -308,8 +308,8 @@ pub struct CreateProjectArgs {
     /// Omit to start the project on a fresh blank repo.
     #[arg(long)]
     pub repo: Option<String>,
-    /// Branch the baseline imports from (with `--repo`; defaults to the repo's
-    /// default branch).
+    /// Branch of the repo the project binds to (with `--repo`; defaults to the
+    /// repo's default branch). The baseline experiment branches off it.
     #[arg(long)]
     pub branch: Option<String>,
     /// Project description.
@@ -326,12 +326,17 @@ pub struct CreateExperimentArgs {
     /// Experiment description.
     #[arg(long)]
     pub description: Option<String>,
-    /// Parent experiment id -> create a child. Omit to create a baseline on the
-    /// project's bound repo (local projects: a child of the project root).
+    /// Parent experiment id -> create a child. Omit on an empty project to
+    /// create the baseline (root); once a root exists, local projects attach
+    /// under the oldest root (server projects create another baseline).
     #[arg(long)]
     pub parent: Option<String>,
-    /// Run command for the node (local projects only). Omit to inherit from
-    /// the parent / project default.
+    /// Create a new baseline (root) even when the project already has one.
+    /// Conflicts with --parent. Projects may hold multiple baselines.
+    #[arg(long, conflicts_with = "parent")]
+    pub baseline: bool,
+    /// Run command for the node (local projects and server baselines). Omit to
+    /// inherit from the parent / project default.
     #[arg(long = "run-command")]
     pub run_command: Option<String>,
 }
