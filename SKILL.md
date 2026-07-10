@@ -21,15 +21,15 @@ These four govern everything below. Breaking any one silently invalidates your
 results — they are not style preferences. The detailed "experiment-tree model"
 section expands on the why; these are the non-negotiables.
 
-1. **Never edit the baseline (the root) once it holds real code.** The root is
-   the control every variant is measured against. Projects start with an empty
+1. **Never edit a baseline (root) once it holds real code.** A root is the
+   control its variants are measured against. Projects start with an empty
    tree — **you create the baseline** (the first `orx create-experiment`, no
    `--parent`) and, on a blank repo, seed it with starting code before its first
    run (see "Seeding an empty baseline"). That setup window is the one
-   exception, like rule 2's single legitimate `--set`. From the moment the root
+   exception, like rule 2's single legitimate `--set`. From the moment a root
    holds real code this rule is absolute: to try an idea, **branch a child**
-   and edit the child. Editing the root moves the goalposts and destroys every
-   comparison.
+   and edit the child. Editing a root moves the goalposts and destroys every
+   comparison under it.
 2. **The run command *and* the environment are a fixed contract — identical on
    every node.** A child inherits its parent's run command verbatim; leave it
    alone. Do **not** give nodes different start commands, and do **not** vary
@@ -401,13 +401,17 @@ orx create-experiment <projectId> --title "Larger batch size" --parent <experime
 
 # Baseline (root) node on the project's bound repo:
 orx create-experiment <projectId> --title "Baseline"
+
+# Additional baseline (another root) when the project already has one:
+orx create-experiment <projectId> --title "Baseline v2" --baseline
 ```
 
 - `--parent` selects the shape: with `--parent` ⇒ child; without it, on an
   **empty project**, ⇒ the baseline (root) on the repo the project is already
-  bound to — a project has at most one baseline, so once a root exists a
-  parentless create is rejected on server projects (local projects attach it
-  under the root instead); pass `--parent` explicitly. The repo a project works
+  bound to. Once a root exists, a parentless create attaches under the oldest
+  root on local projects (server projects create another baseline); pass
+  `--baseline` to explicitly add another root — projects may hold multiple
+  baselines, each the control for its own subtree. The repo a project works
   on is chosen when the **project** is created (`orx create-project` or the
   web), so there is no `--repo` flag here.
 - **A `--parent` child inherits the parent's run command** (and branches off its

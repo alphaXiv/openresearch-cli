@@ -882,9 +882,10 @@ pub async fn create_baseline_experiment(
     project_id: &str,
     body: &CreateBaselineExperimentBody,
 ) -> Result<ExperimentEnvelope> {
-    // Repo is bound at project creation; this materializes the baseline (the
-    // root node) on it. `None` fields are omitted so the server applies its
-    // defaults. A project has at most one baseline — the server rejects repeats.
+    // Repo is bound at project creation; this materializes a baseline (root
+    // node) on it. `None` fields are omitted so the server applies its
+    // defaults. Repeat calls create additional roots — projects may hold
+    // multiple baselines.
     let json = serde_json::to_value(body)?;
     api_post(
         creds,

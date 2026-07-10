@@ -328,9 +328,13 @@ pub struct CreateExperimentArgs {
     pub description: Option<String>,
     /// Parent experiment id -> create a child. Omit on an empty project to
     /// create the baseline (root); once a root exists, local projects attach
-    /// under it.
+    /// under the oldest root (server projects create another baseline).
     #[arg(long)]
     pub parent: Option<String>,
+    /// Create a new baseline (root) even when the project already has one.
+    /// Conflicts with --parent. Projects may hold multiple baselines.
+    #[arg(long, conflicts_with = "parent")]
+    pub baseline: bool,
     /// Run command for the node (local projects and server baselines). Omit to
     /// inherit from the parent / project default.
     #[arg(long = "run-command")]

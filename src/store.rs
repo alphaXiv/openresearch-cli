@@ -149,23 +149,23 @@ impl Store {
                 tested_at INTEGER NOT NULL
             );",
         )?;
-        // Best-effort migrations for pre-existing dbs. ALTER re-runs fail with
-        // "duplicate column name" (the no-op we want); CREATE INDEX is
-        // idempotent via IF NOT EXISTS.
+        // Best-effort migrations for pre-existing dbs; re-runs fail with
+        // "duplicate column name", which is exactly the no-op we want.
         for ddl in [
             "ALTER TABLE runs ADD COLUMN commit_sha TEXT",
             "ALTER TABLE runs ADD COLUMN result_markdown TEXT",
             "ALTER TABLE runs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE chat_sessions ADD COLUMN permission_mode TEXT",
             "ALTER TABLE chat_sessions ADD COLUMN reasoning_level TEXT",
-            // At most one baseline (root) per project — the hard invariant
-            // behind create_experiment's friendlier pre-check. Best-effort so
-            // a legacy db that somehow holds two roots still opens.
-            "CREATE UNIQUE INDEX IF NOT EXISTS uidx_local_experiments_project_baseline
-                 ON local_experiments(project_id) WHERE parent_experiment_id IS NULL",
         ] {
             let _ = conn.execute(ddl, []);
         }
+        // Older builds of this branch created a one-root-per-project unique
+        // index; multiple baselines are allowed, so make sure it's gone.
+        let _ = conn.execute(
+            "DROP INDEX IF EXISTS uidx_local_experiments_project_baseline",
+            [],
+        );
         // Data migration: the chat_sessions.permission_mode wire ids were
         // neutralized off Claude Code's `--permission-mode` spelling (`default`,
         // `acceptEdits`, `bypassPermissions`) onto harness-agnostic ids (`ask`,

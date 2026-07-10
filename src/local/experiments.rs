@@ -31,9 +31,10 @@ fn unique_slug(store: &Store, project_id: &str, base: &str) -> Result<String> {
     }
 }
 
-/// The project's root experiment (parent NULL). `None` on a fresh project —
-/// the tree starts empty and the first no-parent create becomes the baseline.
-/// CLI/API creates without a parent attach here once a root exists.
+/// The project's root experiment (parent NULL) — oldest first when several
+/// exist. `None` on a fresh project: the tree starts empty and the first
+/// no-parent create becomes the baseline. CLI/API creates without a parent
+/// attach here once a root exists (pass `--baseline` to add another root).
 pub fn project_root(store: &Store, project_id: &str) -> Result<Option<LocalExperiment>> {
     // list is ordered created_at ASC, so `find` picks the oldest root.
     Ok(store
@@ -61,15 +62,6 @@ pub fn create_experiment(
                 p.id
             ));
         }
-    } else if project_root(store, &project.id)?.is_some() {
-        // Callers default no-parent creates onto the existing root, so landing
-        // here parentless means the tree looked empty a moment ago. Re-check
-        // for the friendly message; the partial unique index
-        // (uidx_local_experiments_project_baseline) is the invariant under races.
-        return Err(anyhow!(
-            "Project {} already has a baseline (root) experiment. Pass --parent to branch a child off it.",
-            project.id
-        ));
     }
     let base = match slug {
         Some(s) => slugify(s),
@@ -118,17 +110,6 @@ pub fn create_experiment(
         created_at: now,
         updated_at: now,
     };
-    store.create_local_experiment(&experiment).map_err(|e| {
-        // Two concurrent no-parent creates can both pass the pre-check; the
-        // partial unique index rejects the loser — surface the same message.
-        if parent.is_none() && e.to_string().contains("uidx_local_experiments_project_baseline") {
-            anyhow!(
-                "Project {} already has a baseline (root) experiment. Pass --parent to branch a child off it.",
-                project.id
-            )
-        } else {
-            e
-        }
-    })?;
+    store.create_local_experiment(&experiment)?;
     Ok(experiment)
 }

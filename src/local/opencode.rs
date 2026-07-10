@@ -142,10 +142,10 @@ the run command, run it once for reference numbers, then branch children off it.
 Breaking any of these silently invalidates results — they are not style
 preferences.
 
-1. **Never edit the baseline (the root experiment) once it exists.** The root
-   is the control every variant is measured against — on a fresh project you
-   create it (first `orx create-experiment`, no `--parent`), and from then on
-   it is frozen. To try an idea, **branch a child**
+1. **Never edit a baseline (root experiment) once it exists.** A root is the
+   control its variants are measured against — on a fresh project you create
+   it (first `orx create-experiment`, no `--parent`), and from then on it is
+   frozen. To try an idea, **branch a child**
    (`orx create-experiment … --parent <expId>`) and edit the child's branch.
 2. **The run command and the environment are a fixed contract — identical on
    every node.** Children inherit it verbatim. If the project has no run
@@ -166,7 +166,7 @@ preferences.
 | Command | What it does |
 |---|---|
 | `orx projects` | List projects; local ones are tagged `(local)`. |
-| `orx create-experiment {id} --title "<t>" [--description "<d>"] [--parent <expId>] [--run-command "<cmd>"]` | New node, branched `orx/<slug>` off the parent's tip and pushed to GitHub. Omit `--parent`: attaches under the project root — or, on an empty project, becomes the baseline root itself. |
+| `orx create-experiment {id} --title "<t>" [--description "<d>"] [--parent <expId> \| --baseline] [--run-command "<cmd>"]` | New node, branched `orx/<slug>` off the parent's tip and pushed to GitHub. Omit `--parent`: attaches under the oldest project root — or, on an empty project, becomes the baseline root itself. `--baseline` forces another root (multiple baselines are allowed). |
 | `orx project view {id}` / `orx project edit {id} --run-command "<cmd>"` | Inspect the project / set its default run command. |
 | `orx exp status <expId>` | Node's branch, command, and latest run. |
 | `orx exp desc <expId> [--set "<text>" \| --stdin]` | Read/overwrite the node's notes. Record findings here. |

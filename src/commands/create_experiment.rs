@@ -1,10 +1,13 @@
 //!
-//! Creates an experiment node. Two shapes, picked by flags:
+//! Creates an experiment node. Shapes, picked by flags:
 //!   --parent <id>   -> child experiment branched off that parent
-//!   (no parent)     -> the project root when one exists (local projects), or
-//!                      the baseline (root) when the tree is empty — projects
-//!                      start with no experiments, so the first create is the
-//!                      baseline: the control every variant is measured against
+//!   --baseline      -> a new baseline (root), even when roots already exist —
+//!                      projects may hold multiple baselines
+//!   (no flags)      -> the oldest project root when one exists (local
+//!                      projects), or the baseline (root) when the tree is
+//!                      empty — projects start with no experiments, so the
+//!                      first create is the baseline: the control its
+//!                      variants are measured against
 //! A title is always required.
 //!
 //! Note: the repo a project works on is chosen when the PROJECT is created
@@ -37,6 +40,7 @@ pub async fn run(args: crate::CreateExperimentArgs) -> Result<()> {
             &project,
             title,
             args.parent,
+            args.baseline,
             args.description,
             args.run_command,
         );
@@ -108,14 +112,15 @@ pub async fn run(args: crate::CreateExperimentArgs) -> Result<()> {
 }
 
 /// Local-mode create: child = branch `orx/<slug>` off the parent (pushed to
-/// origin so HF jobs can clone it). No parent = child of the project's root
-/// experiment when one exists; on an empty project the new row becomes the
-/// baseline root itself.
+/// origin so HF jobs can clone it). No parent = child of the project's oldest
+/// root when one exists; on an empty project (or with `--baseline`) the new
+/// row becomes a baseline root. Projects may hold multiple baselines.
 fn run_local(
     store: &Store,
     project: &crate::local::model::LocalProject,
     title: String,
     parent: Option<String>,
+    baseline: bool,
     description: Option<String>,
     run_command: Option<String>,
 ) -> Result<()> {
@@ -128,6 +133,7 @@ fn run_local(
                 parent_id
             )
         })?),
+        None if baseline => None,
         None => {
             let root = crate::local::experiments::project_root(store, &project.id)?;
             defaulted_to_root = root.is_some();
