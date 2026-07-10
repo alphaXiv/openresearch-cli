@@ -6,15 +6,17 @@
 //! The two axes are modeled differently on purpose:
 //!
 //! * Permission mode is a *shared* enum — the concept (ask / accept-edits /
-//!   plan / auto / bypass) is common enough to name once. Its wire ids happen
-//!   to equal Claude Code's `--permission-mode` values today (so Claude's map
-//!   is a no-op); a second harness maps the nearest equivalent, and if that
-//!   proves lossy the ids can be neutralized (they're the wire/store contract,
-//!   so that's a migration — do it when Codex approvals land, not speculatively).
+//!   plan / auto / bypass) is common enough to name once. Its wire ids are
+//!   harness-agnostic (`ask` / `accept-edits` / `plan` / `auto` / `bypass`);
+//!   each harness maps the enum onto its own control surface in `run_turn`
+//!   (Claude → `--permission-mode`, Codex → `--sandbox` policy). The ids were
+//!   neutralized off Claude's `--permission-mode` spelling once Codex landed and
+//!   its sandbox policies didn't map onto Claude's strings — see the store data
+//!   migration in `store.rs` that rewrites the old spellings.
 //! * Reasoning level is deliberately NOT shared — Claude's tiers (`low`…`max`,
-//!   via `--effort`) and a future Codex's (`low`/`medium`/`high`) genuinely
-//!   differ — so each harness owns its own `OptionChoice` list and interprets
-//!   the chosen id itself.
+//!   via `--effort`) and Codex's (`low`/`medium`/`high`, via
+//!   `model_reasoning_effort`) genuinely differ — so each harness owns its own
+//!   `OptionChoice` list and interprets the chosen id itself.
 //!
 //! A harness that doesn't support an axis lists nothing for it, and the composer
 //! hides that control.
@@ -22,39 +24,44 @@
 use serde::{Deserialize, Serialize};
 
 /// How much the harness should defer to the user before acting. The wire ids
-/// currently equal Claude Code's `--permission-mode` values (`default`,
-/// `acceptEdits`, `plan`, `auto`, `bypassPermissions`); other harnesses map the
-/// nearest equivalent in their `run_turn`. `auto` is distinct from `acceptEdits`
-/// (it's Claude's balanced default mode).
+/// are harness-agnostic (`ask`, `accept-edits`, `plan`, `auto`, `bypass`); each
+/// harness maps the enum onto its own control surface in `run_turn` (Claude →
+/// `--permission-mode`, Codex → `--sandbox`). `auto` is distinct from
+/// `accept-edits` (it's Claude's balanced default mode).
+///
+/// Not every harness supports every mode — a harness advertises its supported
+/// subset via `options()` and the composer only offers those. `plan`, for
+/// instance, is Claude-only (Codex's sandbox has no read-only-with-proposals
+/// notion that maps to it, and opencode serve has no plan mode).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "kebab-case")]
 pub enum PermissionMode {
-    /// Prompt for every action. (`default`)
+    /// Prompt for every action. (`ask`)
     Ask,
-    /// Auto-accept file edits; still prompt for other tools. (`acceptEdits`)
+    /// Auto-accept file edits; still prompt for other tools. (`accept-edits`)
     AcceptEdits,
     /// Read/plan only — propose without executing. (`plan`)
     Plan,
     /// Claude Code's default balanced auto mode. (`auto`)
     Auto,
-    /// No prompts at all. (`bypassPermissions`)
+    /// No prompts at all. (`bypass`)
     Bypass,
 }
 
 impl PermissionMode {
-    /// The stable wire id (what the UI stores and sends). Matches Claude Code's
-    /// `--permission-mode` value so no per-harness remap is needed for Claude.
+    /// The stable, harness-agnostic wire id (what the UI stores and sends). Each
+    /// harness maps this to its own CLI/API in `run_turn`.
     pub fn id(self) -> &'static str {
         match self {
-            PermissionMode::Ask => "default",
-            PermissionMode::AcceptEdits => "acceptEdits",
+            PermissionMode::Ask => "ask",
+            PermissionMode::AcceptEdits => "accept-edits",
             PermissionMode::Plan => "plan",
             PermissionMode::Auto => "auto",
-            PermissionMode::Bypass => "bypassPermissions",
+            PermissionMode::Bypass => "bypass",
         }
     }
 
-    /// Menu label (matches the Claude Code composer wording).
+    /// Menu label shown in the composer's permission-mode toggle.
     pub fn label(self) -> &'static str {
         match self {
             PermissionMode::Ask => "Ask permissions",
@@ -69,11 +76,11 @@ impl PermissionMode {
     /// caller can apply its own default.
     pub fn from_id(id: &str) -> Option<Self> {
         match id {
-            "default" => Some(PermissionMode::Ask),
-            "acceptEdits" => Some(PermissionMode::AcceptEdits),
+            "ask" => Some(PermissionMode::Ask),
+            "accept-edits" => Some(PermissionMode::AcceptEdits),
             "plan" => Some(PermissionMode::Plan),
             "auto" => Some(PermissionMode::Auto),
-            "bypassPermissions" => Some(PermissionMode::Bypass),
+            "bypass" => Some(PermissionMode::Bypass),
             _ => None,
         }
     }
@@ -144,5 +151,59 @@ impl HarnessOptions {
             .collect();
         self.default_reasoning_level = Some(default);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The wire ids are the store/UI contract — pin them so a rename is a
+    /// deliberate, test-breaking change (and a reminder to add a data migration).
+    #[test]
+    fn wire_ids_are_the_neutralized_spelling() {
+        assert_eq!(PermissionMode::Ask.id(), "ask");
+        assert_eq!(PermissionMode::AcceptEdits.id(), "accept-edits");
+        assert_eq!(PermissionMode::Plan.id(), "plan");
+        assert_eq!(PermissionMode::Auto.id(), "auto");
+        assert_eq!(PermissionMode::Bypass.id(), "bypass");
+    }
+
+    #[test]
+    fn from_id_round_trips_every_mode() {
+        for mode in [
+            PermissionMode::Ask,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Plan,
+            PermissionMode::Auto,
+            PermissionMode::Bypass,
+        ] {
+            assert_eq!(PermissionMode::from_id(mode.id()), Some(mode));
+        }
+    }
+
+    #[test]
+    fn from_id_rejects_the_old_claude_spellings_and_junk() {
+        // The pre-migration spellings must NOT parse — a stale row is normalized
+        // by the store migration, not silently reinterpreted here.
+        for old in [
+            "default",
+            "acceptEdits",
+            "bypassPermissions",
+            "",
+            "nonsense",
+        ] {
+            assert_eq!(PermissionMode::from_id(old), None, "{old} should not parse");
+        }
+    }
+
+    #[test]
+    fn permission_mode_serde_uses_kebab_ids() {
+        // The enum is serialized directly in some payloads; its serde form must
+        // match the wire ids (kebab-case), not the Rust variant names.
+        let json = serde_json::to_string(&PermissionMode::AcceptEdits).unwrap();
+        assert_eq!(json, "\"accept-edits\"");
+        let back: PermissionMode = serde_json::from_str("\"bypass\"").unwrap();
+        assert_eq!(back, PermissionMode::Bypass);
     }
 }

@@ -57,10 +57,15 @@ export function ModelPicker({
   value,
   onSelect,
   onHarnesses,
+  lockHarness = false,
 }: {
   value: ModelSelection | null;
   onSelect: (value: ModelSelection) => void;
   onHarnesses?: (harnesses: Harness[]) => void;
+  /** When set (a session is open), only the current harness is offered — its
+   * harness is fixed for its lifetime, so you can still switch models within it
+   * but not switch to a different harness. */
+  lockHarness?: boolean;
 }) {
   const [harnesses, setHarnesses] = useState<Harness[]>([]);
   const { open, setOpen, ref: rootRef } = usePopover();
@@ -78,14 +83,17 @@ export function ModelPicker({
 
   const groups = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    return harnesses.map((h) => {
+    // Locked to the open session's harness: only offer that one.
+    const shown =
+      lockHarness && value ? harnesses.filter((h) => h.id === value.harness) : harnesses;
+    return shown.map((h) => {
       let models = h.models;
       if (q) models = models.filter((m) => m.id.toLowerCase().includes(q));
       // opencode's long tail (openrouter etc.) stays behind the filter box.
       else if (h.id === "opencode") models = models.slice(0, 6);
       return { harness: h, models, hidden: q ? 0 : h.models.length - models.length };
     });
-  }, [harnesses, filter]);
+  }, [harnesses, filter, lockHarness, value]);
 
   /** Switch harness → reseed model + mode/reasoning defaults for that harness. */
   const pick = (harness: Harness, model: string | null) => {

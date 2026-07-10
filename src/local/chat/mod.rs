@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 use tokio::sync::{broadcast, Mutex};
 
 use crate::error::{anyhow, Result};
+use crate::local::harness::ResumeAction;
 use crate::local::model::LocalProject;
 use crate::local::opencode::AgentHost;
 use crate::store::{now_ms, Store, StoredChatMessage, StoredChatSession};
@@ -52,14 +53,17 @@ pub struct WireQuestionOption {
 }
 
 /// An interactive request the user must act on before the harness continues.
-/// The three kinds (`plan` / `permission` / `question`) are derived from Claude
-/// Code's ExitPlanMode / permission_denials / AskUserQuestion — currently the
-/// only harness that emits them. They're *intended* to generalize (Codex's
-/// approval protocol should map onto `permission`/`question`), but that hasn't
-/// been validated against a second harness yet, so treat the vocabulary as
-/// Claude-shaped until Codex approvals are wired. The UI renders a card and the
-/// answer resumes the session (see `ChatHost::respond`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The three kinds (`plan` / `permission` / `question`) originated with Claude
+/// Code's ExitPlanMode / permission_denials / AskUserQuestion, but `permission`
+/// and `question` are now shared: OpenCode emits them from its serve
+/// `permission.asked` / `question.asked` events (see `harness/opencode.rs`).
+/// `plan` remains Claude-only.
+///
+/// How the answer flows back is per-harness (see [`crate::local::harness::ResumeAction`]):
+/// Claude ends its turn and resumes with a new message; OpenCode is paused
+/// mid-turn and the answer is replied inline over the live serve session — which
+/// is what `native_id` is for. The UI renders a card either way.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WirePrompt {
     /// `plan` | `permission` | `question`.
@@ -84,6 +88,12 @@ pub struct WirePrompt {
     pub options: Vec<WireQuestionOption>,
     #[serde(default)]
     pub multi_select: bool,
+    /// The harness-native id used to reply over a live protocol (opencode's
+    /// permission/question request id). Internal to the backend resume path —
+    /// the UI never reads it and only echoes the `WirePart` id. `None` for
+    /// end-turn harnesses (Claude), which resume by message, not by reply id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -251,6 +261,24 @@ pub struct ChatHost {
     /// the running task's abort handle, or `None` while a turn is being set up
     /// (reserved but not yet spawned — see `TurnGuard`).
     turns: Mutex<HashMap<String, Option<tokio::task::AbortHandle>>>,
+    /// Per-session serialization for `respond`. Answering a prompt reads the
+    /// card, delivers the answer (a non-idempotent POST for inline harnesses),
+    /// and marks it resolved — steps that must not interleave for one session,
+    /// or a double-submit could fire the reply twice. Held only for the brief
+    /// `respond` critical section; keyed per session so different sessions don't
+    /// contend. (The busy `turns` slot can't gate this: an inline harness is
+    /// *deliberately* busy while paused on the prompt.)
+    respond_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// Guards the read-modify-write of a chat message's `parts_json` blob so two
+    /// writers can't lost-update each other. The dangerous pair: a still-running
+    /// opencode turn's `flush` (which carries a concurrently-resolved card's flag
+    /// forward via `adopt_resolved_prompts`) vs `respond`'s `mark_prompt_resolved`
+    /// — both do read→modify→write on the *same* message, and SQLite's WAL
+    /// serializes the writes but not the logical transaction. A single process-
+    /// wide sync mutex (writes are brief and already WAL-serialized, so this adds
+    /// no real contention) makes each RMW atomic. Sync because `flush` is sync;
+    /// never held across an `.await`.
+    msg_write: std::sync::Mutex<()>,
 }
 
 /// Reserves a session's turn slot for the duration of `send_message`'s setup.
@@ -316,7 +344,21 @@ impl ChatHost {
             http: reqwest::Client::new(),
             events,
             turns: Mutex::new(HashMap::new()),
+            respond_locks: Mutex::new(HashMap::new()),
+            msg_write: std::sync::Mutex::new(()),
         }
+    }
+
+    /// The per-session `respond` lock, created on first use. The map only grows
+    /// (one small `Arc<Mutex>` per session ever answered) — negligible for a
+    /// single `orx up` process's session count.
+    async fn respond_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
+        self.respond_locks
+            .lock()
+            .await
+            .entry(session_id.to_string())
+            .or_default()
+            .clone()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<(&'static str, Value)> {
@@ -544,64 +586,103 @@ impl ChatHost {
         Ok(())
     }
 
-    /// Answer an interactive prompt (plan / permission / question) and resume
-    /// the session. The prompt part is marked resolved in the transcript, then
-    /// a synthesized follow-up message continues the turn — for plan/permission
-    /// approvals with the caller's chosen permission mode.
+    /// Answer an interactive prompt (plan / permission / question) and resume.
+    ///
+    /// `ChatHost` owns the harness-agnostic orchestration — locate the
+    /// unresolved card, mark it resolved, broadcast — but the *harness* decides
+    /// (and, for inline-approval harnesses, performs) how the answer flows back,
+    /// via [`Harness::resume_from_prompt`]. That split is deliberate: Claude ends
+    /// its turn on a prompt and resumes with a new user message
+    /// ([`ResumeAction::SendMessage`]), while OpenCode is still mid-turn, paused
+    /// over its serve session, and the reply is POSTed to that live process
+    /// ([`ResumeAction::Handled`]) — so a busy session is *expected* there and
+    /// must not be rejected.
     pub async fn respond(self: &Arc<Self>, req: PromptAnswer) -> Result<()> {
-        if self.is_busy(&req.session_id).await {
-            return Err(anyhow!("session is busy — interrupt it first"));
-        }
-        // Peek the prompt's kind (without mutating yet) so we can validate the
-        // answer before flipping it resolved — a question with no selection must
-        // not resume with an empty prompt.
-        let kind = prompt_kind(&req.session_id, &req.prompt_id)?
-            .ok_or_else(|| anyhow!("prompt not found"))?;
+        // Serialize answers to one session: the load→deliver→resolve sequence
+        // below is non-idempotent (an inline reply POSTs to the live harness), so
+        // two racing `respond`s (a double-click, two tabs) must not interleave.
+        // The loser waits, then finds the card already resolved and no-ops. Held
+        // for the whole critical section.
+        let gate = self.respond_lock(&req.session_id).await;
+        let _gate = gate.lock().await;
 
-        // Only a *denied* permission closes the card without resuming; every
-        // other answer (plan approve and keep-planning, question selections)
-        // resumes the session with a synthesized follow-up.
-        let resume = if kind == "permission" && !req.approve {
-            None
-        } else {
-            Some(synthesize_resume(&kind, &req))
+        // Load the session and the *unresolved* prompt card (full WirePrompt, so
+        // the harness can read its reply target — e.g. opencode's permission id).
+        // Nothing is mutated yet, so any error below leaves the card actionable.
+        // A card already resolved (the loser of the race above, or a re-submit)
+        // is a clean no-op — `unresolved_prompt` returns `None`.
+        let session = Store::open()?
+            .get_chat_session(&req.session_id)?
+            .ok_or_else(|| anyhow!("chat session not found"))?;
+        // Already resolved (the loser of a double-submit, or a re-click) is a
+        // clean no-op — NOT an error. Returning `Err` here would make the UI's
+        // catch clear `busy` on a session whose turn is still streaming; a plain
+        // `Ok` leaves the live turn (and its busy state) untouched.
+        let Some(prompt) = unresolved_prompt(&req.session_id, &req.prompt_id)? else {
+            return Ok(());
         };
-        // Reject an empty resume (e.g. a question answered with no selection and
-        // no note) before we mark anything resolved, so the card stays actionable.
-        if let Some((text, _)) = &resume {
-            if text.trim().is_empty() {
-                return Err(anyhow!("no answer provided"));
-            }
-        }
+        let harness = crate::local::harness::chat_harness(&session.harness)
+            .ok_or_else(|| anyhow!("unknown harness: {}", session.harness))?;
+
+        // Ask the harness how the answer resumes. Inline harnesses deliver the
+        // reply to their live process here and return `Handled`; end-turn
+        // harnesses return the follow-up message to send. Answer validation
+        // (e.g. a question with no selection) surfaces as an `Err` here, before
+        // we mark anything resolved — so a failed delivery leaves the card
+        // actionable and retryable (nothing has been mutated yet).
+        let resume_ctx = ResumeCtx {
+            host: self.clone(),
+            session_id: session.id.clone(),
+            native_session_id: session.native_session_id.clone(),
+        };
+        let action = harness
+            .resume_from_prompt(&resume_ctx, &prompt, &req)
+            .await?;
 
         // Mark resolved and broadcast the updated card so it renders read-only
         // on every client immediately (send_message only emits the new user
         // message, never the mutated assistant one).
-        let resolved_msg = mark_prompt_resolved(&req.session_id, &req.prompt_id)?
+        let resolved_msg = mark_prompt_resolved(&self.msg_write, &req.session_id, &req.prompt_id)?
             .ok_or_else(|| anyhow!("prompt not found"))?;
         self.emit("chat.message", message_json(&resolved_msg, &req.session_id));
 
-        let Some((text, mode)) = resume else {
-            // Card closed, no resume; broadcast idle so `busy` clears in the UI.
-            if let Ok(Some(session)) = Store::open()?.get_chat_session(&req.session_id) {
-                self.emit(
-                    "chat.session",
-                    json!({ "session": session_json(&session, false) }),
-                );
+        match action {
+            ResumeAction::SendMessage { text, mode } => {
+                // End-turn resume: the CLI turn already finished, so the session
+                // should be idle; `send_message`'s own guard rejects if a resume
+                // turn is somehow already running.
+                let overrides = TurnOverrides {
+                    model: None,
+                    permission_mode: mode.map(|m| m.id().to_string()),
+                    reasoning_level: None,
+                };
+                self.send_message(&req.session_id, text, overrides, Vec::new())
+                    .await
             }
-            return Ok(());
-        };
-        let overrides = TurnOverrides {
-            model: None,
-            permission_mode: mode,
-            reasoning_level: None,
-        };
-        self.send_message(&req.session_id, text, overrides, Vec::new())
-            .await
+            ResumeAction::Handled => {
+                // The inline reply unblocked the still-running turn; it keeps
+                // streaming and will `finish_turn` itself. Leave `busy` alone.
+                Ok(())
+            }
+            ResumeAction::Nothing => {
+                // Card closed with no resume (e.g. a denied Claude permission);
+                // broadcast idle so `busy` clears in the UI.
+                if let Ok(Some(session)) = Store::open()?.get_chat_session(&req.session_id) {
+                    self.emit(
+                        "chat.session",
+                        json!({ "session": session_json(&session, false) }),
+                    );
+                }
+                Ok(())
+            }
+        }
     }
 
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
         let _ = self.interrupt(session_id).await;
+        // Drop the session's respond lock so the map doesn't retain an entry for
+        // a session that no longer exists.
+        self.respond_locks.lock().await.remove(session_id);
         Store::open()?.delete_chat_session(session_id)?;
         Ok(())
     }
@@ -617,7 +698,9 @@ pub struct PromptAnswer {
     #[serde(default = "default_true")]
     pub approve: bool,
     /// For plan/permission approval: the permission mode to resume under
-    /// (e.g. `"auto"`, `"acceptEdits"`). None keeps the session's mode.
+    /// (a harness-agnostic wire id, e.g. `"auto"`, `"accept-edits"`). None keeps
+    /// the session's mode. Only meaningful for end-turn resume (Claude); inline
+    /// harnesses reply over their live protocol and ignore it.
     #[serde(default)]
     pub resume_mode: Option<String>,
     /// For questions: the chosen option labels.
@@ -632,9 +715,42 @@ fn default_true() -> bool {
     true
 }
 
-/// The kind of the (unresolved) prompt part with `prompt_id`, if present —
-/// peeked before mutation so the answer can be validated first.
-fn prompt_kind(session_id: &str, prompt_id: &str) -> Result<Option<String>> {
+/// What a harness needs to resume an answered prompt over its own machinery —
+/// handed to [`Harness::resume_from_prompt`]. End-turn harnesses ignore it (they
+/// just build a `SendMessage`); inline harnesses reach through `host` to talk to
+/// their live process. Kept harness-neutral: it carries the shared `host`, the
+/// orx session id, and the native session id, and each harness pulls what it
+/// needs (an opencode reply reaches `host.opencode` / `host.http`, exactly as
+/// `interrupt` does).
+pub struct ResumeCtx {
+    pub host: Arc<ChatHost>,
+    /// The orx session id (for the `is_busy` liveness check).
+    pub session_id: String,
+    /// The harness's own session id, if one has been minted (opencode needs it
+    /// to address the reply endpoint).
+    pub native_session_id: Option<String>,
+}
+
+impl ResumeCtx {
+    /// Shared HTTP client (mirrors `TurnCtx::http`).
+    pub fn http(&self) -> &reqwest::Client {
+        &self.host.http
+    }
+
+    /// Whether the session still has a turn in flight. An inline harness whose
+    /// turn has already ended (errored / been interrupted) has no paused process
+    /// left to receive a reply, so it uses this to reject a stale answer instead
+    /// of firing a reply into the void.
+    pub async fn is_busy(&self) -> bool {
+        self.host.is_busy(&self.session_id).await
+    }
+}
+
+/// The still-*unresolved* prompt card with `prompt_id`, if present — read before
+/// any mutation so the harness can inspect it (kind, reply target) and validate
+/// the answer first. Returns `None` if there's no such card *or* it's already
+/// resolved, so a double-answer is a no-op rather than a second resume.
+fn unresolved_prompt(session_id: &str, prompt_id: &str) -> Result<Option<WirePrompt>> {
     let store = Store::open()?;
     for msg in store.list_chat_messages(session_id)?.iter().rev() {
         if msg.role != "assistant" {
@@ -646,7 +762,7 @@ fn prompt_kind(session_id: &str, prompt_id: &str) -> Result<Option<String>> {
             .find(|p| p.id == prompt_id)
             .and_then(|p| p.prompt.as_ref())
         {
-            return Ok(Some(prompt.kind.clone()));
+            return Ok((!prompt.resolved).then(|| prompt.clone()));
         }
     }
     Ok(None)
@@ -656,7 +772,16 @@ fn prompt_kind(session_id: &str, prompt_id: &str) -> Result<Option<String>> {
 /// last assistant message that carries it, persist it, and return the mutated
 /// message (so the caller can broadcast a `chat.message` and the card renders
 /// read-only). `None` if no such prompt part exists.
-fn mark_prompt_resolved(session_id: &str, prompt_id: &str) -> Result<Option<WireMessage>> {
+///
+/// The read→modify→write runs under `msg_write` so it's atomic against a
+/// still-running turn's `flush` reconcile-and-persist of the same message (see
+/// `TurnCtx::flush`) — otherwise the flush could clobber this resolve.
+fn mark_prompt_resolved(
+    msg_write: &std::sync::Mutex<()>,
+    session_id: &str,
+    prompt_id: &str,
+) -> Result<Option<WireMessage>> {
+    let _guard = msg_write.lock().unwrap();
     let store = Store::open()?;
     for msg in store.list_chat_messages(session_id)?.iter().rev() {
         if msg.role != "assistant" {
@@ -686,53 +811,6 @@ fn mark_prompt_resolved(session_id: &str, prompt_id: &str) -> Result<Option<Wire
         }
     }
     Ok(None)
-}
-
-/// The follow-up message + resume mode for an answered prompt.
-///
-/// NOTE: this encodes Claude Code's resume strategy — a prompt ends the turn and
-/// the answer becomes a *new user message* that continues via `--resume`. Codex
-/// and OpenCode approve inline over their own live protocol; when they gain
-/// approvals, `respond` should dispatch through the harness rather than route
-/// them here. The permission-mode strings returned here are Claude's wire ids.
-fn synthesize_resume(kind: &str, req: &PromptAnswer) -> (String, Option<String>) {
-    let note = req.note.as_deref().filter(|s| !s.trim().is_empty());
-    match kind {
-        "plan" if req.approve => {
-            let mut text = "The user approved the plan. Proceed with implementing it.".to_string();
-            if let Some(note) = note {
-                text.push_str(&format!("\n\nAdditional guidance: {note}"));
-            }
-            // Approving a plan means leaving plan mode; default to `auto`.
-            (
-                text,
-                req.resume_mode.clone().or_else(|| Some("auto".into())),
-            )
-        }
-        "plan" => {
-            // "Keep planning" — stay in plan mode with the refinement.
-            let text = note
-                .map(|n| format!("Keep refining the plan: {n}"))
-                .unwrap_or_else(|| "Please revise the plan.".to_string());
-            (text, Some("plan".into()))
-        }
-        "permission" => {
-            let text = "The user approved that action. Continue.".to_string();
-            (text, req.resume_mode.clone())
-        }
-        // question (or anything else): feed the selection back as the user's reply.
-        _ => {
-            let mut text = if req.answers.is_empty() {
-                note.unwrap_or("").to_string()
-            } else {
-                req.answers.join(", ")
-            };
-            if let (false, Some(note)) = (req.answers.is_empty(), note) {
-                text.push_str(&format!("\n\n{note}"));
-            }
-            (text, None)
-        }
-    }
 }
 
 // --- per-turn context handed to adapters --------------------------------------
@@ -842,18 +920,64 @@ impl TurnCtx {
             return Ok(());
         }
         let store = Store::open()?;
-        store.upsert_chat_message(&StoredChatMessage {
-            id: self.assistant.id.clone(),
-            session_id: self.session_id.clone(),
-            role: "assistant".into(),
-            parts_json: serde_json::to_string(&self.assistant.parts)?,
-            created_at: self.assistant.created_at,
-        })?;
+        // A prompt card the harness surfaced mid-turn (opencode's inline
+        // permission/question) may be answered *while the turn is still running*
+        // — `respond` flips its `resolved` flag on the persisted message from a
+        // different task. This in-memory copy still has it `false`, so a naive
+        // rewrite would revert the card to actionable. Carry forward any
+        // already-resolved flag from the store, then persist — under `msg_write`
+        // so the read+write is atomic against a concurrent `mark_prompt_resolved`
+        // (else that reconcile-then-clobber is a lost update). Only pay the lock
+        // when this message actually carries a prompt part.
+        let has_prompt = self.assistant.parts.iter().any(|p| p.prompt.is_some());
+        {
+            // Clone the host handle so the guard borrows it, not `self` — the
+            // reconcile below needs `&mut self`.
+            let host = self.host.clone();
+            let _guard = has_prompt.then(|| host.msg_write.lock().unwrap());
+            if has_prompt {
+                self.adopt_resolved_prompts(&store);
+            }
+            store.upsert_chat_message(&StoredChatMessage {
+                id: self.assistant.id.clone(),
+                session_id: self.session_id.clone(),
+                role: "assistant".into(),
+                parts_json: serde_json::to_string(&self.assistant.parts)?,
+                created_at: self.assistant.created_at,
+            })?;
+        }
         self.host.emit(
             "chat.message",
             message_json(&self.assistant, &self.session_id),
         );
         Ok(())
+    }
+
+    /// Merge the persisted `resolved` state of prompt parts into the in-memory
+    /// assistant message, so a concurrent `respond` that resolved a card isn't
+    /// clobbered by this turn's next flush. Only ever flips `false`→`true`
+    /// (a card never un-resolves), so it's safe regardless of ordering.
+    fn adopt_resolved_prompts(&mut self, store: &Store) {
+        let Ok(Some(stored)) = store.get_chat_message(&self.assistant.id) else {
+            return;
+        };
+        let persisted: Vec<WirePart> = serde_json::from_str(&stored.parts_json).unwrap_or_default();
+        for part in self.assistant.parts.iter_mut() {
+            let Some(prompt) = part.prompt.as_mut() else {
+                continue;
+            };
+            if prompt.resolved {
+                continue;
+            }
+            let resolved_in_store = persisted
+                .iter()
+                .find(|p| p.id == part.id)
+                .and_then(|p| p.prompt.as_ref())
+                .is_some_and(|p| p.resolved);
+            if resolved_in_store {
+                prompt.resolved = true;
+            }
+        }
     }
 }
 

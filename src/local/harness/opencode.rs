@@ -7,6 +7,16 @@
 //! (which resolves when the turn ends), and translate this session's part
 //! events into wire parts as they stream.
 //!
+//! Interactive prompts: unlike Claude (which ends its turn and resumes with a
+//! new message), opencode approves *inline*. Its serve stream emits
+//! `permission.asked` / `question.asked` while the `session.prompt` POST is
+//! still open — the turn is paused, not finished. We surface those as
+//! `permission` / `question` cards and reply over the live session
+//! (`resume_from_prompt` → [`ResumeAction::Handled`]), which unblocks the same
+//! POST. `Bypass` mode auto-resolves permission cards (replies "always" without
+//! a blocking card); `Auto`/`Plan` surface them. Questions always need a human,
+//! so they always surface regardless of mode.
+//!
 //! Detection: opencode's `auth.json` is `{provider: {type}}`; the signed-in
 //! providers are its account line, and `opencode models` is the model list.
 
@@ -19,9 +29,12 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 
 use super::detect::{bin_version, read_json, HarnessInfo};
-use super::Harness;
+use super::options::{HarnessOptions, PermissionMode};
+use super::{Harness, ResumeAction};
 use crate::error::{anyhow, Result};
-use crate::local::chat::{TurnCtx, WirePart, WireToolState};
+use crate::local::chat::{
+    PromptAnswer, ResumeCtx, TurnCtx, WirePart, WirePrompt, WireQuestionOption, WireToolState,
+};
 use crate::local::opencode::find_opencode;
 
 pub struct OpenCode;
@@ -73,6 +86,45 @@ impl Harness for OpenCode {
 
     async fn run_turn(&self, ctx: &mut TurnCtx) -> Result<()> {
         run_turn(ctx).await
+    }
+
+    fn options(&self) -> HarnessOptions {
+        // Two native OpenCode axes folded onto the one Mode toggle:
+        //  * which built-in agent runs — `plan` (read-only: allows inspection
+        //    like `orx …`, denies edits) vs `build` (the default). A real, clean
+        //    plan mode, unlike Claude/Codex — verified live.
+        //  * how a `permission.asked` is answered. NOTE opencode's default is
+        //    permissive (`allow *`); it only prompts on a few risky cases
+        //    (runaway loops, out-of-workspace writes, `.env` reads), so a
+        //    dedicated "ask for everything" mode would be hollow (cards would
+        //    almost never fire). So we don't offer one:
+        //      * Plan   → plan agent, and surface the rare cards that do fire.
+        //      * Auto   → build agent, opencode's permissive default (still
+        //                 surfaces those rare cards / questions).
+        //      * Bypass → build agent, auto-approve even those.
+        // No reasoning control — reasoning is a model property in opencode.
+        HarnessOptions::none().with_permission_modes(
+            &[
+                PermissionMode::Plan,
+                PermissionMode::Auto,
+                PermissionMode::Bypass,
+            ],
+            PermissionMode::Auto,
+        )
+    }
+
+    /// opencode is paused mid-turn on a `permission.asked` / `question.asked`;
+    /// the answer is replied over the live serve session, which unblocks the
+    /// still-open `session.prompt` POST. So this delivers the reply inline and
+    /// returns [`ResumeAction::Handled`] — never the new-message path.
+    async fn resume_from_prompt(
+        &self,
+        ctx: &ResumeCtx,
+        prompt: &WirePrompt,
+        answer: &PromptAnswer,
+    ) -> Result<ResumeAction> {
+        reply_inline(ctx, prompt, answer).await?;
+        Ok(ResumeAction::Handled)
     }
 
     fn config_home(&self) -> Option<PathBuf> {
@@ -181,6 +233,167 @@ fn to_wire_part(part: &Value) -> Option<WirePart> {
     }
 }
 
+/// opencode `permission.asked` payload → a `permission` card. The permission
+/// request id rides on `native_id` so the reply can address
+/// `POST /session/{sid}/permissions/{id}`. `permission` is opencode's tool
+/// group (e.g. `bash`, `edit`); the metadata carries the concrete call detail.
+fn permission_card(props: &Value) -> Option<WirePrompt> {
+    let id = props.get("id").and_then(Value::as_str)?.to_string();
+    Some(WirePrompt {
+        kind: "permission".into(),
+        tool: props
+            .get("permission")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        // The event's `metadata` is the closest thing to a tool input summary
+        // the UI can render (command / file / etc., shape varies by tool).
+        tool_input: props.get("metadata").filter(|m| !m.is_null()).cloned(),
+        native_id: Some(id),
+        ..Default::default()
+    })
+}
+
+/// opencode `question.asked` payload → a `question` card. opencode's
+/// `QuestionInfo` (`{question, header, options:[{label,description}], multiple}`)
+/// is the same shape as Claude's AskUserQuestion, so it maps 1:1. Only the first
+/// question is surfaced (the composer answers one at a time); its request id
+/// rides on `native_id` for `POST /question/{id}/reply`.
+fn question_card(props: &Value) -> Option<WirePrompt> {
+    let id = props.get("id").and_then(Value::as_str)?.to_string();
+    let q = props
+        .get("questions")
+        .and_then(Value::as_array)
+        .and_then(|qs| qs.first())?;
+    let options = q
+        .get("options")
+        .and_then(Value::as_array)
+        .map(|opts| {
+            opts.iter()
+                .filter_map(|o| {
+                    Some(WireQuestionOption {
+                        label: o.get("label").and_then(Value::as_str)?.to_string(),
+                        description: o
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(WirePrompt {
+        kind: "question".into(),
+        question: q
+            .get("question")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        header: q.get("header").and_then(Value::as_str).map(str::to_string),
+        options,
+        multi_select: q.get("multiple").and_then(Value::as_bool).unwrap_or(false),
+        native_id: Some(id),
+        ..Default::default()
+    })
+}
+
+/// POST a permission decision to the live serve session (v1 API). `response` is
+/// `once` | `always` | `reject`.
+async fn post_permission(
+    http: &reqwest::Client,
+    base: &str,
+    native_session: &str,
+    permission_id: &str,
+    response: &str,
+) -> Result<()> {
+    http.post(format!(
+        "{base}/session/{native_session}/permissions/{permission_id}"
+    ))
+    .json(&json!({ "response": response }))
+    .send()
+    .await?
+    .error_for_status()?;
+    Ok(())
+}
+
+/// Deliver an answered card's reply to the live serve session, unblocking the
+/// paused `session.prompt` POST. Permission → `{response: once|always|reject}`;
+/// question → `{answers: [[label,...]]}` (or reject). The reply target is the
+/// card's `native_id` (the opencode permission/question request id).
+async fn reply_inline(ctx: &ResumeCtx, prompt: &WirePrompt, answer: &PromptAnswer) -> Result<()> {
+    let request_id = prompt
+        .native_id
+        .as_deref()
+        .ok_or_else(|| anyhow!("opencode prompt has no reply id"))?;
+    // The reply only lands if the turn is still paused waiting for it. If the
+    // turn already ended (errored / interrupted), serve may still accept the
+    // POST but no one is consuming the resumed stream, so the reply would be
+    // lost and the card would falsely mark resolved. Reject it instead — the
+    // card stays actionable and the user sees the turn is no longer live.
+    if !ctx.is_busy().await {
+        return Err(anyhow!(
+            "this turn is no longer running — its prompt can't be answered"
+        ));
+    }
+    // Reach the live serve child through the shared host, exactly as
+    // `ChatHost::interrupt` does — the reply goes to the same loopback serve
+    // whose `session.prompt` POST is paused on this prompt.
+    let port = ctx
+        .host
+        .opencode
+        .proxy_port()
+        .await
+        .ok_or_else(|| anyhow!("opencode serve is not running — cannot deliver the reply"))?;
+    let base = format!("http://127.0.0.1:{port}");
+    let http = ctx.http();
+
+    match prompt.kind.as_str() {
+        "permission" => {
+            // approve → "always" (so the same tool won't re-prompt this turn);
+            // reject closes it. The reply is session-scoped in opencode's v1 API.
+            let native_session = ctx.native_session_id.as_deref().ok_or_else(|| {
+                anyhow!("opencode session has no native id — cannot deliver the reply")
+            })?;
+            let response = if answer.approve { "always" } else { "reject" };
+            post_permission(http, &base, native_session, request_id, response).await?;
+        }
+        "question" => {
+            if answer.answers.is_empty() {
+                // No selection: reject the question rather than reply empty, so
+                // opencode surfaces the model's fallback path.
+                http.post(format!("{base}/question/{request_id}/reject"))
+                    .json(&json!({}))
+                    .send()
+                    .await?
+                    .error_for_status()?;
+            } else {
+                // opencode takes an array of answers, one per question; we only
+                // surface the first question, so send a single answer array.
+                http.post(format!("{base}/question/{request_id}/reply"))
+                    .json(&json!({ "answers": [&answer.answers] }))
+                    .send()
+                    .await?
+                    .error_for_status()?;
+            }
+        }
+        other => {
+            return Err(anyhow!(
+                "opencode cannot reply to a `{other}` prompt inline"
+            ))
+        }
+    }
+    Ok(())
+}
+
+/// Session mode → opencode built-in agent name. `Plan` runs the read-only
+/// `plan` agent (denies edits, allows inspection); everything else runs the
+/// default `build` agent. The permission-reply behavior (surface vs auto-reply)
+/// is a separate axis handled in `handle_prompt_event`.
+fn opencode_agent(mode: Option<PermissionMode>) -> &'static str {
+    match mode {
+        Some(PermissionMode::Plan) => "plan",
+        _ => "build",
+    }
+}
+
 async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     // Lazy bring-up: spawns serve for this project or reuses the live child.
     let status = ctx.host.opencode.ensure(&ctx.project).await?;
@@ -221,7 +434,14 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
         .error_for_status()?;
     let mut stream = events.bytes_stream();
 
-    let mut body = json!({ "parts": [{ "type": "text", "text": ctx.text }] });
+    let mut body = json!({
+        "parts": [{ "type": "text", "text": ctx.text }],
+        // Select opencode's built-in agent from the session's mode: `plan` (the
+        // read-only planning agent — allows inspection, denies edits) vs `build`
+        // (the default). The message endpoint takes `agent` directly (verified),
+        // so no separate switch call is needed.
+        "agent": opencode_agent(ctx.permission_mode),
+    });
     if let Some(model) = &ctx.model {
         if let Some((provider, model_id)) = model.split_once('/') {
             body["model"] = json!({ "providerID": provider, "modelID": model_id });
@@ -252,7 +472,12 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                     buf.drain(..=pos);
                     let Some(data) = line.strip_prefix("data: ") else { continue };
                     let Ok(event) = serde_json::from_str::<Value>(data) else { continue };
-                    handle_event(ctx, &native_id, &event, &mut assistant_msgs);
+                    // Interactive prompts (permission/question) pause the turn and
+                    // are handled async (emit a card, or auto-reply per mode); all
+                    // other events are message/part updates handled synchronously.
+                    if !handle_prompt_event(ctx, &native_id, &base, &event).await? {
+                        handle_event(ctx, &native_id, &event, &mut assistant_msgs);
+                    }
                 }
             }
             resp = &mut send => {
@@ -334,5 +559,165 @@ fn handle_event(
             }
         }
         _ => {}
+    }
+}
+
+/// Surface a prompt card and flush it so it renders immediately (before the
+/// turn resumes). The card's `native_id` (the reply target) is also its
+/// `WirePart` id, so the user's answer round-trips back to the right request.
+fn surface_card(ctx: &mut TurnCtx, card: WirePrompt) {
+    // `native_id` is always set by permission_card/question_card (opencode
+    // requires the request id); the fallback id only guards a malformed payload.
+    let part_id = card
+        .native_id
+        .clone()
+        .unwrap_or_else(|| format!("prompt-{}", ctx.assistant.parts.len()));
+    ctx.upsert_part(WirePart::prompt(part_id, card));
+    let _ = ctx.flush();
+}
+
+/// Handle an interactive-prompt SSE event (`permission.asked` / `question.asked`)
+/// for this session. Returns `true` if it consumed the event (so the caller
+/// skips `handle_event`), `false` otherwise.
+///
+/// Permissions honor the session's mode: only `Bypass` auto-replies `always`
+/// over the live session (no blocking card); `Auto`/`Plan` (and anything else)
+/// surface a card and pause — opencode's default is already permissive, so the
+/// rare card it raises is worth showing. Questions always surface — there's no
+/// sensible auto-answer. A single flaky auto-reply must not lose the whole turn,
+/// so on POST failure we fall back to surfacing the card rather than erroring.
+async fn handle_prompt_event(
+    ctx: &mut TurnCtx,
+    native_id: &str,
+    base: &str,
+    event: &Value,
+) -> Result<bool> {
+    let props = event.get("properties").unwrap_or(&Value::Null);
+    // Only this session's prompts (the /event stream is global across sessions).
+    if props.get("sessionID").and_then(Value::as_str) != Some(native_id) {
+        // Not a match — but if it *is* a prompt event for another session, still
+        // report "not consumed" so handle_event ignores it too (it will, by id).
+        return Ok(false);
+    }
+    match event.get("type").and_then(Value::as_str) {
+        Some("permission.asked") => {
+            let Some(card) = permission_card(props) else {
+                // No request id to reply to — surface it as an error so the turn
+                // isn't silently wedged waiting on an answer no one can give.
+                ctx.push_error("opencode asked for a permission we couldn't parse".into());
+                let _ = ctx.flush();
+                return Ok(true);
+            };
+            // Only Bypass auto-approves. Auto is opencode's permissive default —
+            // the rare card it does raise (out-of-workspace write, `.env` read)
+            // is worth surfacing; Plan surfaces them too.
+            let auto_approve = matches!(ctx.permission_mode, Some(PermissionMode::Bypass));
+            match (auto_approve, card.native_id.as_deref()) {
+                (true, Some(id)) => {
+                    // Reply without surfacing a card — keep the turn flowing. If
+                    // the reply POST fails, don't kill the turn: fall back to a
+                    // card so the user can decide.
+                    if let Err(err) =
+                        post_permission(ctx.http(), base, native_id, id, "always").await
+                    {
+                        eprintln!("orx up: opencode auto-approve failed, surfacing card: {err}");
+                        surface_card(ctx, card);
+                    }
+                }
+                _ => surface_card(ctx, card),
+            }
+            Ok(true)
+        }
+        Some("question.asked") => {
+            match question_card(props) {
+                Some(card) => surface_card(ctx, card),
+                None => {
+                    ctx.push_error("opencode asked a question we couldn't parse".into());
+                    let _ = ctx.flush();
+                }
+            }
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_mode_uses_the_plan_agent_others_build() {
+        assert_eq!(opencode_agent(Some(PermissionMode::Plan)), "plan");
+        assert_eq!(opencode_agent(Some(PermissionMode::Ask)), "build");
+        assert_eq!(opencode_agent(Some(PermissionMode::Auto)), "build");
+        assert_eq!(opencode_agent(Some(PermissionMode::Bypass)), "build");
+        // No mode set → the default build agent, never plan.
+        assert_eq!(opencode_agent(None), "build");
+    }
+
+    // `properties` payloads shaped exactly like the live `permission.asked` /
+    // `question.asked` events (verified against opencode serve). These pin the
+    // field names the parsers read — the kind that silently yields a `None` card
+    // at runtime if opencode ever renames one.
+    #[test]
+    fn permission_card_reads_id_permission_metadata() {
+        let props = json!({
+            "id": "per_abc123",
+            "sessionID": "ses_x",
+            "permission": "bash",
+            "patterns": [],
+            "metadata": { "command": "orx runs r1" },
+            "always": [],
+            "tool": { "messageID": "m1", "callID": "c1" }
+        });
+        let card = permission_card(&props).expect("should parse");
+        assert_eq!(card.kind, "permission");
+        assert_eq!(card.tool.as_deref(), Some("bash"));
+        assert_eq!(card.native_id.as_deref(), Some("per_abc123")); // the reply target
+        assert_eq!(
+            card.tool_input
+                .as_ref()
+                .and_then(|m| m.get("command"))
+                .and_then(|c| c.as_str()),
+            Some("orx runs r1")
+        );
+        // No id → no reply target → no card.
+        assert!(permission_card(&json!({ "permission": "bash" })).is_none());
+    }
+
+    #[test]
+    fn question_card_reads_first_question_and_opencode_multiple_field() {
+        let props = json!({
+            "id": "que_xyz",
+            "sessionID": "ses_x",
+            "questions": [{
+                "question": "Which backend?",
+                "header": "Backend",
+                "options": [
+                    { "label": "modal", "description": "per-second" },
+                    { "label": "k8s", "description": "your cluster" }
+                ],
+                "multiple": true
+            }]
+        });
+        let card = question_card(&props).expect("should parse");
+        assert_eq!(card.kind, "question");
+        assert_eq!(card.native_id.as_deref(), Some("que_xyz"));
+        assert_eq!(card.question.as_deref(), Some("Which backend?"));
+        assert_eq!(card.header.as_deref(), Some("Backend"));
+        assert_eq!(card.options.len(), 2);
+        assert_eq!(card.options[0].label, "modal");
+        assert_eq!(card.options[0].description.as_deref(), Some("per-second"));
+        // opencode's field is `multiple`, NOT Claude's `multiSelect`.
+        assert!(card.multi_select);
+        // A `multiSelect` (Claude's name) is NOT read → defaults to false.
+        let claude_shaped = json!({
+            "id": "que_1",
+            "questions": [{ "question": "q", "header": "h", "options": [], "multiSelect": true }]
+        });
+        assert!(!question_card(&claude_shaped).unwrap().multi_select);
+        // No questions → no card.
+        assert!(question_card(&json!({ "id": "que_1" })).is_none());
     }
 }

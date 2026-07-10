@@ -153,6 +153,38 @@ impl Store {
         ] {
             let _ = conn.execute(ddl, []);
         }
+        // Data migration: the chat_sessions.permission_mode wire ids were
+        // neutralized off Claude Code's `--permission-mode` spelling (`default`,
+        // `acceptEdits`, `bypassPermissions`) onto harness-agnostic ids (`ask`,
+        // `accept-edits`, `bypass`) once Codex's sandbox policies stopped mapping
+        // onto Claude's strings. Rewrite any rows written under the old scheme.
+        // `plan`/`auto` were already harness-agnostic and need no rewrite.
+        // Idempotent: after the first pass no old spellings remain to match.
+        for (old, new) in [
+            ("default", "ask"),
+            ("acceptEdits", "accept-edits"),
+            ("bypassPermissions", "bypass"),
+        ] {
+            let _ = conn.execute(
+                "UPDATE chat_sessions SET permission_mode = ?2 WHERE permission_mode = ?1",
+                params![old, new],
+            );
+        }
+        // Retired permission modes → `auto`, per harness:
+        //  * Claude Code / Codex offer only `auto`/`bypass` now — `ask`/
+        //    `accept-edits` were never grantable in their headless CLIs, and
+        //    `plan` (read-only) fought the orx workflow. All three dropped.
+        //  * OpenCode dropped its hollow `ask` (its default is permissive, so a
+        //    dedicated ask mode almost never fired) — but KEEPS `plan` (its real
+        //    plan agent), so that one is left untouched.
+        let _ = conn.execute(
+            "UPDATE chat_sessions SET permission_mode = 'auto'
+             WHERE (harness IN ('claude-code', 'codex')
+                    AND permission_mode IN ('ask', 'accept-edits', 'plan'))
+                OR (harness = 'opencode'
+                    AND permission_mode IN ('ask', 'accept-edits'))",
+            [],
+        );
         Ok(Self { conn })
     }
 
@@ -546,6 +578,28 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// A single chat message by id (used to reconcile a message's persisted
+    /// state against an in-memory copy mid-turn). `None` if it doesn't exist.
+    pub fn get_chat_message(&self, id: &str) -> Result<Option<StoredChatMessage>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, session_id, role, parts_json, created_at FROM chat_messages
+                 WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(StoredChatMessage {
+                        id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        role: row.get(2)?,
+                        parts_json: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()?)
     }
 }
 
