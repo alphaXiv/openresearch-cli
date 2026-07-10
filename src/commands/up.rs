@@ -112,11 +112,11 @@ fn router(state: AppState) -> Router {
         .route("/api/projects/{id}/working-tree", get(project_working_tree))
         .route("/api/projects/{id}/file", get(project_file))
         .route(
-            "/api/projects/{id}/artifacts",
-            get(list_artifacts).delete(delete_artifact),
+            "/api/projects/{id}/files",
+            get(list_files).delete(delete_file),
         )
-        .route("/api/projects/{id}/artifacts/report", get(artifact_report))
-        .route("/api/projects/{id}/artifacts/file", get(artifact_file))
+        .route("/api/projects/{id}/files/report", get(file_report))
+        .route("/api/projects/{id}/files/file", get(serve_file))
         .route("/api/events", get(events))
         .route("/api/settings/hf", get(hf_settings).post(set_hf_token))
         .route(
@@ -794,68 +794,75 @@ async fn project_file(Path(id): Path<String>, Query(q): Query<ProjectFileQuery>)
     .await
 }
 
-// --- artifacts ----------------------------------------------------------------
+// --- files ----------------------------------------------------------------
 
-/// Listing of the project's artifacts dir — the filesystem is the source of
+/// Listing of the project's files dir — the filesystem is the source of
 /// truth; this scans it fresh on every call (and creates it if missing).
-async fn list_artifacts(Path(id): Path<String>) -> ApiResult {
+/// Top-level folders named for an experiment slug carry that experiment
+/// (title, branch, latest run status) so the tab can group by experiment.
+async fn list_files(Path(id): Path<String>) -> ApiResult {
     blocking_api(move || {
         let store = Store::open()?;
         let project = store
             .get_local_project(&id)?
             .ok_or_else(|| not_found("project"))?;
-        let listing = local::artifacts::list(&project)?;
+        let experiments = store.list_experiments_by_project(&id)?;
+        // Newest-first run list → first status seen per experiment is latest.
+        let mut latest: HashMap<String, String> = HashMap::new();
+        for run in store.list_runs_by_project(&id)? {
+            latest.entry(run.experiment_id).or_insert(run.status);
+        }
+        let listing = local::files::list(&project, &experiments, &latest)?;
         Ok(Json(json!(listing)))
     })
     .await
 }
 
 #[derive(Deserialize)]
-struct ArtifactPathQuery {
+struct FilePathQuery {
     path: String,
 }
 
 /// A report folder's markdown body (`<name>/report.md`).
-async fn artifact_report(Path(id): Path<String>, Query(q): Query<ArtifactPathQuery>) -> ApiResult {
+async fn file_report(Path(id): Path<String>, Query(q): Query<FilePathQuery>) -> ApiResult {
     blocking_api(move || {
         let store = Store::open()?;
         let project = store
             .get_local_project(&id)?
             .ok_or_else(|| not_found("project"))?;
-        let markdown = local::artifacts::read_report_markdown(&project, &q.path)
+        let markdown = local::files::read_report_markdown(&project, &q.path)
             .map_err(|_| not_found("report"))?;
         Ok(Json(json!({ "markdown": markdown })))
     })
     .await
 }
 
-/// Delete a file or report folder in the artifacts dir, by relative path.
-async fn delete_artifact(Path(id): Path<String>, Query(q): Query<ArtifactPathQuery>) -> ApiResult {
+/// Delete a file or report folder in the files dir, by relative path.
+async fn delete_file(Path(id): Path<String>, Query(q): Query<FilePathQuery>) -> ApiResult {
     blocking_api(move || {
         let store = Store::open()?;
         let project = store
             .get_local_project(&id)?
             .ok_or_else(|| not_found("project"))?;
-        local::artifacts::delete_entry(&project, &q.path)?;
+        local::files::delete_entry(&project, &q.path)?;
         Ok(Json(json!({ "ok": true })))
     })
     .await
 }
 
-/// Raw artifact file bytes, by artifacts-dir-relative path. `no-cache`: the
-/// same path can be rewritten in place on disk.
-async fn artifact_file(
+/// Raw file bytes, by files-dir-relative path. `no-cache`: the same path can
+/// be rewritten in place on disk.
+async fn serve_file(
     Path(id): Path<String>,
-    Query(q): Query<ArtifactPathQuery>,
+    Query(q): Query<FilePathQuery>,
 ) -> std::result::Result<Response, ApiError> {
     tokio::task::spawn_blocking(move || {
         let store = Store::open()?;
         let project = store
             .get_local_project(&id)?
             .ok_or_else(|| not_found("project"))?;
-        let bytes = local::artifacts::read_file(&project, &q.path)
-            .map_err(|_| not_found("artifact file"))?;
-        let content_type = local::artifacts::content_type_for_path(&q.path);
+        let bytes = local::files::read_file(&project, &q.path).map_err(|_| not_found("file"))?;
+        let content_type = local::files::content_type_for_path(&q.path);
         Ok((
             [
                 (header::CONTENT_TYPE, content_type),
@@ -866,7 +873,7 @@ async fn artifact_file(
             .into_response())
     })
     .await
-    .map_err(|e| ApiError::from(anyhow!("artifact task failed: {e}")))?
+    .map_err(|e| ApiError::from(anyhow!("file task failed: {e}")))?
 }
 
 // --- HF token settings ------------------------------------------------------
@@ -1678,7 +1685,7 @@ async fn events(
 struct EventCursor {
     projects: HashMap<String, i64>,
     experiments: HashMap<String, i64>,
-    artifacts: HashMap<String, u64>,
+    files: HashMap<String, u64>,
     runs: HashMap<String, (String, i64)>,
     log_offsets: HashMap<String, u64>,
 }
@@ -1737,13 +1744,13 @@ fn collect_events(cursor: &mut EventCursor, first: bool) -> Result<Vec<Event>> {
             ));
         }
         push_experiment_events(&store, &project.id, cursor, &mut out)?;
-        // Artifacts appear live — anything written into the artifacts dir (by
-        // the agent or the user) pings the UI to refetch the listing.
-        let fp = local::artifacts::fingerprint(&project);
-        if cursor.artifacts.get(&project.id) != Some(&fp) {
-            cursor.artifacts.insert(project.id.clone(), fp);
+        // Files appear live — anything written into the files dir (by the
+        // agent or the user) pings the UI to refetch the listing.
+        let fp = local::files::fingerprint(&project);
+        if cursor.files.get(&project.id) != Some(&fp) {
+            cursor.files.insert(project.id.clone(), fp);
             out.push(json_event(
-                "artifacts.updated",
+                "files.updated",
                 &json!({ "projectId": project.id }),
             ));
         }
