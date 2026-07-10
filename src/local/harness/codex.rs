@@ -29,15 +29,21 @@ use crate::error::{anyhow, Result};
 use crate::local::chat::{prepare_env, TurnCtx, WirePart, WireToolState};
 use crate::local::opencode::ensure_playbook;
 
-// ChatGPT-account codex rejects the -codex/-fast variants; these two are
-// what `codex exec -m` accepts (verified against codex-cli 0.142).
-const CODEX_MODELS: [&str; 2] = ["gpt-5.5", "gpt-5.4"];
+// The 5.6 variants (Sol = frontier, Terra = balanced, Luna = fast) plus 5.5;
+// ChatGPT-account codex rejects bare `gpt-5.6`. Verified against codex-cli
+// 0.144 via `codex exec -m` (5.6 needs >= 0.143; older CLIs get a 400).
+const CODEX_MODELS: [&str; 4] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"];
 
 /// Codex's own reasoning vocabulary (id == the `model_reasoning_effort` config
-/// value). Deliberately NOT Claude's `low/medium/high/xhigh/max` — reasoning is
-/// per-harness (see `options.rs`). Verified against codex-cli 0.143.
-const CODEX_REASONING_LEVELS: [(&str, &str); 3] =
-    [("low", "Low"), ("medium", "Medium"), ("high", "High")];
+/// value) — the common set across CODEX_MODELS (Sol/Terra also take max/ultra;
+/// Luna and 5.5 don't). Reasoning is per-harness (see `options.rs`). Verified
+/// against codex-cli 0.144.
+const CODEX_REASONING_LEVELS: [(&str, &str); 4] = [
+    ("low", "Low"),
+    ("medium", "Medium"),
+    ("high", "High"),
+    ("xhigh", "XHigh"),
+];
 
 pub struct Codex;
 
@@ -448,9 +454,10 @@ mod tests {
     fn reasoning_accepts_only_codex_ids() {
         assert_eq!(codex_reasoning(Some("low")), Some("low"));
         assert_eq!(codex_reasoning(Some("high")), Some("high"));
-        // Claude-only tiers and junk are dropped (the flag is omitted → CLI
-        // default), never forwarded as an invalid `model_reasoning_effort`.
-        assert_eq!(codex_reasoning(Some("xhigh")), None);
+        assert_eq!(codex_reasoning(Some("xhigh")), Some("xhigh"));
+        // Tiers outside the common set and junk are dropped (the flag is
+        // omitted → CLI default), never forwarded as an invalid
+        // `model_reasoning_effort`.
         assert_eq!(codex_reasoning(Some("max")), None);
         assert_eq!(codex_reasoning(None), None);
     }

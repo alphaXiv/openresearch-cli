@@ -314,7 +314,7 @@ mod tests {
         let codex = options_for("codex");
         assert_eq!(mode_ids(&codex), ["auto", "bypass"]);
         assert_eq!(codex.default_permission_mode, Some("auto"));
-        assert_eq!(reasoning_ids(&codex), ["low", "medium", "high"]);
+        assert_eq!(reasoning_ids(&codex), ["low", "medium", "high", "xhigh"]);
 
         // OpenCode: Plan (the native plan agent) + Auto (its permissive default)
         // + Bypass. No `ask` — opencode's default rarely prompts, so a dedicated
