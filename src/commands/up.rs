@@ -319,7 +319,6 @@ async fn create_project(Json(req): Json<CreateProjectReq>) -> ApiResult {
     let clone = move || {
         let store = Store::open()?;
         local::projects::create_project(&store, &name, &owner, &repo, baseline_branch, run_command)
-            .map(|(project, _baseline)| project)
     };
     let mut result = tokio::task::spawn_blocking(clone.clone())
         .await
@@ -494,7 +493,8 @@ async fn create_experiment(
                     .get_local_experiment(pid)?
                     .ok_or_else(|| not_found("parent experiment"))?,
             ),
-            // No parent -> the project root; never a second root.
+            // No parent -> the project root when one exists; on an empty
+            // project this stays None and the new row becomes the baseline.
             None => local::experiments::project_root(&store, &project.id)?,
         };
         local::experiments::create_experiment(

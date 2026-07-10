@@ -244,9 +244,10 @@ the paths listed at the end of that output.
 
 ## 2. Carry out the user's research goal
 
-Follow the auto-research loop from the guide: branch experiments off the baseline,
-launch runs within the user's GPU budget, wait on completions, and analyze each
-result before deciding to refill, promote, or stop.
+Follow the auto-research loop from the guide: create the baseline experiment
+first when the project is empty, branch variants off it, launch runs within the
+user's GPU budget, wait on completions, and analyze each result before deciding
+to refill, promote, or stop.
 
 ## Prerequisite
 
@@ -265,9 +266,9 @@ auto-research loop. It changes often, so always read it fresh rather than relyin
 on memory or a cached copy.
 
 Then carry out the user's research goal, following the auto-research loop from that
-guide: branch experiments off the baseline, launch runs within the GPU budget,
-wait on completions, and analyze each result before deciding to refill, promote,
-or stop.
+guide: create the baseline experiment first when the project is empty, branch
+variants off it, launch runs within the GPU budget, wait on completions, and
+analyze each result before deciding to refill, promote, or stop.
 
 If any command reports `Not logged in`, ask the user to run `orx login` first.
 
