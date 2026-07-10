@@ -1,13 +1,17 @@
-//! Local project creation — clone the repo, insert the project row and its
-//! baseline root experiment. Used by the `orx up` HTTP API (`POST /api/projects`).
+//! Local project creation — clone the repo and insert the project row. Used by
+//! the `orx up` HTTP API (`POST /api/projects`).
+//!
+//! The project starts with an empty experiment tree. The first experiment
+//! created without a parent (via `orx create-experiment` or the HTTP API)
+//! becomes the baseline root — the control every variant is measured against.
 
 use std::collections::HashSet;
 
 use crate::error::Result;
 use crate::store::{now_ms, Store};
 
-use super::model::{LocalExperiment, LocalProject};
-use super::{experiments, git, slugify};
+use super::model::LocalProject;
+use super::{git, slugify};
 
 fn unique_project_slug(store: &Store, base: &str) -> Result<String> {
     let taken: HashSet<String> = store
@@ -28,8 +32,9 @@ fn unique_project_slug(store: &Store, base: &str) -> Result<String> {
     }
 }
 
-/// Clone the repo and create the project plus its root "baseline" experiment
-/// (parent NULL, branch = baseline branch, command = the project default).
+/// Clone the repo and create the project row. No experiments are created —
+/// the tree starts empty and the baseline is created lazily (first no-parent
+/// `create_experiment`).
 pub fn create_project(
     store: &Store,
     name: &str,
@@ -37,7 +42,7 @@ pub fn create_project(
     github_repo: &str,
     baseline_branch: Option<String>,
     run_command: Option<String>,
-) -> Result<(LocalProject, LocalExperiment)> {
+) -> Result<LocalProject> {
     let baseline_branch = baseline_branch
         .filter(|b| !b.trim().is_empty())
         .unwrap_or_else(|| "main".to_string());
@@ -57,19 +62,6 @@ pub fn create_project(
         created_at: now,
         updated_at: now,
     };
-    // One transaction: a project without its baseline root must never persist
-    // (a failed baseline insert would orphan the project and burn its slug).
-    let tx = store.begin()?;
     store.create_local_project(&project)?;
-    let baseline = experiments::create_experiment(
-        store,
-        &project,
-        None,
-        Some("baseline"),
-        Some("Baseline".to_string()),
-        None,
-        project.run_command.clone(),
-    )?;
-    tx.commit()?;
-    Ok((project, baseline))
+    Ok(project)
 }

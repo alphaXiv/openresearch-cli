@@ -319,7 +319,6 @@ async fn create_project(Json(req): Json<CreateProjectReq>) -> ApiResult {
     let clone = move || {
         let store = Store::open()?;
         local::projects::create_project(&store, &name, &owner, &repo, baseline_branch, run_command)
-            .map(|(project, _baseline)| project)
     };
     let mut result = tokio::task::spawn_blocking(clone.clone())
         .await
@@ -475,6 +474,9 @@ async fn list_instances() -> ApiResult {
 #[serde(rename_all = "camelCase")]
 struct CreateExperimentReq {
     parent_experiment_id: Option<String>,
+    /// Force a new baseline root even when the project already has one.
+    #[serde(default)]
+    baseline: bool,
     slug: Option<String>,
     title: Option<String>,
     description: Option<String>,
@@ -497,7 +499,9 @@ async fn create_experiment(
                     .get_local_experiment(pid)?
                     .ok_or_else(|| not_found("parent experiment"))?,
             ),
-            // No parent -> the project root; never a second root.
+            // `baseline` forces a new root; otherwise no parent -> the oldest
+            // project root when one exists (empty project: a new baseline).
+            None if req.baseline => None,
             None => local::experiments::project_root(&store, &project.id)?,
         };
         local::experiments::create_experiment(

@@ -32,7 +32,9 @@ fn unique_slug(store: &Store, project_id: &str, base: &str) -> Result<String> {
 }
 
 /// The project's root experiment (parent NULL) — oldest first when several
-/// exist. CLI/API creates without a parent attach here instead of adding roots.
+/// exist. `None` on a fresh project: the tree starts empty and the first
+/// no-parent create becomes the baseline. CLI/API creates without a parent
+/// attach here once a root exists (pass `--baseline` to add another root).
 pub fn project_root(store: &Store, project_id: &str) -> Result<Option<LocalExperiment>> {
     // list is ordered created_at ASC, so `find` picks the oldest root.
     Ok(store
@@ -67,8 +69,8 @@ pub fn create_experiment(
     };
     let slug = unique_slug(store, &project.id, &base)?;
 
-    // Git only on the parented path: a baseline row needs no branch, and
-    // create_project calls this inside a store transaction (keep it network-free).
+    // Git only on the parented path: a baseline row needs no branch — it rides
+    // the project's baseline branch, which was validated at clone time.
     let branch_name = match parent {
         Some(p) => {
             let repo = git::ensure_clone(
