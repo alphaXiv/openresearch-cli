@@ -767,9 +767,8 @@ export function ChatPanel({
 
   // A settings section replaces the chat entirely (no chat header, no
   // composer, no right panel) — only the rail-reopen affordance survives.
-  // settings-pane lifts the chat 760px cap so the scroll container (and its
-  // scrollbar) spans the pane; the readable-width cap moves inside, onto
-  // .settings-view.
+  // The pane spans the leftover width; .settings-view re-applies the readable
+  // column from inside the scroller, same as .chat-thread-inner does for chat.
   if (mainView !== "chat") {
     return (
       <>

@@ -1364,8 +1364,14 @@ fn list_ssh_hosts() -> Vec<Value> {
 async fn ssh_settings() -> ApiResult {
     tokio::task::spawn_blocking(|| {
         let mut hosts = list_ssh_hosts();
-        let tests: HashMap<String, SshHostTest> = Store::open()?
-            .list_ssh_host_tests()?
+        // Best-effort, like the preflight write: a store hiccup shouldn't take
+        // out the host listing — hosts just render as never tested.
+        let tests: HashMap<String, SshHostTest> = Store::open()
+            .and_then(|s| s.list_ssh_host_tests())
+            .unwrap_or_else(|e| {
+                eprintln!("orx up: could not load ssh test history: {e}");
+                Vec::new()
+            })
             .into_iter()
             .map(|t| (t.host.clone(), t))
             .collect();
@@ -1377,12 +1383,7 @@ async fn ssh_settings() -> ApiResult {
             else {
                 continue;
             };
-            h["lastTest"] = json!({
-                "reachable": t.reachable,
-                "gitFound": t.git_found,
-                "error": t.error,
-                "testedAt": t.tested_at,
-            });
+            h["lastTest"] = json!(t);
         }
         Ok(Json(json!({ "hosts": hosts })))
     })
@@ -1420,12 +1421,7 @@ async fn ssh_preflight(Json(req): Json<SshPreflightReq>) -> ApiResult {
     {
         eprintln!("orx up: could not record ssh test for {}: {e}", test.host);
     }
-    Ok(Json(json!({
-        "reachable": test.reachable,
-        "gitFound": test.git_found,
-        "error": test.error,
-        "testedAt": test.tested_at,
-    })))
+    Ok(Json(json!(test)))
 }
 
 // --- harnesses ---------------------------------------------------------------

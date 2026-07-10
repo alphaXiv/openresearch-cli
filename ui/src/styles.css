@@ -1,6 +1,6 @@
 /* OpenResearch design system, mirrored from openresearch.sh www/src/styles.css.
-   Light theme by default, dark via prefers-color-scheme. Neo-brutalist idiom:
-   sharp corners, 2px text-colored borders, hard offset shadows. */
+   Light theme by default, dark via prefers-color-scheme. Quiet idiom:
+   hairline borders, soft radii, flat surfaces that tint on hover. */
 
 :root {
   --base: #ffffff;
@@ -40,6 +40,9 @@
 
   --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  /* Readable column cap shared by the chat header/thread/composer (which must
+     stay in lockstep or the chat column misaligns) and the settings/doc views. */
+  --readable-col: 760px;
 
   /* Legacy aliases (pre-restyle class/inline usage). New code uses the tokens above. */
   --bg: var(--base);
@@ -267,7 +270,7 @@ textarea::placeholder {
   background: var(--overlay, rgba(0, 0, 0, 0.05));
 }
 .project-card .name {
-  font-weight: 700;
+  font-weight: 600;
   font-size: 14px;
 }
 .project-card .repo {
@@ -366,26 +369,22 @@ textarea::placeholder {
   border-color: var(--primary);
   color: var(--base);
 }
-.btn.primary:hover:not(:disabled),
-.btn.primary:active:not(:disabled) {
+.btn.primary:hover:not(:disabled) {
   background: color-mix(in oklab, var(--primary) 88%, var(--text));
   border-color: color-mix(in oklab, var(--primary) 88%, var(--text));
 }
-.btn.success {
-  background: var(--accent-green);
-  border-color: var(--accent-green);
-  color: #ffffff;
-}
-.btn.success:hover:not(:disabled),
-.btn.success:active:not(:disabled) {
-  background: color-mix(in oklab, var(--accent-green) 88%, var(--text));
-  border-color: color-mix(in oklab, var(--accent-green) 88%, var(--text));
+.btn.primary:active:not(:disabled) {
+  background: color-mix(in oklab, var(--primary) 80%, var(--text));
+  border-color: color-mix(in oklab, var(--primary) 80%, var(--text));
 }
 .btn.danger {
   color: var(--accent-red);
 }
 .btn.danger:hover:not(:disabled) {
   background: color-mix(in oklab, var(--accent-red) 8%, transparent);
+}
+.btn.danger:active:not(:disabled) {
+  background: color-mix(in oklab, var(--accent-red) 14%, transparent);
 }
 .btn.ghost {
   border-color: transparent;
@@ -714,7 +713,7 @@ textarea::placeholder {
   position: relative;
   z-index: 4;
   width: 100%;
-  max-width: 760px;
+  max-width: var(--readable-col);
   margin: 0 auto;
 }
 .chat-header::after {
@@ -795,7 +794,7 @@ textarea::placeholder {
   overflow-y: auto;
 }
 .chat-thread-inner {
-  max-width: 760px;
+  max-width: var(--readable-col);
   margin: 0 auto;
   /* Bottom padding clears the composer's 24px fade so the last message stays
      fully legible when scrolled to the very bottom. */
@@ -1033,7 +1032,7 @@ textarea::placeholder {
   z-index: 4;
   background: var(--base);
   width: 100%;
-  max-width: 760px;
+  max-width: var(--readable-col);
   margin: 0 auto;
 }
 .composer::before {
@@ -2614,7 +2613,7 @@ textarea::placeholder {
   overflow-y: auto;
 }
 .settings-view {
-  max-width: 760px;
+  max-width: var(--readable-col);
   margin: 0 auto;
   padding: 24px 32px 60px;
 }
@@ -2792,21 +2791,23 @@ textarea::placeholder {
 }
 
 /* ssh hosts table — fixed layout with anywhere-wrapping so long aliases and
-   key paths can never push the action column outside the card */
+   key paths can never push the action column outside the card. Widths track
+   the column order in SshSection: host, address, identity (flex), status,
+   test button. */
 .ssh-table {
   table-layout: fixed;
 }
 .ssh-table th:nth-child(1) {
-  width: 20%;
+  width: 20%; /* host */
 }
 .ssh-table th:nth-child(2) {
-  width: 26%;
+  width: 26%; /* address */
 }
 .ssh-table th:nth-child(4) {
-  width: 108px;
+  width: 108px; /* status */
 }
 .ssh-table th:nth-child(5) {
-  width: 52px;
+  width: 52px; /* test button */
 }
 .ssh-table td {
   overflow-wrap: anywhere;
@@ -3048,7 +3049,7 @@ textarea::placeholder {
 
 /* Rendered markdown files (.md tabs) — doc-sized type over the chat .md base. */
 .file-view-md {
-  max-width: 760px;
+  max-width: var(--readable-col);
   padding: 18px 20px 32px;
 }
 .file-view-md .md {

@@ -587,9 +587,12 @@ impl Store {
 }
 
 /// Most recent preflight result per ssh host alias (Settings → Compute → SSH).
+/// Serializes to the wire shape the UI's `SshPreflight` type expects; `host`
+/// is the row key only (the API embeds results under their host entry).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SshHostTest {
+    #[serde(skip_serializing)]
     pub host: String,
     pub reachable: bool,
     pub git_found: bool,

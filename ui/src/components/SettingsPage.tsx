@@ -424,17 +424,7 @@ function SshSection() {
 
   useEffect(() => {
     getSshHosts()
-      .then((hs) => {
-        setHosts(hs);
-        // Seed from the persisted results so "last tested" survives restarts.
-        setTests((t) => {
-          const seeded = { ...t };
-          for (const h of hs) {
-            if (h.lastTest && seeded[h.host] === undefined) seeded[h.host] = h.lastTest;
-          }
-          return seeded;
-        });
-      })
+      .then(setHosts)
       .catch(() => setHosts([]));
   }, []);
 
@@ -492,7 +482,8 @@ function SshSection() {
                 </td>
                 <td className="mono muted">{h.identityFile ?? "—"}</td>
                 <td>
-                  <HostTestCell test={tests[h.host]} />
+                  {/* Session-local result wins; the persisted one covers restarts. */}
+                  <HostTestCell test={tests[h.host] ?? h.lastTest} />
                 </td>
                 <td>
                   <button
