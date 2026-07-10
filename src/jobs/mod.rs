@@ -1,13 +1,14 @@
 //! Job backends — external compute that orx launches and supervises itself.
 //!
-//! The api never orchestrates these: orx submits natively (HF Jobs today,
-//! SLURM/local later), a detached `orx supervise` watches the job beside it,
-//! and the api receives status/log mirrors. The run's `backend_json`
+//! The api never orchestrates these: orx submits natively (HF Jobs, Modal,
+//! Kubernetes, SSH, Slurm), a detached `orx supervise` watches the job beside
+//! it, and the api receives status/log mirrors. The run's `backend_json`
 //! descriptor is the serialized handle a later supervisor uses to reattach.
 
 pub mod huggingface;
 pub mod kubernetes;
 pub mod modal;
+pub mod slurm;
 pub mod ssh;
 
 use serde::{Deserialize, Serialize};
@@ -85,6 +86,20 @@ impl BackendDescriptor {
         self.job_id.as_deref().ok_or_else(|| {
             anyhow!("Backend descriptor is missing the Modal sandbox id — was the job submitted?")
         })
+    }
+
+    /// The Slurm (host, job id) handle; the login-node host rides on
+    /// `namespace`, and the run dir derives from the run id.
+    pub fn slurm_ref(&self) -> Result<(&str, &str)> {
+        if self.kind != "slurm_job" {
+            return Err(anyhow!("Unsupported backend kind: {}", self.kind));
+        }
+        match (self.namespace.as_deref(), self.job_id.as_deref()) {
+            (Some(host), Some(id)) => Ok((host, id)),
+            _ => Err(anyhow!(
+                "Backend descriptor is missing the slurm host/job id — was the job submitted?"
+            )),
+        }
     }
 
     /// The SSH (host, remote run dir) handle; host rides on `namespace`.

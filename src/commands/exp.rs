@@ -440,8 +440,8 @@ async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<
     if args.manifest.is_some() && args.backend.as_deref() != Some("k8s") {
         return Err(anyhow!("--manifest only applies with --backend k8s."));
     }
-    if args.host.is_some() && args.backend.as_deref() != Some("ssh") {
-        return Err(anyhow!("--host only applies with --backend ssh."));
+    if args.host.is_some() && !matches!(args.backend.as_deref(), Some("ssh") | Some("slurm")) {
+        return Err(anyhow!("--host only applies with --backend ssh or slurm."));
     }
     match args.backend.as_deref() {
         Some("hf") => return launch_hf(creds, args).await,
@@ -456,10 +456,15 @@ async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<
                 "--backend ssh is supported for local experiments (`orx up`) only for now."
             ));
         }
+        Some("slurm") => {
+            return Err(anyhow!(
+                "--backend slurm is supported for local experiments (`orx up`) only for now."
+            ));
+        }
         Some(other) => {
             return Err(anyhow!(
                 "Unknown --backend '{}'. Supported: hf (Hugging Face Jobs), \
-                 modal (Modal serverless GPUs), k8s/ssh (local experiments only).",
+                 modal (Modal serverless GPUs), k8s/ssh/slurm (local experiments only).",
                 other
             ));
         }
@@ -928,22 +933,24 @@ async fn local_desc(
     Ok(())
 }
 
-/// Local `exp run`: external backends only — HF Jobs, Modal, or a k8s cluster.
+/// Local `exp run`: external backends only — HF Jobs, Modal, k8s, ssh, or slurm.
 async fn local_launch(args: ExpRunArgs) -> Result<()> {
     if args.manifest.is_some() && args.backend.as_deref() != Some("k8s") {
         return Err(anyhow!("--manifest only applies with --backend k8s."));
     }
-    if args.host.is_some() && args.backend.as_deref() != Some("ssh") {
-        return Err(anyhow!("--host only applies with --backend ssh."));
+    if args.host.is_some() && !matches!(args.backend.as_deref(), Some("ssh") | Some("slurm")) {
+        return Err(anyhow!("--host only applies with --backend ssh or slurm."));
     }
     match args.backend.as_deref() {
         Some("hf") => crate::local::hf::launch_local_hf(&args).await,
         Some("modal") => crate::local::modal::launch_local_modal(&args).await,
         Some("k8s") => crate::local::k8s::launch_local_k8s(&args).await,
         Some("ssh") => crate::local::ssh::launch_local_ssh(&args).await,
+        Some("slurm") => crate::local::slurm::launch_local_slurm(&args).await,
         Some(other) => Err(anyhow!(
             "Unknown --backend '{}'. Local experiments support: hf (Hugging Face Jobs), \
-             modal (Modal serverless GPUs), k8s (your Kubernetes cluster), ssh (your own box).",
+             modal (Modal serverless GPUs), k8s (your Kubernetes cluster), ssh (your own box), \
+             slurm (your Slurm cluster).",
             other
         )),
         None => Err(anyhow!(
@@ -952,7 +959,8 @@ async fn local_launch(args: ExpRunArgs) -> Result<()> {
              `--backend modal --flavor <flavor>` (e.g. --flavor a10g), \
              `--backend k8s` (runs the manifest committed on the branch — \
              default .orx/k8s.yaml, or --manifest <path>), \
-             or `--backend ssh --host <alias>` (an ~/.ssh/config alias)."
+             `--backend ssh --host <alias>` (an ~/.ssh/config alias), \
+             or `--backend slurm [--host <alias>] [--flavor h100:2]` (your Slurm cluster)."
         )),
     }
 }

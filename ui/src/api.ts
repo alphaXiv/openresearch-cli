@@ -140,7 +140,14 @@ export const createExperiment = (projectId: string, body: NewExperiment) =>
 
 export const startRun = (
   experimentId: string,
-  body: { backend?: "hf" | "k8s"; flavor?: string; manifest?: string; timeout?: string } = {},
+  body: {
+    backend?: "hf" | "k8s" | "slurm";
+    flavor?: string;
+    manifest?: string;
+    timeout?: string;
+    /** Slurm login node (~/.ssh/config alias); defaults to the slurm settings' host. */
+    host?: string;
+  } = {},
 ) => post<{ run: Run }>(`/api/experiments/${experimentId}/run`, body).then((r) => r.run);
 
 export const cancelRun = (runId: string) => post<{ ok: boolean }>(`/api/runs/${runId}/cancel`);
@@ -300,6 +307,41 @@ export interface SshPreflight {
 /** Live-test a host: reachable over ssh (BatchMode) and has `git`. */
 export const sshPreflight = (host: string) =>
   post<SshPreflight>("/api/settings/ssh/preflight", { host });
+
+// --- settings: slurm ----------------------------------------------------------
+
+export interface SlurmSettings {
+  /** Default login node (an ~/.ssh/config alias); null = must pass --host. */
+  host: string | null;
+  /** Cluster defaults; null = the cluster decides. */
+  partition: string | null;
+  account: string | null;
+  timeLimit: string | null;
+  /** Login-node candidates, from ~/.ssh/config (same source as SSH). */
+  hosts: SshHost[];
+}
+
+export const getSlurmSettings = () => get<SlurmSettings>("/api/settings/slurm");
+
+/** Empty string clears a field back to the cluster default. */
+export const saveSlurmSettings = (body: {
+  host?: string;
+  partition?: string;
+  account?: string;
+  timeLimit?: string;
+}) => post<SlurmSettings>("/api/settings/slurm", body);
+
+export interface SlurmPreflight {
+  reachable: boolean;
+  slurmFound: boolean;
+  gitFound: boolean;
+  partitions: string[];
+  error: string | null;
+}
+
+/** Live-test a login node: reachable, Slurm CLI + git present, partitions. */
+export const slurmPreflight = (host: string) =>
+  post<SlurmPreflight>("/api/settings/slurm/preflight", { host });
 
 /** One node of the artifacts tree: a file, or a directory with children. */
 export interface ArtifactEntry {

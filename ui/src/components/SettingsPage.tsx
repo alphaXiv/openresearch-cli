@@ -20,6 +20,7 @@ import {
   getHfSettings,
   getK8sSettings,
   getModalSettings,
+  getSlurmSettings,
   getSshHosts,
   listInstances,
   provisionModal,
@@ -27,8 +28,10 @@ import {
   saveGitSettings,
   saveHfToken,
   saveK8sSettings,
+  saveSlurmSettings,
   setEnvVar,
   shortId,
+  slurmPreflight,
   sshPreflight,
   timeAgo,
   type EnvVar,
@@ -41,6 +44,8 @@ import {
   type K8sSettings,
   type ModalSettings,
   type ModalTokenSource,
+  type SlurmPreflight,
+  type SlurmSettings,
   type SshHost,
   type SshPreflight,
   modelLabel,
@@ -503,15 +508,221 @@ function SshSection() {
   );
 }
 
+// --- compute (slurm) --------------------------------------------------------------
+
+/** First failing check wins, like K8sHealthBadge. */
+function SlurmTestBadge({ test }: { test: "testing" | SlurmPreflight | null }) {
+  if (test === null) return null;
+  if (test === "testing") return <span className="spinner" />;
+  if (!test.reachable)
+    return (
+      <span className="badge err" title={test.error ?? undefined}>
+        unreachable
+      </span>
+    );
+  if (!test.slurmFound) return <span className="badge err">no slurm CLI</span>;
+  if (!test.gitFound) return <span className="badge err">no git</span>;
+  return <span className="badge ok">ready</span>;
+}
+
+function SlurmSection() {
+  const [settings, setSettings] = useState<SlurmSettings | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [host, setHost] = useState("");
+  const [partition, setPartition] = useState("");
+  const [account, setAccount] = useState("");
+  const [timeLimit, setTimeLimit] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [test, setTest] = useState<"testing" | SlurmPreflight | null>(null);
+  const preflight = test !== null && test !== "testing" ? test : null;
+
+  const apply = (s: SlurmSettings) => {
+    setSettings(s);
+    setHost(s.host ?? "");
+    setPartition(s.partition ?? "");
+    setAccount(s.account ?? "");
+    setTimeLimit(s.timeLimit ?? "");
+  };
+
+  useEffect(() => {
+    getSlurmSettings()
+      .then(apply)
+      .catch((err) => setLoadError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  const unchanged =
+    settings !== null &&
+    host === (settings.host ?? "") &&
+    partition.trim() === (settings.partition ?? "") &&
+    account.trim() === (settings.account ?? "") &&
+    timeLimit.trim() === (settings.timeLimit ?? "");
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      apply(
+        await saveSlurmSettings({
+          host,
+          partition: partition.trim(),
+          account: account.trim(),
+          timeLimit: timeLimit.trim(),
+        }),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function runPreflight(target: string) {
+    setTest("testing");
+    try {
+      setTest(await slurmPreflight(target));
+    } catch (err) {
+      setTest({
+        reachable: false,
+        slurmFound: false,
+        gitFound: false,
+        partitions: [],
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return (
+    <>
+      <p className="settings-sub">
+        <strong>Slurm</strong> — run on your own cluster with{" "}
+        <code>--backend slurm [--flavor h100:2]</code>. orx submits via <code>sbatch</code> on
+        the login node over ssh (auth is your keys/agent; orx never reads a key) and the job
+        runs in your cluster environment. The defaults below apply when a launch doesn&apos;t
+        override them.
+      </p>
+      {loadError ? (
+        <div className="settings-card">
+          <div className="error">{loadError}</div>
+        </div>
+      ) : !settings ? (
+        <div className="settings-loading">
+          <span className="spinner" /> Loading slurm settings…
+        </div>
+      ) : (
+        <div className="settings-card">
+          <div className="settings-card-head">
+            <h3>Slurm cluster</h3>
+            <div className="spacer" style={{ flex: 1 }} />
+            <SlurmTestBadge test={test} />
+          </div>
+          {preflight?.error && <p className="settings-note">{preflight.error}</p>}
+          {preflight && preflight.partitions.length > 0 && (
+            <p className="settings-note">
+              Partitions: <code>{preflight.partitions.join(", ")}</code>
+            </p>
+          )}
+          <form className="form settings-form" onSubmit={submit}>
+            <div className="row2">
+              <label>
+                Login node
+                <select
+                  value={host}
+                  onChange={(e) => {
+                    setHost(e.target.value);
+                    setTest(null); // a badge earned by cluster A must not vouch for cluster B
+                  }}
+                >
+                  <option value="">not set (pass --host per launch)</option>
+                  {/* A saved host that has since left ~/.ssh/config still needs an
+                      option, or the select renders blank while holding the value. */}
+                  {host && !settings.hosts.some((h) => h.host === host) && (
+                    <option value={host}>{host} (not in ~/.ssh/config)</option>
+                  )}
+                  {settings.hosts.map((h) => (
+                    <option key={h.host} value={h.host}>
+                      {h.host}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Partition
+                <input
+                  className="mono"
+                  type="text"
+                  list="slurm-partitions"
+                  value={partition}
+                  onChange={(e) => setPartition(e.target.value)}
+                  placeholder="cluster default"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <datalist id="slurm-partitions">
+                  {preflight?.partitions.map((p) => <option key={p} value={p} />)}
+                </datalist>
+              </label>
+            </div>
+            <div className="row2">
+              <label>
+                Account
+                <input
+                  className="mono"
+                  type="text"
+                  value={account}
+                  onChange={(e) => setAccount(e.target.value)}
+                  placeholder="cluster default"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+              <label>
+                Time limit
+                <input
+                  className="mono"
+                  type="text"
+                  value={timeLimit}
+                  onChange={(e) => setTimeLimit(e.target.value)}
+                  placeholder="cluster default (e.g. 4h, 30m)"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+            </div>
+            {error && <div className="error">{error}</div>}
+            <div className="actions">
+              <button type="submit" className="btn primary" disabled={saving || unchanged}>
+                {saving ? "Saving…" : "Save"}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => void runPreflight(host)}
+                disabled={!host || test === "testing"}
+                title={host ? undefined : "Pick a login node first"}
+              >
+                Test connection
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+    </>
+  );
+}
+
 // --- compute -----------------------------------------------------------------
 
-type ComputeSub = "hf" | "modal" | "k8s" | "ssh";
+type ComputeSub = "hf" | "modal" | "k8s" | "ssh" | "slurm";
 
 const COMPUTE_SUBS: { id: ComputeSub; label: string }[] = [
   { id: "hf", label: "HF Jobs" },
   { id: "modal", label: "Modal" },
   { id: "k8s", label: "Kubernetes" },
   { id: "ssh", label: "SSH" },
+  { id: "slurm", label: "Slurm" },
 ];
 
 function ComputeTab() {
@@ -538,6 +749,7 @@ function ComputeTab() {
       {sub === "modal" && <ModalSection />}
       {sub === "k8s" && <K8sSection />}
       {sub === "ssh" && <SshSection />}
+      {sub === "slurm" && <SlurmSection />}
     </>
   );
 }
@@ -1209,7 +1421,7 @@ function InstancesTab() {
         </button>
       </div>
       <p className="settings-sub">
-        Compute spun up across all projects — Modal, Hugging Face, SSH, and Kubernetes.
+        Compute spun up across all projects — Modal, Hugging Face, SSH, Kubernetes, and Slurm.
       </p>
       {error && <div className="error">{error}</div>}
       {!running || !past ? (

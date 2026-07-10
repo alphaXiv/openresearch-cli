@@ -29,8 +29,18 @@ fn control_dir() -> PathBuf {
 
 /// Shared ssh options: BatchMode (never hang on a prompt) + connection
 /// multiplexing so repeated polls are cheap.
-fn ssh_opts() -> Vec<String> {
-    let cp = control_dir().join("%C");
+fn ssh_opts(host: &str) -> Vec<String> {
+    // Not ssh's %C token: the expanded path must fit in sun_path (104 bytes
+    // on macOS) and `<config dir>/ssh-cm/<40-hex>.<12-char tmp suffix>`
+    // overflows it for ordinary home dirs — ssh then fails outright rather
+    // than skip multiplexing. A 16-hex hash of the alias keeps it short.
+    // Hashing the alias alone (where %C also folds in user/host/port) is
+    // sound because orx always connects by alias and never passes -l/-p —
+    // ~/.ssh/config alone decides the endpoint.
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    host.hash(&mut h);
+    let cp = control_dir().join(format!("{:016x}", h.finish()));
     vec![
         "-o".into(),
         "BatchMode=yes".into(),
@@ -47,10 +57,11 @@ fn ssh_opts() -> Vec<String> {
 
 /// Run a command on `host` over ssh, feeding `stdin` if given, returning stdout.
 /// A non-zero exit is an error carrying stderr (the ssh/remote failure reason).
-async fn ssh_run(host: &str, remote_cmd: &str, stdin: Option<&str>) -> Result<String> {
+/// Shared with the slurm backend, which drives a cluster's login node the same way.
+pub(crate) async fn ssh_run(host: &str, remote_cmd: &str, stdin: Option<&str>) -> Result<String> {
     let _ = std::fs::create_dir_all(control_dir());
     let mut cmd = Command::new("ssh");
-    cmd.args(ssh_opts())
+    cmd.args(ssh_opts(host))
         .arg("--")
         .arg(host)
         .arg(remote_cmd)
@@ -95,7 +106,7 @@ async fn ssh_run(host: &str, remote_cmd: &str, stdin: Option<&str>) -> Result<St
 }
 
 /// Single-quote a value for safe embedding in the remote bash script.
-fn sh_quote(s: &str) -> String {
+pub(crate) fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
