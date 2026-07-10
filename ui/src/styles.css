@@ -298,7 +298,7 @@ textarea::placeholder {
   gap: 8px;
   flex: 1;
   min-width: 0;
-  font-weight: 700;
+  font-weight: 600;
   font-size: 13px;
   color: var(--text);
   padding: 4px 6px 4px 0;
@@ -724,7 +724,7 @@ textarea::placeholder {
 
 .chat-header .title {
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text);
   flex: 1;
   min-width: 0;
@@ -1141,6 +1141,7 @@ textarea::placeholder {
 }
 .md strong {
   color: var(--text);
+  font-weight: 600;
 }
 .md pre {
   background: var(--surface);
@@ -1237,6 +1238,7 @@ textarea::placeholder {
 .md h4 {
   color: var(--text);
   font-size: 1.05em;
+  font-weight: 600;
   margin: 12px 0 6px;
 }
 .md ul,
