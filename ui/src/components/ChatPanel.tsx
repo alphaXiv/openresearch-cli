@@ -774,7 +774,7 @@ export function ChatPanel({
     return (
       <>
         {railOpen && rail}
-        <section className="chat-pane settings-pane">
+        <section className="chat-pane">
           {!railOpen && (
             <div className="chat-header">
               <button
@@ -846,14 +846,16 @@ export function ChatPanel({
             stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
           }}
         >
-          {messages.map((m) => (
-            <Message key={m.id} message={m} onOpenFile={onOpenFile} onRespond={respond} />
-          ))}
-          {busy && (
-            <div className="working">
-              <span className="spinner" /> Working…
-            </div>
-          )}
+          <div className="chat-thread-inner">
+            {messages.map((m) => (
+              <Message key={m.id} message={m} onOpenFile={onOpenFile} onRespond={respond} />
+            ))}
+            {busy && (
+              <div className="working">
+                <span className="spinner" /> Working…
+              </div>
+            )}
+          </div>
         </div>
       )}
 

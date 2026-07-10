@@ -507,18 +507,16 @@ textarea::placeholder {
   padding: 4px 8px;
 }
 
+/* The pane fills the leftover space so the thread's scrollbar reaches its
+   right edge; the readable 760px cap lives on the header, the composer, and
+   .chat-thread-inner (inside the scroller), which center themselves. */
 .chat-pane {
   flex: 1;
-  max-width: 760px;
   /* min-width:0 (not 360) so a wide panel can never force the flex row past
      the viewport; the panel's own clamp keeps the usable minimum. */
   min-width: 0;
   display: flex;
   flex-direction: column;
-  /* Centers in the leftover space; the constant side gutters live on the
-     .app-body padding + the panels' inner margins, so they don't vanish when
-     a panel collapses. */
-  margin: 0 auto;
   background: var(--base);
   min-height: 0;
 }
@@ -709,6 +707,9 @@ textarea::placeholder {
   height: 48px;
   position: relative;
   z-index: 4;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
 }
 .chat-header::after {
   content: "";
@@ -786,6 +787,10 @@ textarea::placeholder {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+}
+.chat-thread-inner {
+  max-width: 760px;
+  margin: 0 auto;
   /* Bottom padding clears the composer's 24px fade so the last message stays
      fully legible when scrolled to the very bottom. */
   padding: 16px 16px 32px;
@@ -1021,6 +1026,9 @@ textarea::placeholder {
   position: relative;
   z-index: 4;
   background: var(--base);
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
 }
 .composer::before {
   content: "";
@@ -2608,12 +2616,8 @@ textarea::placeholder {
   color: var(--text);
   background: var(--surface);
 }
-/* The pane cap moves inside the scroller: .settings-pane un-caps .chat-pane so
-   the scroll container (and its scrollbar) reaches the pane's right edge, and
-   .settings-view re-applies the readable width from within. */
-.settings-pane {
-  max-width: none;
-}
+/* Like .chat-thread: the scroller spans the pane so its scrollbar sits at the
+   pane's right edge, and .settings-view re-applies the readable width. */
 .settings-view-scroll {
   flex: 1;
   min-height: 0;
