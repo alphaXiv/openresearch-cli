@@ -526,18 +526,23 @@ pub struct ExpRunArgs {
     /// External executor instead of managed compute: `hf` (Hugging Face Jobs,
     /// billed to your HF account), `modal` (a Modal Sandbox on your own Modal
     /// account, billed per second), `k8s` (a Job on your own Kubernetes
-    /// cluster), or `ssh` (a detached process on one of your own boxes). k8s and
-    /// ssh are local experiments only. orx submits the job and a detached
-    /// supervisor mirrors status/logs back.
+    /// cluster), `ssh` (a detached process on one of your own boxes), or
+    /// `slurm` (a batch job on your Slurm cluster, submitted via its login
+    /// node). k8s, ssh, and slurm are local experiments only. orx submits the
+    /// job and a detached supervisor mirrors status/logs back.
     #[arg(long)]
     pub backend: Option<String>,
     /// Hardware flavor. With `--backend hf`: t4-small, a10g-small, a100-large,
     /// h200, … With `--backend modal`: a Modal GPU (t4, l4, a10g, a100,
-    /// a100-80gb, l40s, h100, h200, or e.g. h100:2) or cpu/cpu-large. Not used
-    /// by k8s (see --manifest) or ssh (see --host).
+    /// a100-80gb, l40s, h100, h200, or e.g. h100:2) or cpu/cpu-large. With
+    /// `--backend slurm`: a GPU request as a GRES spec (h100:2 → --gres=gpu:h100:2;
+    /// plain `gpu` → one GPU; omit for CPU-only). Not used by k8s (see
+    /// --manifest) or ssh (see --host).
     #[arg(long)]
     pub flavor: Option<String>,
-    /// The ~/.ssh/config host alias to run on (with `--backend ssh`).
+    /// The ~/.ssh/config host alias to run on (with `--backend ssh`), or the
+    /// cluster login node (with `--backend slurm`; defaults to the slurm
+    /// settings' host).
     #[arg(long)]
     pub host: Option<String>,
     /// Repo-relative path to the k8s manifest on the experiment branch (with
@@ -551,9 +556,11 @@ pub struct ExpRunArgs {
     /// `--backend k8s`, set the image in the manifest instead.
     #[arg(long)]
     pub image: Option<String>,
-    /// Job timeout (with `--backend hf/modal/k8s`): 90s, 30m, 4h, 1d. Default 4h —
-    /// HF's own default is only 30 minutes. With `--backend k8s` it becomes
-    /// activeDeadlineSeconds unless the manifest sets its own.
+    /// Job timeout (with `--backend hf/modal/k8s/slurm`): 90s, 30m, 4h, 1d.
+    /// Default 4h (HF's own default is only 30 minutes). With `--backend k8s`
+    /// it becomes activeDeadlineSeconds unless the manifest sets its own. With
+    /// `--backend slurm` it becomes `#SBATCH --time=` and has no 4h default —
+    /// unset falls back to the slurm settings, then the cluster's own limit.
     #[arg(long)]
     pub timeout: Option<String>,
     /// Launch even if the experiment's branch has no changes over its parent

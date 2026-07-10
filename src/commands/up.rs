@@ -140,6 +140,11 @@ fn router(state: AppState) -> Router {
         )
         .route("/api/settings/ssh", get(ssh_settings))
         .route("/api/settings/ssh/preflight", post(ssh_preflight))
+        .route(
+            "/api/settings/slurm",
+            get(slurm_settings).post(set_slurm_settings),
+        )
+        .route("/api/settings/slurm/preflight", post(slurm_preflight))
         .route("/api/harnesses", get(list_harnesses))
         .route("/api/skills", get(list_skills))
         .route(
@@ -525,6 +530,9 @@ struct RunReq {
     /// Repo-relative manifest path (k8s only; default .orx/k8s.yaml).
     manifest: Option<String>,
     timeout: Option<String>,
+    /// ssh config host alias of the Slurm login node (slurm only; defaults to
+    /// the slurm settings' host).
+    host: Option<String>,
 }
 
 async fn run_experiment(Path(id): Path<String>, body: Bytes) -> ApiResult {
@@ -546,7 +554,7 @@ async fn run_experiment(Path(id): Path<String>, body: Bytes) -> ApiResult {
         sandbox: None,
         backend: Some(backend.clone()),
         flavor: req.flavor,
-        host: None,
+        host: req.host,
         manifest: req.manifest,
         image: None,
         timeout: req.timeout,
@@ -556,7 +564,10 @@ async fn run_experiment(Path(id): Path<String>, body: Bytes) -> ApiResult {
     let run = match backend.as_str() {
         "hf" => local::hf::submit_local_hf(&args).await,
         "k8s" => local::k8s::submit_local_k8s(&args).await,
-        other => Err(anyhow!("Unknown backend '{other}'. Supported: hf, k8s.")),
+        "slurm" => local::slurm::submit_local_slurm(&args).await,
+        other => Err(anyhow!(
+            "Unknown backend '{other}'. Supported: hf, k8s, slurm."
+        )),
     }
     .map_err(bad_request)?;
     Ok(Json(json!({ "run": ApiRun::from(&run) })))
@@ -1426,6 +1437,92 @@ async fn ssh_preflight(Json(req): Json<SshPreflightReq>) -> ApiResult {
         eprintln!("orx up: could not record ssh test for {}: {e}", test.host);
     }
     Ok(Json(json!(test)))
+}
+
+// --- slurm --------------------------------------------------------------------
+
+use crate::jobs::slurm;
+
+/// One payload powers the whole settings card: stored cluster defaults plus
+/// the ssh hosts to pick a login node from (same `~/.ssh/config` source as
+/// the ssh backend — a Slurm login node is just an ssh host).
+fn slurm_settings_json() -> Value {
+    let settings = slurm::load_settings().ok().flatten().unwrap_or_default();
+    json!({
+        "host": settings.host,
+        "partition": settings.partition,
+        "account": settings.account,
+        "timeLimit": settings.time_limit,
+        "hosts": list_ssh_hosts(),
+    })
+}
+
+async fn slurm_settings() -> ApiResult {
+    tokio::task::spawn_blocking(|| Ok(Json(slurm_settings_json())))
+        .await
+        .map_err(|e| ApiError::from(anyhow!("slurm task failed: {e}")))?
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetSlurmSettingsReq {
+    /// `None` leaves the field alone; `Some("")` clears it (cluster default).
+    host: Option<String>,
+    partition: Option<String>,
+    account: Option<String>,
+    time_limit: Option<String>,
+}
+
+async fn set_slurm_settings(Json(req): Json<SetSlurmSettingsReq>) -> ApiResult {
+    // One spawn_blocking around the whole load→mutate→save→respond body
+    // (settings + ~/.ssh/config are sync fs I/O), like the git handlers.
+    tokio::task::spawn_blocking(move || {
+        let mut settings = slurm::load_settings()?.unwrap_or_default();
+        let norm = |v: String| Some(v.trim().to_string()).filter(|s| !s.is_empty());
+        if let Some(h) = req.host {
+            settings.host = norm(h);
+        }
+        if let Some(p) = req.partition {
+            settings.partition = norm(p);
+        }
+        if let Some(a) = req.account {
+            settings.account = norm(a);
+        }
+        if let Some(t) = req.time_limit {
+            // Reject a default that would fail every later launch.
+            let t = norm(t);
+            if let Some(t) = &t {
+                crate::jobs::huggingface::parse_timeout(t).map_err(bad_request)?;
+            }
+            settings.time_limit = t;
+        }
+        slurm::save_settings(&settings)?;
+        Ok(Json(slurm_settings_json()))
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow!("slurm task failed: {e}")))?
+}
+
+#[derive(Deserialize)]
+struct SlurmPreflightReq {
+    host: String,
+}
+
+/// Live check for one login node: reachable, Slurm CLI + git present, and
+/// which partitions exist (feeds the partition picker).
+async fn slurm_preflight(Json(req): Json<SlurmPreflightReq>) -> ApiResult {
+    let host = req.host.trim().to_string();
+    if host.is_empty() {
+        return Err(bad_request("host is required"));
+    }
+    let p = slurm::preflight(&host).await;
+    Ok(Json(json!({
+        "reachable": p.reachable,
+        "slurmFound": p.slurm_found,
+        "gitFound": p.git_found,
+        "partitions": p.partitions,
+        "error": p.error,
+    })))
 }
 
 // --- harnesses ---------------------------------------------------------------
