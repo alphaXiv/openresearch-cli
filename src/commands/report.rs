@@ -42,14 +42,14 @@ pub async fn run(args: crate::ReportArgs) -> Result<()> {
     }
 }
 
-/// Local projects have no report registry or upload step — the artifacts dir
-/// on disk is the whole feature. Point there instead of pretending to upload.
+/// Local projects have no report registry or upload step — the files dir on
+/// disk is the whole feature. Point there instead of pretending to upload.
 fn local_guidance(project: &crate::local::model::LocalProject) -> Result<()> {
-    let dir = crate::local::artifacts::ensure_dir(project)?;
+    let dir = crate::local::files::ensure_dir(project)?;
     Err(anyhow!(
         "`orx report` is cloud-only. Local projects have no upload step: write the report \
-         folder (report.md + images/) straight into the project's artifacts directory,\n  {}\n\
-         Everything in that directory shows up in the dashboard's Artifacts tab.",
+         folder (report.md + images/) straight into the project's files directory,\n  {}\n\
+         Everything in that directory shows up in the dashboard's Files tab.",
         dir.display()
     ))
 }

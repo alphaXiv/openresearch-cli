@@ -2,17 +2,17 @@ import { FileCode, GitBranch, Maximize2, Minimize2, Terminal, X } from "lucide-r
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   cancelRun,
-  getArtifacts,
+  getFiles,
   listExperiments,
   listProjects,
   listRuns,
-  type Artifacts,
   type Experiment,
+  type ProjectFiles,
   type Project,
   type Run,
 } from "./api";
-import { ArtifactsTab } from "./components/ArtifactsTab";
 import { ChatPanel } from "./components/ChatPanel";
+import { FilesTab } from "./components/FilesTab";
 import { ClosableTab } from "./components/ClosableTab";
 import { DetailDrawer, type ExperimentView } from "./components/DetailDrawer";
 import { FileViewer } from "./components/FileViewer";
@@ -82,7 +82,7 @@ export default function App() {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [experiments, setExperiments] = useState<Experiment[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
-  const [artifacts, setArtifacts] = useState<Artifacts | null>(null);
+  const [files, setFiles] = useState<ProjectFiles | null>(null);
   const [view, setView] = useState<"tree" | "table">("tree");
   const [selectedExpId, setSelectedExpId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -100,9 +100,9 @@ export default function App() {
   // The agents rail is a floating panel too: fixed-width, collapsible.
   const [railOpen, setRailOpen] = useState(true);
   const [homeOpen, setHomeOpen] = useState(false);
-  // What the middle pane shows: the agent chat, the project's artifacts, or
+  // What the middle pane shows: the agent chat, the project's files, or
   // one settings section (picked from the rail nav — no separate pages).
-  const [mainView, setMainView] = useState<"chat" | "artifacts" | SettingsTab>("chat");
+  const [mainView, setMainView] = useState<"chat" | "files" | SettingsTab>("chat");
   const [onboarded, setOnboarded] = useState(() => {
     try {
       return localStorage.getItem(ONBOARDED_KEY) === "1";
@@ -137,7 +137,7 @@ export default function App() {
     if (!projectId) return;
     setExperiments([]);
     setRuns([]);
-    setArtifacts(null);
+    setFiles(null);
     setSelectedExpId(null);
     setSelectedRunId(null);
     setExpTabs([]);
@@ -145,13 +145,13 @@ export default function App() {
     setRightTab("experiments");
     listExperiments(projectId).then(setExperiments).catch(() => {});
     listRuns(projectId).then(setRuns).catch(() => {});
-    getArtifacts(projectId).then(setArtifacts).catch(() => {});
+    getFiles(projectId).then(setFiles).catch(() => {});
   }, [projectId]);
 
-  // Refetch the artifacts listing (on open and whenever the dir changes).
-  const refreshArtifacts = useCallback(() => {
+  // Refetch the files listing (on open and whenever the dir changes).
+  const refreshFiles = useCallback(() => {
     const id = projectIdRef.current;
-    if (id) getArtifacts(id).then(setArtifacts).catch(() => {});
+    if (id) getFiles(id).then(setFiles).catch(() => {});
   }, []);
 
   // Live store updates.
@@ -166,8 +166,8 @@ export default function App() {
     onProject: (project) => {
       setProjects((cur) => (cur ? upsert(cur, project) : [project]));
     },
-    onArtifacts: (pid) => {
-      if (pid === projectIdRef.current) refreshArtifacts();
+    onFiles: (pid) => {
+      if (pid === projectIdRef.current) refreshFiles();
     },
   });
 
@@ -356,15 +356,11 @@ export default function App() {
             }}
             onOpenFile={openFileTab}
           >
-            {mainView === "artifacts" ? (
+            {mainView === "files" ? (
               (() => {
                 const project = projects.find((p) => p.id === projectId);
                 return project ? (
-                  <ArtifactsTab
-                    project={project}
-                    artifacts={artifacts}
-                    onChanged={refreshArtifacts}
-                  />
+                  <FilesTab project={project} files={files} onChanged={refreshFiles} />
                 ) : null;
               })()
             ) : mainView !== "chat" ? (

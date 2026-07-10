@@ -108,7 +108,7 @@ fn playbook_md(project: &LocalProject) -> String {
     let name = &project.name;
     let repo = format!("{}/{}", project.github_owner, project.github_repo);
     let baseline = &project.baseline_branch;
-    let artifacts = super::artifacts::artifacts_dir(project)
+    let files = super::files::files_dir(project)
         .to_string_lossy()
         .into_owned();
     format!(
@@ -125,8 +125,8 @@ same clone, sharing its branches and remotes.
 - Baseline branch: `{baseline}`
 - Compute: external backends — `hf`, `modal`, `k8s`, or `ssh` — chosen by the
   user per run; **there is no default backend** (see "Compute backends")
-- Artifacts dir: `{artifacts}` — every file in it shows up in the dashboard's
-  Artifacts tab (reports, figures, CSVs)
+- Files dir: `{files}` — every file in it shows up in the dashboard's
+  Files tab (reports, figures, CSVs), grouped by experiment
 
 ## Start here
 
@@ -223,12 +223,20 @@ Carry one goal across many runs:
    descend, or stop and report. Write what you learned into `orx exp desc`.
 
 When a line of work concludes (or the user asks for a write-up), write a
-report **directly into the artifacts dir**: a subfolder holding a `report.md`
-(first `# ` heading becomes its title) plus an `images/` subfolder for any
-figures it references by relative path — e.g.
-`{artifacts}/<slug>/report.md`. There is no upload step; anything under
-`{artifacts}` (reports, figures, data files) appears in the dashboard's
-Artifacts tab immediately.
+report **directly into the files dir**. Its layout mirrors the experiment
+tree — every top-level folder is named for an experiment slug:
+
+- Per-experiment output goes in the folder named for its slug:
+  `{files}/<experiment-slug>/report.md`, plus an `images/` subfolder for any
+  figures it references by relative path. One experiment, one folder — its
+  `report.md` is that experiment's findings.
+- Cross-experiment syntheses and anything not tied to one node (comparisons,
+  lit reviews) go under the reserved `project/` namespace as their own
+  report folders: `{files}/project/<topic>/report.md`.
+
+A report's first `# ` heading becomes its title. There is no upload step;
+anything under `{files}` (reports, figures, data files) appears in the
+dashboard's Files tab immediately, grouped by experiment.
 
 When the user gives you a research task, see it through this loop — don't stop
 after a single step or hand back a half-finished attempt. End your turn only
@@ -406,8 +414,8 @@ pub fn ensure_playbook(project: &LocalProject, session_id: &str) -> Result<(Path
         &project.github_owner,
         &project.github_repo,
     ));
-    // The playbook points the agent at the artifacts dir — make sure it exists.
-    let _ = super::artifacts::ensure_dir(project);
+    // The playbook points the agent at the files dir — make sure it exists.
+    let _ = super::files::ensure_dir(project);
     Ok((workdir, playbook))
 }
 

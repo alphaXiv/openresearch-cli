@@ -297,8 +297,18 @@ export interface SshPreflight {
 export const sshPreflight = (host: string) =>
   post<SshPreflight>("/api/settings/ssh/preflight", { host });
 
-/** One node of the artifacts tree: a file, or a directory with children. */
-export interface ArtifactEntry {
+/** The experiment a top-level files folder is named for (folder == slug). */
+export interface FileExperiment {
+  id: string;
+  slug: string;
+  title?: string;
+  branchName: string;
+  /** The experiment's most recent run status, if it has ever run. */
+  latestRunStatus?: string;
+}
+
+/** One node of the files tree: a file, or a directory with children. */
+export interface FileEntry {
   name: string;
   /** Dir-relative `/`-joined path — the id for file/report/delete endpoints. */
   path: string;
@@ -308,33 +318,35 @@ export interface ArtifactEntry {
   modifiedAt: number;
   /** Set when the dir holds a top-level report.md — renders as a report. */
   reportTitle?: string;
-  children?: ArtifactEntry[];
+  /** Top-level dirs only: the experiment this folder corresponds to. */
+  experiment?: FileExperiment;
+  children?: FileEntry[];
 }
 
-/** Listing of the project's on-disk artifacts directory. */
-export interface Artifacts {
+/** Listing of the project's on-disk files directory. */
+export interface ProjectFiles {
   dir: string;
-  entries: ArtifactEntry[];
+  entries: FileEntry[];
   truncated: boolean;
 }
 
-export const getArtifacts = (projectId: string) =>
-  get<Artifacts>(`/api/projects/${projectId}/artifacts`);
+export const getFiles = (projectId: string) =>
+  get<ProjectFiles>(`/api/projects/${projectId}/files`);
 
-export const getArtifactReport = (projectId: string, name: string) =>
+export const getFileReport = (projectId: string, name: string) =>
   get<{ markdown: string }>(
-    `/api/projects/${projectId}/artifacts/report?path=${encodeURIComponent(name)}`,
+    `/api/projects/${projectId}/files/report?path=${encodeURIComponent(name)}`,
   );
 
-/** Delete a file or report folder in the artifacts dir. */
-export const deleteArtifact = (projectId: string, path: string) =>
-  fetch(`/api/projects/${projectId}/artifacts?path=${encodeURIComponent(path)}`, {
+/** Delete a file or report folder in the files dir. */
+export const deleteFile = (projectId: string, path: string) =>
+  fetch(`/api/projects/${projectId}/files?path=${encodeURIComponent(path)}`, {
     method: "DELETE",
   }).then((r) => json<{ ok: boolean }>(r));
 
-/** Raw artifact file (images, CSVs, report figures) served by the API. */
-export const artifactFileUrl = (projectId: string, path: string) =>
-  `/api/projects/${projectId}/artifacts/file?path=${encodeURIComponent(path)}`;
+/** Raw file (images, CSVs, report figures) served by the API. */
+export const fileUrl = (projectId: string, path: string) =>
+  `/api/projects/${projectId}/files/file?path=${encodeURIComponent(path)}`;
 
 export interface GitSettings {
   gitVersion: string | null;
