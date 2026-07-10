@@ -55,8 +55,8 @@ export interface OrxEventHandlers {
   onRun: (run: Run) => void;
   onExperiment: (experiment: Experiment) => void;
   onProject: (project: Project) => void;
-  /** The project's artifacts dir changed on disk — refetch the listing. */
-  onArtifacts?: (projectId: string) => void;
+  /** The project's files dir changed on disk — refetch the listing. */
+  onFiles?: (projectId: string) => void;
 }
 
 export function useOrxEvents(handlers: OrxEventHandlers) {
@@ -84,9 +84,9 @@ export function useOrxEvents(handlers: OrxEventHandlers) {
       const d = parse<{ project: Project }>(e as MessageEvent);
       if (d?.project) ref.current.onProject(d.project);
     });
-    es.addEventListener("artifacts.updated", (e) => {
+    es.addEventListener("files.updated", (e) => {
       const d = parse<{ projectId: string }>(e as MessageEvent);
-      if (d?.projectId) ref.current.onArtifacts?.(d.projectId);
+      if (d?.projectId) ref.current.onFiles?.(d.projectId);
     });
     es.addEventListener("run.log", (e) => {
       const d = parse<RunLogEvent>(e as MessageEvent);

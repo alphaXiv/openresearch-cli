@@ -6,9 +6,9 @@
 //! in `local_experiments`. CLI commands check the local store FIRST and only
 //! require credentials on the server path.
 
-pub mod artifacts;
 pub mod chat;
 pub mod experiments;
+pub mod files;
 pub mod git;
 pub mod github;
 pub mod harness;
