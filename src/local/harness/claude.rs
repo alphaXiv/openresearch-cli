@@ -341,9 +341,11 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
         anyhow!("claude not found on PATH — install Claude Code and run `claude` once to sign in")
     })?;
     let project = ctx.project.clone();
-    let (repo, playbook) = tokio::task::spawn_blocking(move || ensure_playbook(&project))
-        .await
-        .map_err(|e| anyhow!("playbook task failed: {e}"))??;
+    let session_id = ctx.session_id.clone();
+    let (repo, playbook) =
+        tokio::task::spawn_blocking(move || ensure_playbook(&project, &session_id))
+            .await
+            .map_err(|e| anyhow!("playbook task failed: {e}"))??;
 
     let mut cmd = Command::new(&bin);
     cmd.args([

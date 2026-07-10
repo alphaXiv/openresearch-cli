@@ -570,9 +570,10 @@ impl ChatHost {
         if let Ok(store) = Store::open() {
             if let Ok(Some(session)) = store.get_chat_session(session_id) {
                 if session.harness == "opencode" {
-                    if let (Some(nid), Some(port)) =
-                        (&session.native_session_id, self.opencode.proxy_port().await)
-                    {
+                    if let (Some(nid), Some(port)) = (
+                        &session.native_session_id,
+                        self.opencode.port_for(session_id).await,
+                    ) {
                         let url = format!("http://127.0.0.1:{port}/session/{nid}/abort");
                         let _ = self.http.post(url).body("{}").send().await;
                     }
@@ -680,12 +681,33 @@ impl ChatHost {
 
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
         let _ = self.interrupt(session_id).await;
+        // A live opencode serve child would keep running in (and lock) the
+        // session's worktree.
+        self.opencode.kill_session(session_id).await;
         // Drop the session's respond lock so the map doesn't retain an entry for
         // a session that no longer exists.
         self.respond_locks.lock().await.remove(session_id);
-        Store::open()?.delete_chat_session(session_id)?;
+        let store = Store::open()?;
+        // Read before the row disappears: worktree cleanup needs the repo.
+        let session = store.get_chat_session(session_id)?;
+        store.delete_chat_session(session_id)?;
+        if let Some(session) = session {
+            if let Ok(Some(project)) = store.get_local_project(&session.project_id) {
+                cleanup_session_worktree(&project, session_id);
+            }
+        }
         Ok(())
     }
+}
+
+/// Remove a deleted session's worktree in the background — git + rm are
+/// blocking and best-effort, and must never hold up the delete response.
+pub fn cleanup_session_worktree(project: &LocalProject, session_id: &str) {
+    let (owner, repo) = (project.github_owner.clone(), project.github_repo.clone());
+    let session_id = session_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        crate::local::git::remove_session_worktree(&owner, &repo, &session_id);
+    });
 }
 
 /// A user's answer to an interactive prompt.

@@ -333,13 +333,13 @@ async fn reply_inline(ctx: &ResumeCtx, prompt: &WirePrompt, answer: &PromptAnswe
             "this turn is no longer running — its prompt can't be answered"
         ));
     }
-    // Reach the live serve child through the shared host, exactly as
-    // `ChatHost::interrupt` does — the reply goes to the same loopback serve
-    // whose `session.prompt` POST is paused on this prompt.
+    // Reach this session's live serve child through the shared host, exactly
+    // as `ChatHost::interrupt` does — the reply goes to the same loopback
+    // serve whose `session.prompt` POST is paused on this prompt.
     let port = ctx
         .host
         .opencode
-        .proxy_port()
+        .port_for(&ctx.session_id)
         .await
         .ok_or_else(|| anyhow!("opencode serve is not running — cannot deliver the reply"))?;
     let base = format!("http://127.0.0.1:{port}");
@@ -395,8 +395,13 @@ fn opencode_agent(mode: Option<PermissionMode>) -> &'static str {
 }
 
 async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
-    // Lazy bring-up: spawns serve for this project or reuses the live child.
-    let status = ctx.host.opencode.ensure(&ctx.project).await?;
+    // Lazy bring-up: spawns serve in this session's worktree or reuses the
+    // session's live child.
+    let status = ctx
+        .host
+        .opencode
+        .ensure(&ctx.project, &ctx.session_id)
+        .await?;
     let port = status
         .port
         .ok_or_else(|| anyhow!("opencode agent has no port"))?;
