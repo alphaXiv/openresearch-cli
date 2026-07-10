@@ -2273,6 +2273,23 @@ textarea::placeholder {
 .artifact-tree-row:hover .artifact-tree-del {
   visibility: visible;
 }
+.artifact-exp-chip {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--subtext);
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.artifact-tree-divider {
+  padding: 8px 12px 2px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
 .report-date {
   font-size: 11px;
   color: var(--muted);

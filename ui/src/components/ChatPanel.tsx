@@ -1,4 +1,4 @@
-import { ChevronRight, CornerDownLeft, FlaskConical, PanelLeft, Package, Plus, X } from "lucide-react";
+import { ChevronRight, CornerDownLeft, FlaskConical, FolderOpen, PanelLeft, Plus, X } from "lucide-react";
 import { useEffect, useReducer, useRef, useState } from "react";
 import {
   chatAttachmentUrl,
@@ -496,9 +496,9 @@ export function ChatPanel({
   railOpen: boolean;
   /** Reopen the rail (from the chat header's sidebar icon). */
   onShowRail: () => void;
-  /** What the middle pane shows: chat, artifacts, or a settings section. */
-  mainView: "chat" | "artifacts" | SettingsTab;
-  onSelectMainView: (view: "chat" | "artifacts" | SettingsTab) => void;
+  /** What the middle pane shows: chat, files, or a settings section. */
+  mainView: "chat" | "files" | SettingsTab;
+  onSelectMainView: (view: "chat" | "files" | SettingsTab) => void;
   /** Whether the right panel is showing (toggled from the chat header). */
   panelOpen: boolean;
   onTogglePanel: () => void;
@@ -765,11 +765,11 @@ export function ChatPanel({
           New session
         </button>
         <button
-          className={`rail-nav-item ${mainView === "artifacts" ? "active" : ""}`}
-          onClick={() => onSelectMainView("artifacts")}
+          className={`rail-nav-item ${mainView === "files" ? "active" : ""}`}
+          onClick={() => onSelectMainView("files")}
         >
-          <Package size={15} />
-          Artifacts
+          <FolderOpen size={15} />
+          Files
         </button>
         {SETTINGS_NAV.map((item) => (
           <button

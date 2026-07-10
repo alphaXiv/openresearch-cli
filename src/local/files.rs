@@ -1,10 +1,17 @@
-//! Per-project artifacts directory — a plain folder on the user's machine
-//! (`<data dir>/artifacts/<project slug>/`). The filesystem is the source of
-//! truth: no registry, no upload step. The dashboard's Artifacts tab is an
+//! Per-project files directory — a plain folder on the user's machine
+//! (`<data dir>/files/<project slug>/`). The filesystem is the source of
+//! truth: no registry, no upload step. The dashboard's Files tab is an
 //! explorer over this folder; a folder with a top-level `report.md` is still
 //! just a folder, it only additionally renders as a report.
+//!
+//! Layout convention (enforced by prompt + UI grouping, not by validation):
+//! every top-level folder corresponds to an experiment, named by its slug —
+//! `<slug>/report.md` plus figures. The reserved `project/` namespace holds
+//! cross-experiment syntheses and anything not tied to one node (its name is
+//! kept out of the experiment-slug space by `experiments::unique_slug`).
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
@@ -13,30 +20,48 @@ use serde::Serialize;
 use crate::error::{anyhow, Result};
 use crate::store::data_dir;
 
-use super::model::LocalProject;
+use super::model::{LocalExperiment, LocalProject};
 
-/// Files surfaced by the OS that aren't artifacts.
+/// Top-level folder reserved for project-wide reports (cross-experiment
+/// syntheses, lit reviews). Never a valid experiment slug.
+pub const PROJECT_NAMESPACE: &str = "project";
+
+/// Files surfaced by the OS that aren't the user's or the agent's.
 const IGNORED: &[&str] = &[".DS_Store", "Thumbs.db"];
 
 /// Listing cap — a runaway directory shouldn't stall the 2Hz event loop.
 const MAX_ENTRIES: usize = 2000;
 
-/// `<data dir>/artifacts/<slug>/` — slugs are unique per store and filesystem-safe.
-pub fn artifacts_dir(project: &LocalProject) -> PathBuf {
-    data_dir().join("artifacts").join(&project.slug)
+/// `<data dir>/files/`, migrating the pre-rename `artifacts/` root in place
+/// the first time it's touched (the tab and dir used to be called Artifacts).
+fn files_root() -> PathBuf {
+    let root = data_dir().join("files");
+    let legacy = data_dir().join("artifacts");
+    if !root.exists() && legacy.is_dir() {
+        // Same filesystem (sibling dirs), so a plain rename; on failure fall
+        // through — ensure_dir will create the new root and the legacy dir
+        // simply stops being served.
+        let _ = std::fs::rename(&legacy, &root);
+    }
+    root
 }
 
-/// Create the artifacts dir if missing and return it.
+/// `<data dir>/files/<slug>/` — slugs are unique per store and filesystem-safe.
+pub fn files_dir(project: &LocalProject) -> PathBuf {
+    files_root().join(&project.slug)
+}
+
+/// Create the project's files dir if missing and return it.
 pub fn ensure_dir(project: &LocalProject) -> Result<PathBuf> {
-    let dir = artifacts_dir(project);
+    let dir = files_dir(project);
     std::fs::create_dir_all(&dir)
         .map_err(|e| anyhow!("Could not create {}: {}", dir.display(), e))?;
     Ok(dir)
 }
 
 /// Relative, no `..`/`.` segments, no backslashes — a requested path can't
-/// escape the artifacts dir.
-pub fn is_safe_artifact_path(p: &str) -> bool {
+/// escape the files dir.
+pub fn is_safe_rel_path(p: &str) -> bool {
     !p.is_empty()
         && !p.starts_with('/')
         && !p.contains('\\')
@@ -45,7 +70,7 @@ pub fn is_safe_artifact_path(p: &str) -> bool {
             .any(|seg| seg == ".." || seg == "." || seg.is_empty())
 }
 
-/// Best-effort content type from a file extension (serving artifact files).
+/// Best-effort content type from a file extension (serving files).
 pub fn content_type_for_path(path: &str) -> &'static str {
     match path
         .rsplit('.')
@@ -68,10 +93,25 @@ pub fn content_type_for_path(path: &str) -> &'static str {
     }
 }
 
-/// One node of the artifacts tree: a file or a directory with its children.
+/// The experiment a top-level folder corresponds to (folder name == slug),
+/// so the tab can render folders grouped by experiment.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ArtifactEntry {
+pub struct FileExperiment {
+    pub id: String,
+    pub slug: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub branch_name: String,
+    /// The experiment's most recent run status, if it has ever run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_run_status: Option<String>,
+}
+
+/// One node of the files tree: a file or a directory with its children.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEntry {
     pub name: String,
     /// Dir-relative, `/`-joined — the id for file/report/delete endpoints.
     pub path: String,
@@ -83,17 +123,20 @@ pub struct ArtifactEntry {
     /// rendered-report view on top of the normal folder row.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report_title: Option<String>,
+    /// Top-level dirs only: the experiment this folder is named for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experiment: Option<FileExperiment>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub children: Vec<ArtifactEntry>,
+    pub children: Vec<FileEntry>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ArtifactsListing {
-    /// Absolute path of the artifacts dir, shown in the UI so the user can
-    /// drop files in.
+pub struct FilesListing {
+    /// Absolute path of the files dir, shown in the UI so the user can drop
+    /// files in.
     pub dir: String,
-    pub entries: Vec<ArtifactEntry>,
+    pub entries: Vec<FileEntry>,
     pub truncated: bool,
 }
 
@@ -132,7 +175,7 @@ fn report_title(md_path: &Path, fallback: &str) -> String {
 
 /// Recursively build the tree under `dir`, counting nodes against
 /// `MAX_ENTRIES`. Returns (children, hit_cap).
-fn collect_tree(dir: &Path, rel_prefix: &str, seen: &mut usize) -> (Vec<ArtifactEntry>, bool) {
+fn collect_tree(dir: &Path, rel_prefix: &str, seen: &mut usize) -> (Vec<FileEntry>, bool) {
     let mut out = Vec::new();
     let mut truncated = false;
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -158,23 +201,25 @@ fn collect_tree(dir: &Path, rel_prefix: &str, seen: &mut usize) -> (Vec<Artifact
             let report_title = report_md.is_file().then(|| report_title(&report_md, &name));
             let (children, hit) = collect_tree(&entry.path(), &rel, seen);
             truncated |= hit;
-            out.push(ArtifactEntry {
+            out.push(FileEntry {
                 name,
                 path: rel,
                 is_dir: true,
                 size: 0,
                 modified_at: mtime_ms(&md),
                 report_title,
+                experiment: None,
                 children,
             });
         } else if md.is_file() {
-            out.push(ArtifactEntry {
+            out.push(FileEntry {
                 name,
                 path: rel,
                 is_dir: false,
                 size: md.len(),
                 modified_at: mtime_ms(&md),
                 report_title: None,
+                experiment: None,
                 children: Vec::new(),
             });
         }
@@ -184,12 +229,32 @@ fn collect_tree(dir: &Path, rel_prefix: &str, seen: &mut usize) -> (Vec<Artifact
     (out, truncated)
 }
 
-/// Scan the artifacts dir (creating it if missing) into a file tree.
-pub fn list(project: &LocalProject) -> Result<ArtifactsListing> {
+/// Scan the files dir (creating it if missing) into a file tree. Top-level
+/// folders named for an experiment slug are decorated with that experiment
+/// (plus its latest run status from `latest_status`, keyed by experiment id)
+/// so the tab can group by experiment.
+pub fn list(
+    project: &LocalProject,
+    experiments: &[LocalExperiment],
+    latest_status: &HashMap<String, String>,
+) -> Result<FilesListing> {
     let dir = ensure_dir(project)?;
     let mut seen = 0;
-    let (entries, truncated) = collect_tree(&dir, "", &mut seen);
-    Ok(ArtifactsListing {
+    let (mut entries, truncated) = collect_tree(&dir, "", &mut seen);
+    let by_slug: HashMap<&str, &LocalExperiment> =
+        experiments.iter().map(|e| (e.slug.as_str(), e)).collect();
+    for entry in entries.iter_mut().filter(|e| e.is_dir) {
+        if let Some(exp) = by_slug.get(entry.name.as_str()) {
+            entry.experiment = Some(FileExperiment {
+                id: exp.id.clone(),
+                slug: exp.slug.clone(),
+                title: exp.title.clone(),
+                branch_name: exp.branch_name.clone(),
+                latest_run_status: latest_status.get(&exp.id).cloned(),
+            });
+        }
+    }
+    Ok(FilesListing {
         dir: dir.to_string_lossy().into_owned(),
         entries,
         truncated,
@@ -198,28 +263,28 @@ pub fn list(project: &LocalProject) -> Result<ArtifactsListing> {
 
 /// A report folder's `report.md` body, by dir-relative folder path.
 pub fn read_report_markdown(project: &LocalProject, folder: &str) -> Result<String> {
-    if !is_safe_artifact_path(folder) {
+    if !is_safe_rel_path(folder) {
         return Err(anyhow!("invalid report path: {folder}"));
     }
-    let path = artifacts_dir(project).join(folder).join("report.md");
+    let path = files_dir(project).join(folder).join("report.md");
     std::fs::read_to_string(&path).map_err(|e| anyhow!("Could not read {}: {}", path.display(), e))
 }
 
-/// One file in the artifacts dir, by dir-relative path.
+/// One file in the files dir, by dir-relative path.
 pub fn read_file(project: &LocalProject, rel_path: &str) -> Result<Vec<u8>> {
-    if !is_safe_artifact_path(rel_path) {
-        return Err(anyhow!("invalid artifact path: {rel_path}"));
+    if !is_safe_rel_path(rel_path) {
+        return Err(anyhow!("invalid file path: {rel_path}"));
     }
-    let path = artifacts_dir(project).join(rel_path);
+    let path = files_dir(project).join(rel_path);
     std::fs::read(&path).map_err(|e| anyhow!("Could not read {}: {}", path.display(), e))
 }
 
-/// Delete a file or folder (report) in the artifacts dir.
+/// Delete a file or folder (report) in the files dir.
 pub fn delete_entry(project: &LocalProject, rel_path: &str) -> Result<()> {
-    if !is_safe_artifact_path(rel_path) {
-        return Err(anyhow!("invalid artifact path: {rel_path}"));
+    if !is_safe_rel_path(rel_path) {
+        return Err(anyhow!("invalid file path: {rel_path}"));
     }
-    let path = artifacts_dir(project).join(rel_path);
+    let path = files_dir(project).join(rel_path);
     let md = std::fs::symlink_metadata(&path)
         .map_err(|e| anyhow!("Could not stat {}: {}", path.display(), e))?;
     if md.is_dir() {
@@ -233,7 +298,7 @@ pub fn delete_entry(project: &LocalProject, rel_path: &str) -> Result<()> {
 /// Cheap change fingerprint (paths + sizes + mtimes) for the SSE diff loop.
 /// A missing dir hashes to a stable value, so first creation is a change.
 pub fn fingerprint(project: &LocalProject) -> u64 {
-    let dir = artifacts_dir(project);
+    let dir = files_dir(project);
     let mut hasher = DefaultHasher::new();
     hash_dir(&dir, &dir, &mut hasher, &mut 0);
     hasher.finish()
