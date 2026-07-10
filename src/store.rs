@@ -160,6 +160,12 @@ impl Store {
         ] {
             let _ = conn.execute(ddl, []);
         }
+        // Older builds of this branch created a one-root-per-project unique
+        // index; multiple baselines are allowed, so make sure it's gone.
+        let _ = conn.execute(
+            "DROP INDEX IF EXISTS uidx_local_experiments_project_baseline",
+            [],
+        );
         // Data migration: the chat_sessions.permission_mode wire ids were
         // neutralized off Claude Code's `--permission-mode` spelling (`default`,
         // `acceptEdits`, `bypassPermissions`) onto harness-agnostic ids (`ask`,

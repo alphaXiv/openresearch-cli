@@ -137,6 +137,10 @@ only the commands listed below exist; use this project id (`{id}`) for every
 
 Orient with `orx projects` and `orx runs {id}`.
 
+**If the experiment tree is empty** (a fresh project), create the baseline
+first: `orx create-experiment {id} --title "Baseline"` (no `--parent`). Give it
+the run command, run it once for reference numbers, then branch children off it.
+
 ## Working alongside other agents
 
 Several chat sessions may drive this project at once, each in its own worktree
@@ -162,8 +166,10 @@ of the same clone. Git state is shared between you:
 Breaking any of these silently invalidates results — they are not style
 preferences.
 
-1. **Never edit the baseline (the root experiment).** The root is the control
-   every variant is measured against. To try an idea, **branch a child**
+1. **Never edit a baseline (root experiment) once it exists.** A root is the
+   control its variants are measured against — on a fresh project you create
+   it (first `orx create-experiment`, no `--parent`), and from then on it is
+   frozen. To try an idea, **branch a child**
    (`orx create-experiment … --parent <expId>`) and edit the child's branch.
 2. **The run command and the environment are a fixed contract — identical on
    every node.** Children inherit it verbatim. If the project has no run
@@ -184,7 +190,7 @@ preferences.
 | Command | What it does |
 |---|---|
 | `orx projects` | List projects; local ones are tagged `(local)`. |
-| `orx create-experiment {id} --title "<t>" [--description "<d>"] [--parent <expId>] [--run-command "<cmd>"]` | New node, branched `orx/<slug>` off the parent's tip (project root when `--parent` is omitted) and pushed to GitHub. |
+| `orx create-experiment {id} --title "<t>" [--description "<d>"] [--parent <expId> \| --baseline] [--run-command "<cmd>"]` | New node, branched `orx/<slug>` off the parent's tip and pushed to GitHub. Omit `--parent`: attaches under the oldest project root — or, on an empty project, becomes the baseline root itself. `--baseline` forces another root (multiple baselines are allowed). |
 | `orx project view {id}` / `orx project edit {id} --run-command "<cmd>"` | Inspect the project / set its default run command. |
 | `orx exp status <expId>` | Node's branch, command, and latest run. |
 | `orx exp desc <expId> [--set "<text>" \| --stdin]` | Read/overwrite the node's notes. Record findings here. |
@@ -207,6 +213,9 @@ they hit public hosts and need no login.
 
 Carry one goal across many runs:
 
+0. **Round 0 — the baseline** (empty project only): `orx create-experiment {id}
+   --title "Baseline"` (no `--parent`), set the run command, launch it once.
+   Its numbers are the reference every variant is judged against.
 1. **Branch**: `orx create-experiment {id} --title "<idea>" --parent <parentId>`
    — one child per distinct thing you try.
 2. **Edit** in this worktree: `git fetch origin && git checkout <branch>`,

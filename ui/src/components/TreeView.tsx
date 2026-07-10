@@ -205,7 +205,7 @@ export function TreeView({
   if (experiments.length === 0) {
     return (
       <div className="empty-state">
-        <p>No experiments yet — ask the agent to branch one from the baseline.</p>
+        <p>No experiments yet — ask the agent in chat to create and run your baseline experiment.</p>
       </div>
     );
   }

@@ -122,8 +122,12 @@ export const listInstances = () =>
   get<{ instances: Instance[] }>("/api/instances").then((r) => r.instances);
 
 export interface NewExperiment {
-  parentExperimentId: string;
-  slug: string;
+  /** Omit on an empty project to create the baseline root; once a root
+   *  exists, an omitted parent attaches the node under the oldest root. */
+  parentExperimentId?: string;
+  /** Force a new baseline root even when the project already has one. */
+  baseline?: boolean;
+  slug?: string;
   title?: string;
   description?: string;
   runCommand?: string;

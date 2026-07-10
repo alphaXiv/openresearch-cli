@@ -21,12 +21,15 @@ These four govern everything below. Breaking any one silently invalidates your
 results — they are not style preferences. The detailed "experiment-tree model"
 section expands on the why; these are the non-negotiables.
 
-1. **Never edit the baseline (the root).** The root is the control every variant
-   is measured against. To try an idea, **branch a child** and edit the child.
-   Editing the root moves the goalposts and destroys every comparison. (One
-   exception, like rule 2's single legitimate `--set`: **seeding an *empty*
-   baseline** with starting code when it has none yet — see "Seeding an empty
-   baseline." Once the root holds real code, this rule is absolute.)
+1. **Never edit a baseline (root) once it holds real code.** A root is the
+   control its variants are measured against. Projects start with an empty
+   tree — **you create the baseline** (the first `orx create-experiment`, no
+   `--parent`) and, on a blank repo, seed it with starting code before its first
+   run (see "Seeding an empty baseline"). That setup window is the one
+   exception, like rule 2's single legitimate `--set`. From the moment a root
+   holds real code this rule is absolute: to try an idea, **branch a child**
+   and edit the child. Editing a root moves the goalposts and destroys every
+   comparison under it.
 2. **The run command *and* the environment are a fixed contract — identical on
    every node.** A child inherits its parent's run command verbatim; leave it
    alone. Do **not** give nodes different start commands, and do **not** vary
@@ -90,7 +93,7 @@ orx logout         # remove the stored token
 ### Create and run experiments (write)
 | Command | What it does |
 |---|---|
-| `orx create-project <orgId> --name "<n>" [--repo <owner/repo>]` | Create a project **and its baseline (root node)**: bound to a GitHub repo, or on a fresh blank repo when `--repo` is omitted. See below. |
+| `orx create-project <orgId> --name "<n>" [--repo <owner/repo>]` | Create a project bound to a GitHub repo (or a fresh blank repo when `--repo` is omitted). Starts with an **empty experiment tree** — create the baseline next. See below. |
 | `orx project edit <projectId> [--name "<n>"] [--description "<text>" \| --description-stdin]` | Edit a project's name and/or description (pass at least one). `--description-stdin` overwrites the description from stdin (long markdown). |
 | `orx create-experiment <projectId> --title "<t>" [...]` | Add an experiment node; prints its git branch. See below. |
 | `orx compute [--gpu <id>] [--count <n>] [--provider <name>] \| --cpu]` | List the GPU compute catalog across all providers, or CPU-only offers with `--cpu` (price-sorted). See below. |
@@ -295,9 +298,9 @@ references images by relative path (`![](images/foo.png)`).
 ## `orx create-project` — start a new project
 
 Creates a project in an organization (org ids are printed next to the org names
-in `orx projects`), then its **baseline (root node)** on the project's repo —
-one command yields a project ready to hang child experiments off. Every project
-is backed by exactly one git repo; `--repo` picks where that repo comes from:
+in `orx projects`), bound to a git repo. The project starts with an **empty
+experiment tree** — no baseline yet. Every project is backed by exactly one git
+repo; `--repo` picks where that repo comes from:
 
 ```sh
 # From an existing repo — yours (bound directly) or any readable repo
@@ -309,23 +312,24 @@ orx create-project <orgId> --name "My new idea"
 ```
 
 - `--repo` takes `owner/repo` or a github.com URL. `--branch` (only with
-  `--repo`) imports from a non-default branch. `--description` is optional.
-- The command prints the project id, repo, and the baseline's id + git branch.
-  Next steps: hang children off the baseline with
+  `--repo`) binds a non-default branch — the baseline will branch off it.
+  `--description` is optional.
+- The command prints the project id + repo. **Next step: create the baseline**
+  (the root node, the control every variant is measured against):
+  `orx create-experiment <projectId> --title "Baseline"` (no `--parent`).
+  Run it once for reference numbers, then hang children off it with
   `orx create-experiment <projectId> --title "<t>" --parent <baselineId>`.
-- For a **blank** project the baseline starts empty (a stub README): seed it
-  from existing code before launching runs — for a paper or a known idea there is
-  almost always a repo that implements it, and starting from that is faster and a
-  far better control than code written from scratch. See "Seeding an empty
-  baseline" below.
-- If the baseline step fails after the project was created, the command prints
-  the `orx create-experiment <projectId> --title "<t>"` recovery — run that
-  rather than re-running `create-project` (which would mint a second project).
+- For a **blank** project the baseline you create starts empty (a stub README):
+  seed it from existing code before launching runs — for a paper or a known idea
+  there is almost always a repo that implements it, and starting from that is
+  faster and a far better control than code written from scratch. See "Seeding
+  an empty baseline" below.
 
 ## Seeding an empty baseline — start from existing code, not from scratch
 
-A **blank** project's baseline is an empty stub (just a `README.md`) — there's no
-code to run yet. The right move is almost never to **write the implementation by
+On a **blank** project, the baseline you create (`orx create-experiment`, no
+`--parent`) starts as an empty stub (just a `README.md`) — there's no code to
+run yet. The right move is almost never to **write the implementation by
 hand.** For nearly any paper or idea there is already a repo that implements it,
 and seeding the baseline from that repo is faster, more faithful, and a far
 better control than something typed from memory. Reproductions should start from
@@ -397,12 +401,19 @@ orx create-experiment <projectId> --title "Larger batch size" --parent <experime
 
 # Baseline (root) node on the project's bound repo:
 orx create-experiment <projectId> --title "Baseline"
+
+# Additional baseline (another root) when the project already has one:
+orx create-experiment <projectId> --title "Baseline v2" --baseline
 ```
 
-- `--parent` selects the shape: with `--parent` ⇒ child; without it ⇒ baseline
-  (root) on the repo the project is already bound to. The repo a project works on
-  is chosen when the **project** is created (`orx create-project` or the web), so
-  there is no `--repo` flag here.
+- `--parent` selects the shape: with `--parent` ⇒ child; without it, on an
+  **empty project**, ⇒ the baseline (root) on the repo the project is already
+  bound to. Once a root exists, a parentless create attaches under the oldest
+  root on local projects (server projects create another baseline); pass
+  `--baseline` to explicitly add another root — projects may hold multiple
+  baselines, each the control for its own subtree. The repo a project works
+  on is chosen when the **project** is created (`orx create-project` or the
+  web), so there is no `--repo` flag here.
 - **A `--parent` child inherits the parent's run command** (and branches off its
   code). You do **not** set a run command on the child — keep it and vary the code
   on the child's git branch (see "the experiment-tree model" above).

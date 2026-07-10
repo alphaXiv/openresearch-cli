@@ -870,7 +870,10 @@ export function ChatPanel({
           <h2>
             Open<span>Research</span>
           </h2>
-          <p>Ask the agent to explore your codebase, branch experiments, and launch runs.</p>
+          <p>
+            Ask the agent to explore your codebase, create and run your baseline experiment, and
+            branch variants off it.
+          </p>
           <EmptyStateAgentHint
             harnesses={harnesses}
             selection={selection ?? defaultSelection(harnesses)}

@@ -70,6 +70,22 @@ Workflow:
 4. Publish: `trackio logbook publish <hf-username>/<openreview-id>` (the OpenReview ID from the paper reference above; after later edits, `trackio logbook sync`).
 "#;
 
+const REPRODUCE_PAPER_TEMPLATE: &str = r#"Reproduce a research paper claim by claim on the user's compute.
+
+Paper and compute: {args}
+
+Before running anything:
+1. Confirm the compute. The user should name where runs execute — an `~/.ssh/config` host alias (`orx exp run --backend ssh --host <alias>`, configurable in orx up Settings → Compute → SSH), another `orx` backend (`hf`, `modal`, `k8s` with a `--flavor`), or the local machine. If unspecified, ask before launching anything.
+2. Read the paper. If it's on alphaXiv, `orx paper <id>` gives a structured report (`--full` for raw text); `orx lit "<query>"` can find it. Otherwise ask the user for a PDF or link.
+3. Optional tracking: if the user wants metrics logged, prefer Weights & Biases — check `wandb login` / `WANDB_API_KEY` and log each run to a project named after the paper. Don't require it.
+
+Workflow:
+1. Enumerate the paper's main empirical claims (headline table/figure results first). Confirm with the user which ones to attempt.
+2. Reproduce claim by claim on the agreed compute. Simplified setups and toy-scale runs are fine when full scale is out of budget — say so explicitly when you downscale.
+3. For each claim record an honest verdict (reproduced / partially / not reproduced / not attempted), the evidence (numbers vs. paper's numbers), and the compute cost.
+4. Finish with a summary: per-claim verdicts, where results diverged and why, and what a full-scale reproduction would still need.
+"#;
+
 pub const CATALOG: &[Skill] = &[
     Skill {
         name: "lit-review",
@@ -91,6 +107,13 @@ pub const CATALOG: &[Skill] = &[
         arg_hint: "<paper title> (OpenReview <id>)",
         template: ICML_REPRO_TEMPLATE,
         no_args: "(none given — ask the user which ICML 2026 paper to reproduce: title plus OpenReview ID)",
+    },
+    Skill {
+        name: "reproduce-paper",
+        description: "Reproduce a paper claim by claim on compute you specify",
+        arg_hint: "<paper> on <compute>",
+        template: REPRODUCE_PAPER_TEMPLATE,
+        no_args: "(none given — ask the user which paper to reproduce and what compute to run on)",
     },
 ];
 
@@ -139,6 +162,15 @@ mod tests {
         assert!(out.contains("Paper: Maximum Likelihood RL (OpenReview EeuLO2BjFN)"));
         assert!(out.contains("trackio logbook publish"));
         assert!(expand("/icml-repro").unwrap().contains("ask the user"));
+    }
+
+    #[test]
+    fn expands_reproduce_paper_skill() {
+        let out = expand("/reproduce-paper Maximum Likelihood RL on ssh host lambda-a100").unwrap();
+        assert!(out.contains("Paper and compute: Maximum Likelihood RL on ssh host lambda-a100"));
+        assert!(out.contains("Confirm the compute"));
+        assert!(!out.contains("trackio"));
+        assert!(expand("/reproduce-paper").unwrap().contains("ask the user"));
     }
 
     #[test]

@@ -1,7 +1,13 @@
 //!
-//! Creates an experiment node. Two shapes, picked by flags:
+//! Creates an experiment node. Shapes, picked by flags:
 //!   --parent <id>   -> child experiment branched off that parent
-//!   (no parent)     -> baseline (root) experiment on the project's bound repo
+//!   --baseline      -> a new baseline (root), even when roots already exist —
+//!                      projects may hold multiple baselines
+//!   (no flags)      -> the oldest project root when one exists (local
+//!                      projects), or the baseline (root) when the tree is
+//!                      empty — projects start with no experiments, so the
+//!                      first create is the baseline: the control its
+//!                      variants are measured against
 //! A title is always required.
 //!
 //! Note: the repo a project works on is chosen when the PROJECT is created
@@ -9,7 +15,8 @@
 //! The baseline is materialized on whatever repo the project is already bound to.
 
 use crate::client::{
-    create_child_experiment, import_baseline, CreateChildBody, Experiment, ImportBaselineBody,
+    create_baseline_experiment, create_child_experiment, CreateBaselineExperimentBody,
+    CreateChildBody, Experiment,
 };
 use crate::error::{anyhow, require_credentials, Result};
 use crate::store::Store;
@@ -33,17 +40,19 @@ pub async fn run(args: crate::CreateExperimentArgs) -> Result<()> {
             &project,
             title,
             args.parent,
+            args.baseline,
             args.description,
             args.run_command,
         );
     }
 
-    // The server create APIs carry no run command field — refuse rather than
-    // silently drop it.
-    if args.run_command.is_some() {
+    // The server child-create API carries no run command field — refuse rather
+    // than silently drop it. (The baseline create below does accept one.)
+    if args.run_command.is_some() && args.parent.is_some() {
         return Err(anyhow!(
-            "--run-command is supported for local projects only. For server \
-             projects, set it after creation with `orx exp cmd <expId> --set '<cmd>'`."
+            "--run-command is supported for local projects and server baselines \
+             only. For server child experiments, set it after creation with \
+             `orx exp cmd <expId> --set '<cmd>'`."
         ));
     }
 
@@ -67,14 +76,15 @@ pub async fn run(args: crate::CreateExperimentArgs) -> Result<()> {
         kind = "child".to_string();
     } else {
         // Baseline on the project's already-bound GitHub repo. The server
-        // branches `orx/<slug>` off the repo's default branch.
-        let envelope = import_baseline(
+        // branches `orx/<slug>` off the branch picked at project creation
+        // (the repo's default unless one was chosen).
+        let envelope = create_baseline_experiment(
             &creds,
             &args.project_id,
-            &ImportBaselineBody {
+            &CreateBaselineExperimentBody {
                 title: Some(title),
                 description,
-                generate_suggestions: None,
+                run_command: args.run_command,
             },
         )
         .await?;
@@ -102,13 +112,15 @@ pub async fn run(args: crate::CreateExperimentArgs) -> Result<()> {
 }
 
 /// Local-mode create: child = branch `orx/<slug>` off the parent (pushed to
-/// origin so HF jobs can clone it). No parent = child of the project's root
-/// experiment — a second root is never created here.
+/// origin so HF jobs can clone it). No parent = child of the project's oldest
+/// root when one exists; on an empty project (or with `--baseline`) the new
+/// row becomes a baseline root. Projects may hold multiple baselines.
 fn run_local(
     store: &Store,
     project: &crate::local::model::LocalProject,
     title: String,
     parent: Option<String>,
+    baseline: bool,
     description: Option<String>,
     run_command: Option<String>,
 ) -> Result<()> {
@@ -121,6 +133,7 @@ fn run_local(
                 parent_id
             )
         })?),
+        None if baseline => None,
         None => {
             let root = crate::local::experiments::project_root(store, &project.id)?;
             defaulted_to_root = root.is_some();

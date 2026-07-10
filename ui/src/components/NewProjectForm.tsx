@@ -152,7 +152,7 @@ export function NewProjectForm({
               />
             </label>
             <label>
-              Baseline branch
+              Branch
               <input
                 value={branch}
                 onChange={(e) => setBranch(e.target.value)}
