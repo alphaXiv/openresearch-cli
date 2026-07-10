@@ -269,6 +269,16 @@ pub struct ChatHost {
     /// contend. (The busy `turns` slot can't gate this: an inline harness is
     /// *deliberately* busy while paused on the prompt.)
     respond_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// Guards the read-modify-write of a chat message's `parts_json` blob so two
+    /// writers can't lost-update each other. The dangerous pair: a still-running
+    /// opencode turn's `flush` (which carries a concurrently-resolved card's flag
+    /// forward via `adopt_resolved_prompts`) vs `respond`'s `mark_prompt_resolved`
+    /// — both do read→modify→write on the *same* message, and SQLite's WAL
+    /// serializes the writes but not the logical transaction. A single process-
+    /// wide sync mutex (writes are brief and already WAL-serialized, so this adds
+    /// no real contention) makes each RMW atomic. Sync because `flush` is sync;
+    /// never held across an `.await`.
+    msg_write: std::sync::Mutex<()>,
 }
 
 /// Reserves a session's turn slot for the duration of `send_message`'s setup.
@@ -335,6 +345,7 @@ impl ChatHost {
             events,
             turns: Mutex::new(HashMap::new()),
             respond_locks: Mutex::new(HashMap::new()),
+            msg_write: std::sync::Mutex::new(()),
         }
     }
 
@@ -603,8 +614,13 @@ impl ChatHost {
         let session = Store::open()?
             .get_chat_session(&req.session_id)?
             .ok_or_else(|| anyhow!("chat session not found"))?;
-        let prompt = unresolved_prompt(&req.session_id, &req.prompt_id)?
-            .ok_or_else(|| anyhow!("prompt not found or already answered"))?;
+        // Already resolved (the loser of a double-submit, or a re-click) is a
+        // clean no-op — NOT an error. Returning `Err` here would make the UI's
+        // catch clear `busy` on a session whose turn is still streaming; a plain
+        // `Ok` leaves the live turn (and its busy state) untouched.
+        let Some(prompt) = unresolved_prompt(&req.session_id, &req.prompt_id)? else {
+            return Ok(());
+        };
         let harness = crate::local::harness::chat_harness(&session.harness)
             .ok_or_else(|| anyhow!("unknown harness: {}", session.harness))?;
 
@@ -626,7 +642,7 @@ impl ChatHost {
         // Mark resolved and broadcast the updated card so it renders read-only
         // on every client immediately (send_message only emits the new user
         // message, never the mutated assistant one).
-        let resolved_msg = mark_prompt_resolved(&req.session_id, &req.prompt_id)?
+        let resolved_msg = mark_prompt_resolved(&self.msg_write, &req.session_id, &req.prompt_id)?
             .ok_or_else(|| anyhow!("prompt not found"))?;
         self.emit("chat.message", message_json(&resolved_msg, &req.session_id));
 
@@ -756,7 +772,16 @@ fn unresolved_prompt(session_id: &str, prompt_id: &str) -> Result<Option<WirePro
 /// last assistant message that carries it, persist it, and return the mutated
 /// message (so the caller can broadcast a `chat.message` and the card renders
 /// read-only). `None` if no such prompt part exists.
-fn mark_prompt_resolved(session_id: &str, prompt_id: &str) -> Result<Option<WireMessage>> {
+///
+/// The read→modify→write runs under `msg_write` so it's atomic against a
+/// still-running turn's `flush` reconcile-and-persist of the same message (see
+/// `TurnCtx::flush`) — otherwise the flush could clobber this resolve.
+fn mark_prompt_resolved(
+    msg_write: &std::sync::Mutex<()>,
+    session_id: &str,
+    prompt_id: &str,
+) -> Result<Option<WireMessage>> {
+    let _guard = msg_write.lock().unwrap();
     let store = Store::open()?;
     for msg in store.list_chat_messages(session_id)?.iter().rev() {
         if msg.role != "assistant" {
@@ -900,18 +925,27 @@ impl TurnCtx {
         // — `respond` flips its `resolved` flag on the persisted message from a
         // different task. This in-memory copy still has it `false`, so a naive
         // rewrite would revert the card to actionable. Carry forward any
-        // already-resolved flag from the store before persisting. (Skipped
-        // entirely unless this message actually has prompt parts.)
-        if self.assistant.parts.iter().any(|p| p.prompt.is_some()) {
-            self.adopt_resolved_prompts(&store);
+        // already-resolved flag from the store, then persist — under `msg_write`
+        // so the read+write is atomic against a concurrent `mark_prompt_resolved`
+        // (else that reconcile-then-clobber is a lost update). Only pay the lock
+        // when this message actually carries a prompt part.
+        let has_prompt = self.assistant.parts.iter().any(|p| p.prompt.is_some());
+        {
+            // Clone the host handle so the guard borrows it, not `self` — the
+            // reconcile below needs `&mut self`.
+            let host = self.host.clone();
+            let _guard = has_prompt.then(|| host.msg_write.lock().unwrap());
+            if has_prompt {
+                self.adopt_resolved_prompts(&store);
+            }
+            store.upsert_chat_message(&StoredChatMessage {
+                id: self.assistant.id.clone(),
+                session_id: self.session_id.clone(),
+                role: "assistant".into(),
+                parts_json: serde_json::to_string(&self.assistant.parts)?,
+                created_at: self.assistant.created_at,
+            })?;
         }
-        store.upsert_chat_message(&StoredChatMessage {
-            id: self.assistant.id.clone(),
-            session_id: self.session_id.clone(),
-            role: "assistant".into(),
-            parts_json: serde_json::to_string(&self.assistant.parts)?,
-            created_at: self.assistant.created_at,
-        })?;
         self.host.emit(
             "chat.message",
             message_json(&self.assistant, &self.session_id),

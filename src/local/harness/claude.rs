@@ -2,9 +2,10 @@
 //!
 //! Chat: one `claude --print` process per turn, stream-json on stdout,
 //! multi-turn via `--resume` against Claude Code's own session store. The
-//! playbook rides `--append-system-prompt-file`; permissions are bypassed
-//! (parity with the opencode allow-all config — the playbook forbids
-//! interactive questions anyway, and headless mode couldn't answer them).
+//! playbook rides `--append-system-prompt-file`; the permission mode is
+//! `--permission-mode` from the session's setting (`auto`/`bypass` — see
+//! `options`). AskUserQuestion / ExitPlanMode surface as interactive cards; the
+//! turn ends on them and the user's answer resumes the session.
 //!
 //! Detection: `~/.claude.json` carries the signed-in OAuth account (no secrets
 //! read); `ANTHROPIC_API_KEY` is the api-key fallback.

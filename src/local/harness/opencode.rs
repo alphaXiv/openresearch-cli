@@ -580,11 +580,12 @@ fn surface_card(ctx: &mut TurnCtx, card: WirePrompt) {
 /// for this session. Returns `true` if it consumed the event (so the caller
 /// skips `handle_event`), `false` otherwise.
 ///
-/// Permissions honor the session's mode: `Auto`/`Bypass` auto-reply `always`
-/// over the live session (no blocking card); anything else surfaces a card and
-/// pauses. Questions always surface — there's no sensible auto-answer. A single
-/// flaky auto-reply must not lose the whole turn, so on POST failure we fall
-/// back to surfacing the card rather than propagating the error.
+/// Permissions honor the session's mode: only `Bypass` auto-replies `always`
+/// over the live session (no blocking card); `Auto`/`Plan` (and anything else)
+/// surface a card and pause — opencode's default is already permissive, so the
+/// rare card it raises is worth showing. Questions always surface — there's no
+/// sensible auto-answer. A single flaky auto-reply must not lose the whole turn,
+/// so on POST failure we fall back to surfacing the card rather than erroring.
 async fn handle_prompt_event(
     ctx: &mut TurnCtx,
     native_id: &str,
@@ -653,5 +654,70 @@ mod tests {
         assert_eq!(opencode_agent(Some(PermissionMode::Bypass)), "build");
         // No mode set → the default build agent, never plan.
         assert_eq!(opencode_agent(None), "build");
+    }
+
+    // `properties` payloads shaped exactly like the live `permission.asked` /
+    // `question.asked` events (verified against opencode serve). These pin the
+    // field names the parsers read — the kind that silently yields a `None` card
+    // at runtime if opencode ever renames one.
+    #[test]
+    fn permission_card_reads_id_permission_metadata() {
+        let props = json!({
+            "id": "per_abc123",
+            "sessionID": "ses_x",
+            "permission": "bash",
+            "patterns": [],
+            "metadata": { "command": "orx runs r1" },
+            "always": [],
+            "tool": { "messageID": "m1", "callID": "c1" }
+        });
+        let card = permission_card(&props).expect("should parse");
+        assert_eq!(card.kind, "permission");
+        assert_eq!(card.tool.as_deref(), Some("bash"));
+        assert_eq!(card.native_id.as_deref(), Some("per_abc123")); // the reply target
+        assert_eq!(
+            card.tool_input
+                .as_ref()
+                .and_then(|m| m.get("command"))
+                .and_then(|c| c.as_str()),
+            Some("orx runs r1")
+        );
+        // No id → no reply target → no card.
+        assert!(permission_card(&json!({ "permission": "bash" })).is_none());
+    }
+
+    #[test]
+    fn question_card_reads_first_question_and_opencode_multiple_field() {
+        let props = json!({
+            "id": "que_xyz",
+            "sessionID": "ses_x",
+            "questions": [{
+                "question": "Which backend?",
+                "header": "Backend",
+                "options": [
+                    { "label": "modal", "description": "per-second" },
+                    { "label": "k8s", "description": "your cluster" }
+                ],
+                "multiple": true
+            }]
+        });
+        let card = question_card(&props).expect("should parse");
+        assert_eq!(card.kind, "question");
+        assert_eq!(card.native_id.as_deref(), Some("que_xyz"));
+        assert_eq!(card.question.as_deref(), Some("Which backend?"));
+        assert_eq!(card.header.as_deref(), Some("Backend"));
+        assert_eq!(card.options.len(), 2);
+        assert_eq!(card.options[0].label, "modal");
+        assert_eq!(card.options[0].description.as_deref(), Some("per-second"));
+        // opencode's field is `multiple`, NOT Claude's `multiSelect`.
+        assert!(card.multi_select);
+        // A `multiSelect` (Claude's name) is NOT read → defaults to false.
+        let claude_shaped = json!({
+            "id": "que_1",
+            "questions": [{ "question": "q", "header": "h", "options": [], "multiSelect": true }]
+        });
+        assert!(!question_card(&claude_shaped).unwrap().multi_select);
+        // No questions → no card.
+        assert!(question_card(&json!({ "id": "que_1" })).is_none());
     }
 }
