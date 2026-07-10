@@ -331,7 +331,7 @@ textarea::placeholder {
   background: var(--surface);
 }
 
-/* ---- buttons (neo-brutalist) ---- */
+/* ---- buttons (quiet: 1px border, rounded, flat) ---- */
 
 .btn {
   display: inline-flex;
@@ -340,24 +340,22 @@ textarea::placeholder {
   gap: 6px;
   padding: 6px 14px;
   font-size: 12px;
-  font-weight: 700;
-  border: 2px solid var(--text);
-  border-radius: 0;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  border-radius: 8px;
   background: var(--base);
   color: var(--text);
   white-space: nowrap;
-  box-shadow: 3px 3px 0 0 var(--text);
   transition:
-    transform 80ms ease,
-    box-shadow 80ms ease;
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
 }
 .btn:hover:not(:disabled) {
-  transform: translate(1px, 1px);
-  box-shadow: 2px 2px 0 0 var(--text);
+  background: var(--surface);
 }
 .btn:active:not(:disabled) {
-  transform: translate(3px, 3px);
-  box-shadow: none;
+  background: var(--highlight);
 }
 .btn:disabled {
   opacity: 0.45;
@@ -365,34 +363,42 @@ textarea::placeholder {
 }
 .btn.primary {
   background: var(--primary);
+  border-color: var(--primary);
   color: var(--base);
+}
+.btn.primary:hover:not(:disabled),
+.btn.primary:active:not(:disabled) {
+  background: color-mix(in oklab, var(--primary) 88%, var(--text));
+  border-color: color-mix(in oklab, var(--primary) 88%, var(--text));
 }
 .btn.success {
   background: var(--accent-green);
+  border-color: var(--accent-green);
   color: #ffffff;
 }
+.btn.success:hover:not(:disabled),
+.btn.success:active:not(:disabled) {
+  background: color-mix(in oklab, var(--accent-green) 88%, var(--text));
+  border-color: color-mix(in oklab, var(--accent-green) 88%, var(--text));
+}
 .btn.danger {
-  background: var(--base);
   color: var(--accent-red);
+}
+.btn.danger:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--accent-red) 8%, transparent);
 }
 .btn.ghost {
   border-color: transparent;
-  box-shadow: none;
   color: var(--subtext);
-  font-weight: 600;
 }
 .btn.ghost:hover:not(:disabled) {
-  transform: none;
   color: var(--text);
   background: var(--surface);
 }
 .btn.sm {
   padding: 3px 9px;
   font-size: 11px;
-  box-shadow: 2px 2px 0 0 var(--text);
-}
-.btn.sm:hover:not(:disabled) {
-  box-shadow: 1px 1px 0 0 var(--text);
+  border-radius: 6px;
 }
 
 /* ---- status badge (colored dot + quiet label; live statuses pulse) ---- */
@@ -2048,26 +2054,10 @@ textarea::placeholder {
   font-size: 16px;
 }
 
-/* Soft idiom inside modals/cards/home: rounded inputs, flat buttons. */
+/* Soft idiom inside modals/cards/home: rounded inputs (buttons are already
+   the quiet flat style globally). */
 :is(.modal, .home) :is(input, select, textarea) {
   border-radius: 8px;
-}
-:is(.modal, .home) .btn {
-  border-width: 1px;
-  border-color: var(--border);
-  border-radius: 8px;
-  box-shadow: none;
-}
-:is(.modal, .home) .btn:hover:not(:disabled),
-:is(.modal, .home) .btn:active:not(:disabled) {
-  transform: none;
-  box-shadow: none;
-}
-:is(.modal, .home) .btn.primary {
-  border-color: var(--primary);
-}
-:is(.modal, .home) .btn.ghost {
-  border-color: transparent;
 }
 
 /* ---- settings ---- */
