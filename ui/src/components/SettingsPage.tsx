@@ -401,12 +401,21 @@ function ModalSection() {
 type HostTest = "testing" | SshPreflight;
 
 function HostTestCell({ test }: { test: HostTest | undefined }) {
-  if (test === undefined) return <span className="muted">—</span>;
+  if (test === undefined) return <span className="muted">never tested</span>;
   if (test === "testing") return <span className="spinner" />;
-  if (!test.reachable)
-    return <span className="badge err" title={test.error ?? undefined}>unreachable</span>;
-  if (!test.gitFound) return <span className="badge err">no git</span>;
-  return <span className="badge ok">ready</span>;
+  const badge = !test.reachable ? (
+    <span className="badge err" title={test.error ?? undefined}>unreachable</span>
+  ) : !test.gitFound ? (
+    <span className="badge err">no git</span>
+  ) : (
+    <span className="badge ok">ready</span>
+  );
+  return (
+    <>
+      {badge}
+      <span className="ssh-tested-at">{timeAgo(test.testedAt)}</span>
+    </>
+  );
 }
 
 function SshSection() {
@@ -427,7 +436,12 @@ function SshSection() {
     } catch (err) {
       setTests((t) => ({
         ...t,
-        [host]: { reachable: false, gitFound: false, error: err instanceof Error ? err.message : String(err) },
+        [host]: {
+          reachable: false,
+          gitFound: false,
+          error: err instanceof Error ? err.message : String(err),
+          testedAt: Date.now(),
+        },
       }));
     }
   }
@@ -448,7 +462,7 @@ function SshSection() {
       ) : hosts.length === 0 ? (
         <p className="settings-empty">No hosts found in ~/.ssh/config.</p>
       ) : (
-        <table className="flavor-table">
+        <table className="flavor-table ssh-table">
           <thead>
             <tr>
               <th>Host</th>
@@ -468,7 +482,8 @@ function SshSection() {
                 </td>
                 <td className="mono muted">{h.identityFile ?? "—"}</td>
                 <td>
-                  <HostTestCell test={tests[h.host]} />
+                  {/* Session-local result wins; the persisted one covers restarts. */}
+                  <HostTestCell test={tests[h.host] ?? h.lastTest} />
                 </td>
                 <td>
                   <button

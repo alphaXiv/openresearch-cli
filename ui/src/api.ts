@@ -278,6 +278,8 @@ export interface SshHost {
   user?: string;
   port?: string;
   identityFile?: string;
+  /** Most recent preflight result, persisted across restarts. */
+  lastTest?: SshPreflight;
 }
 
 export const getSshHosts = () =>
@@ -287,6 +289,8 @@ export interface SshPreflight {
   reachable: boolean;
   gitFound: boolean;
   error: string | null;
+  /** Unix millis. */
+  testedAt: number;
 }
 
 /** Live-test a host: reachable over ssh (BatchMode) and has `git`. */

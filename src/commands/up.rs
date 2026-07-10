@@ -31,7 +31,7 @@ use crate::error::{anyhow, Result};
 use crate::local;
 use crate::local::chat::ChatHost;
 use crate::local::opencode::AgentHost;
-use crate::store::{log_path, now_ms, Store, StoredChatSession, StoredRun};
+use crate::store::{log_path, now_ms, SshHostTest, Store, StoredChatSession, StoredRun};
 use crate::{browser, UpArgs};
 
 pub async fn run(args: UpArgs) -> Result<()> {
@@ -1362,9 +1362,33 @@ fn list_ssh_hosts() -> Vec<Value> {
 }
 
 async fn ssh_settings() -> ApiResult {
-    tokio::task::spawn_blocking(|| Ok(Json(json!({ "hosts": list_ssh_hosts() }))))
-        .await
-        .map_err(|e| ApiError::from(anyhow!("ssh task failed: {e}")))?
+    tokio::task::spawn_blocking(|| {
+        let mut hosts = list_ssh_hosts();
+        // Best-effort, like the preflight write: a store hiccup shouldn't take
+        // out the host listing — hosts just render as never tested.
+        let tests: HashMap<String, SshHostTest> = Store::open()
+            .and_then(|s| s.list_ssh_host_tests())
+            .unwrap_or_else(|e| {
+                eprintln!("orx up: could not load ssh test history: {e}");
+                Vec::new()
+            })
+            .into_iter()
+            .map(|t| (t.host.clone(), t))
+            .collect();
+        for h in &mut hosts {
+            let Some(t) = h
+                .get("host")
+                .and_then(Value::as_str)
+                .and_then(|a| tests.get(a))
+            else {
+                continue;
+            };
+            h["lastTest"] = json!(t);
+        }
+        Ok(Json(json!({ "hosts": hosts })))
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow!("ssh task failed: {e}")))?
 }
 
 #[derive(Deserialize)]
@@ -1379,11 +1403,25 @@ async fn ssh_preflight(Json(req): Json<SshPreflightReq>) -> ApiResult {
         return Err(bad_request("host is required"));
     }
     let p = crate::jobs::ssh::preflight(&host).await;
-    Ok(Json(json!({
-        "reachable": p.reachable,
-        "gitFound": p.git_found,
-        "error": p.error,
-    })))
+    let test = SshHostTest {
+        host,
+        reachable: p.reachable,
+        git_found: p.git_found,
+        error: p.error,
+        tested_at: now_ms(),
+    };
+    // Best-effort persistence — the UI shows "last tested" across restarts,
+    // but a store hiccup shouldn't hide a test result that already ran.
+    let record = test.clone();
+    if let Err(e) =
+        tokio::task::spawn_blocking(move || Store::open()?.upsert_ssh_host_test(&record))
+            .await
+            .map_err(|e| anyhow!("ssh task failed: {e}"))
+            .and_then(|r| r)
+    {
+        eprintln!("orx up: could not record ssh test for {}: {e}", test.host);
+    }
+    Ok(Json(json!(test)))
 }
 
 // --- harnesses ---------------------------------------------------------------

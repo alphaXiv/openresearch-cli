@@ -1,6 +1,6 @@
 /* OpenResearch design system, mirrored from openresearch.sh www/src/styles.css.
-   Light theme by default, dark via prefers-color-scheme. Neo-brutalist idiom:
-   sharp corners, 2px text-colored borders, hard offset shadows. */
+   Light theme by default, dark via prefers-color-scheme. Quiet idiom:
+   hairline borders, soft radii, flat surfaces that tint on hover. */
 
 :root {
   --base: #ffffff;
@@ -40,6 +40,9 @@
 
   --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  /* Readable column cap shared by the chat header/thread/composer (which must
+     stay in lockstep or the chat column misaligns) and the settings/doc views. */
+  --readable-col: 760px;
 
   /* Legacy aliases (pre-restyle class/inline usage). New code uses the tokens above. */
   --bg: var(--base);
@@ -267,7 +270,7 @@ textarea::placeholder {
   background: var(--overlay, rgba(0, 0, 0, 0.05));
 }
 .project-card .name {
-  font-weight: 700;
+  font-weight: 600;
   font-size: 14px;
 }
 .project-card .repo {
@@ -298,7 +301,7 @@ textarea::placeholder {
   gap: 8px;
   flex: 1;
   min-width: 0;
-  font-weight: 700;
+  font-weight: 600;
   font-size: 13px;
   color: var(--text);
   padding: 4px 6px 4px 0;
@@ -331,7 +334,7 @@ textarea::placeholder {
   background: var(--surface);
 }
 
-/* ---- buttons (neo-brutalist) ---- */
+/* ---- buttons (quiet: 1px border, rounded, flat) ---- */
 
 .btn {
   display: inline-flex;
@@ -340,24 +343,22 @@ textarea::placeholder {
   gap: 6px;
   padding: 6px 14px;
   font-size: 12px;
-  font-weight: 700;
-  border: 2px solid var(--text);
-  border-radius: 0;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  border-radius: 8px;
   background: var(--base);
   color: var(--text);
   white-space: nowrap;
-  box-shadow: 3px 3px 0 0 var(--text);
   transition:
-    transform 80ms ease,
-    box-shadow 80ms ease;
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
 }
 .btn:hover:not(:disabled) {
-  transform: translate(1px, 1px);
-  box-shadow: 2px 2px 0 0 var(--text);
+  background: var(--surface);
 }
 .btn:active:not(:disabled) {
-  transform: translate(3px, 3px);
-  box-shadow: none;
+  background: var(--highlight);
 }
 .btn:disabled {
   opacity: 0.45;
@@ -365,34 +366,38 @@ textarea::placeholder {
 }
 .btn.primary {
   background: var(--primary);
+  border-color: var(--primary);
   color: var(--base);
 }
-.btn.success {
-  background: var(--accent-green);
-  color: #ffffff;
+.btn.primary:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--primary) 88%, var(--text));
+  border-color: color-mix(in oklab, var(--primary) 88%, var(--text));
+}
+.btn.primary:active:not(:disabled) {
+  background: color-mix(in oklab, var(--primary) 80%, var(--text));
+  border-color: color-mix(in oklab, var(--primary) 80%, var(--text));
 }
 .btn.danger {
-  background: var(--base);
   color: var(--accent-red);
+}
+.btn.danger:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--accent-red) 8%, transparent);
+}
+.btn.danger:active:not(:disabled) {
+  background: color-mix(in oklab, var(--accent-red) 14%, transparent);
 }
 .btn.ghost {
   border-color: transparent;
-  box-shadow: none;
   color: var(--subtext);
-  font-weight: 600;
 }
 .btn.ghost:hover:not(:disabled) {
-  transform: none;
   color: var(--text);
   background: var(--surface);
 }
 .btn.sm {
   padding: 3px 9px;
   font-size: 11px;
-  box-shadow: 2px 2px 0 0 var(--text);
-}
-.btn.sm:hover:not(:disabled) {
-  box-shadow: 1px 1px 0 0 var(--text);
+  border-radius: 6px;
 }
 
 /* ---- status badge (colored dot + quiet label; live statuses pulse) ---- */
@@ -507,18 +512,16 @@ textarea::placeholder {
   padding: 4px 8px;
 }
 
+/* The pane fills the leftover space so the thread's scrollbar reaches its
+   right edge; the readable-col cap lives on the header, the composer, and
+   .chat-thread-inner (inside the scroller), which center themselves. */
 .chat-pane {
   flex: 1;
-  max-width: 760px;
   /* min-width:0 (not 360) so a wide panel can never force the flex row past
      the viewport; the panel's own clamp keeps the usable minimum. */
   min-width: 0;
   display: flex;
   flex-direction: column;
-  /* Centers in the leftover space; the constant side gutters live on the
-     .app-body padding + the panels' inner margins, so they don't vanish when
-     a panel collapses. */
-  margin: 0 auto;
   background: var(--base);
   min-height: 0;
 }
@@ -709,6 +712,9 @@ textarea::placeholder {
   height: 48px;
   position: relative;
   z-index: 4;
+  width: 100%;
+  max-width: var(--readable-col);
+  margin: 0 auto;
 }
 .chat-header::after {
   content: "";
@@ -724,7 +730,7 @@ textarea::placeholder {
 
 .chat-header .title {
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text);
   flex: 1;
   min-width: 0;
@@ -786,6 +792,10 @@ textarea::placeholder {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+}
+.chat-thread-inner {
+  max-width: var(--readable-col);
+  margin: 0 auto;
   /* Bottom padding clears the composer's 24px fade so the last message stays
      fully legible when scrolled to the very bottom. */
   padding: 16px 16px 32px;
@@ -1012,7 +1022,7 @@ textarea::placeholder {
   flex-shrink: 0;
 }
 
-/* composer: rounded box, neo square send button. Borderless like the header —
+/* composer: rounded box and send button. Borderless like the header —
    the thread fades into the box through a gradient hanging above it. */
 .composer {
   /* No top padding: the fade hanging above leads straight into the box. */
@@ -1021,6 +1031,9 @@ textarea::placeholder {
   position: relative;
   z-index: 4;
   background: var(--base);
+  width: 100%;
+  max-width: var(--readable-col);
+  margin: 0 auto;
 }
 .composer::before {
   content: "";
@@ -1141,6 +1154,7 @@ textarea::placeholder {
 }
 .md strong {
   color: var(--text);
+  font-weight: 600;
 }
 .md pre {
   background: var(--surface);
@@ -1237,6 +1251,7 @@ textarea::placeholder {
 .md h4 {
   color: var(--text);
   font-size: 1.05em;
+  font-weight: 600;
   margin: 12px 0 6px;
 }
 .md ul,
@@ -1648,7 +1663,7 @@ textarea::placeholder {
 .term-title {
   min-width: 0;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1832,7 +1847,7 @@ textarea::placeholder {
   gap: 12px;
 }
 .onb-card-name {
-  font-weight: 700;
+  font-weight: 600;
   font-size: 14px;
 }
 .onb-card-detail {
@@ -2038,26 +2053,10 @@ textarea::placeholder {
   font-size: 16px;
 }
 
-/* Soft idiom inside modals/cards/home: rounded inputs, flat buttons. */
+/* Soft idiom inside modals/cards/home: rounded inputs (buttons are already
+   the quiet flat style globally). */
 :is(.modal, .home) :is(input, select, textarea) {
   border-radius: 8px;
-}
-:is(.modal, .home) .btn {
-  border-width: 1px;
-  border-color: var(--border);
-  border-radius: 8px;
-  box-shadow: none;
-}
-:is(.modal, .home) .btn:hover:not(:disabled),
-:is(.modal, .home) .btn:active:not(:disabled) {
-  transform: none;
-  box-shadow: none;
-}
-:is(.modal, .home) .btn.primary {
-  border-color: var(--primary);
-}
-:is(.modal, .home) .btn.ghost {
-  border-color: transparent;
 }
 
 /* ---- settings ---- */
@@ -2606,19 +2605,15 @@ textarea::placeholder {
   color: var(--text);
   background: var(--surface);
 }
-/* The pane cap moves inside the scroller: .settings-pane un-caps .chat-pane so
-   the scroll container (and its scrollbar) reaches the pane's right edge, and
-   .settings-view re-applies the readable width from within. */
-.settings-pane {
-  max-width: none;
-}
+/* Like .chat-thread: the scroller spans the pane so its scrollbar sits at the
+   pane's right edge, and .settings-view re-applies the readable width. */
 .settings-view-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
 }
 .settings-view {
-  max-width: 760px;
+  max-width: var(--readable-col);
   margin: 0 auto;
   padding: 24px 32px 60px;
 }
@@ -2793,6 +2788,39 @@ textarea::placeholder {
 .flavor-table td {
   padding: 5px 10px 5px 0;
   border-bottom: 1px solid var(--border-variant);
+}
+
+/* ssh hosts table — fixed layout with anywhere-wrapping so long aliases and
+   key paths can never push the action column outside the card. Widths track
+   the column order in SshSection: host, address, identity (flex), status,
+   test button. */
+.ssh-table {
+  table-layout: fixed;
+}
+.ssh-table th:nth-child(1) {
+  width: 20%; /* host */
+}
+.ssh-table th:nth-child(2) {
+  width: 26%; /* address */
+}
+.ssh-table th:nth-child(4) {
+  width: 108px; /* status */
+}
+.ssh-table th:nth-child(5) {
+  width: 52px; /* test button */
+}
+.ssh-table td {
+  overflow-wrap: anywhere;
+}
+.ssh-table td:last-child {
+  padding-right: 0;
+  text-align: right;
+}
+.ssh-tested-at {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 @keyframes settings-spin {
@@ -3021,7 +3049,7 @@ textarea::placeholder {
 
 /* Rendered markdown files (.md tabs) — doc-sized type over the chat .md base. */
 .file-view-md {
-  max-width: 760px;
+  max-width: var(--readable-col);
   padding: 18px 20px 32px;
 }
 .file-view-md .md {

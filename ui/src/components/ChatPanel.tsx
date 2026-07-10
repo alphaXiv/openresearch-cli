@@ -807,14 +807,13 @@ export function ChatPanel({
 
   // A settings section replaces the chat entirely (no chat header, no
   // composer, no right panel) — only the rail-reopen affordance survives.
-  // settings-pane lifts the chat 760px cap so the scroll container (and its
-  // scrollbar) spans the pane; the readable-width cap moves inside, onto
-  // .settings-view.
+  // The pane spans the leftover width; .settings-view re-applies the readable
+  // column from inside the scroller, same as .chat-thread-inner does for chat.
   if (mainView !== "chat") {
     return (
       <>
         {railOpen && rail}
-        <section className="chat-pane settings-pane">
+        <section className="chat-pane">
           {!railOpen && (
             <div className="chat-header">
               <button
@@ -886,14 +885,16 @@ export function ChatPanel({
             stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
           }}
         >
-          {messages.map((m) => (
-            <Message key={m.id} message={m} onOpenFile={onOpenFile} onRespond={respond} />
-          ))}
-          {busy && (
-            <div className="working">
-              <span className="spinner" /> Working…
-            </div>
-          )}
+          <div className="chat-thread-inner">
+            {messages.map((m) => (
+              <Message key={m.id} message={m} onOpenFile={onOpenFile} onRespond={respond} />
+            ))}
+            {busy && (
+              <div className="working">
+                <span className="spinner" /> Working…
+              </div>
+            )}
+          </div>
         </div>
       )}
 
