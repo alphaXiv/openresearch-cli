@@ -513,7 +513,7 @@ textarea::placeholder {
 }
 
 /* The pane fills the leftover space so the thread's scrollbar reaches its
-   right edge; the readable 760px cap lives on the header, the composer, and
+   right edge; the readable-col cap lives on the header, the composer, and
    .chat-thread-inner (inside the scroller), which center themselves. */
 .chat-pane {
   flex: 1;
@@ -1022,7 +1022,7 @@ textarea::placeholder {
   flex-shrink: 0;
 }
 
-/* composer: rounded box, neo square send button. Borderless like the header —
+/* composer: rounded box and send button. Borderless like the header —
    the thread fades into the box through a gradient hanging above it. */
 .composer {
   /* No top padding: the fade hanging above leads straight into the box. */
@@ -1663,7 +1663,7 @@ textarea::placeholder {
 .term-title {
   min-width: 0;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1847,7 +1847,7 @@ textarea::placeholder {
   gap: 12px;
 }
 .onb-card-name {
-  font-weight: 700;
+  font-weight: 600;
   font-size: 14px;
 }
 .onb-card-detail {

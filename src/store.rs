@@ -555,7 +555,7 @@ impl Store {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    pub fn record_ssh_host_test(&self, t: &SshHostTest) -> Result<()> {
+    pub fn upsert_ssh_host_test(&self, t: &SshHostTest) -> Result<()> {
         self.conn.execute(
             "INSERT INTO ssh_host_tests (host, reachable, git_found, error, tested_at)
              VALUES (?1, ?2, ?3, ?4, ?5)

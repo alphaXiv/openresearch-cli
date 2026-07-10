@@ -1414,7 +1414,7 @@ async fn ssh_preflight(Json(req): Json<SshPreflightReq>) -> ApiResult {
     // but a store hiccup shouldn't hide a test result that already ran.
     let record = test.clone();
     if let Err(e) =
-        tokio::task::spawn_blocking(move || Store::open()?.record_ssh_host_test(&record))
+        tokio::task::spawn_blocking(move || Store::open()?.upsert_ssh_host_test(&record))
             .await
             .map_err(|e| anyhow!("ssh task failed: {e}"))
             .and_then(|r| r)
