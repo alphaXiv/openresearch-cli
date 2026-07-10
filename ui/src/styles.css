@@ -3071,3 +3071,164 @@ textarea::placeholder {
   color: var(--primary);
   background: var(--surface);
 }
+
+/* --- interactive prompt cards (plan / permission / question) ------------------
+   Emitted by the harness when the agent asks for a plan approval, a permission,
+   or a choice. Kept quiet: a hairline border, a thin per-kind left accent, no
+   shadow — it should read as an inline aside, not a callout that shouts. */
+.prompt-card {
+  margin: 8px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.prompt-card.plan {
+  border-left-color: var(--accent-blue);
+}
+.prompt-card.permission {
+  border-left-color: var(--accent-amber);
+}
+.prompt-card.question {
+  border-left-color: var(--accent-purple);
+}
+/* A resolved card is read-only history: mute it further. */
+.prompt-card.resolved {
+  opacity: 0.6;
+}
+
+.prompt-head {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.prompt-head code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  text-transform: none;
+  color: var(--text);
+}
+.prompt-sub {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--subtext);
+  word-break: break-word;
+}
+.prompt-q {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text);
+}
+.prompt-plan {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text);
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+/* Question options: each is a full-width button with the label on its own line
+   and the (optional) description block beneath it — never inline, or the two
+   run together ("labelDescription…"). */
+.prompt-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.prompt-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 11px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--base);
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    border-color 80ms ease,
+    background 80ms ease;
+}
+.prompt-option:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+.prompt-option.sel {
+  border-color: var(--primary);
+  background: var(--primary-subtle);
+}
+.prompt-option:disabled {
+  cursor: default;
+}
+.prompt-option-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+}
+.prompt-option-desc {
+  display: block;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  color: var(--subtext);
+}
+
+/* Action row (plan approve / permission allow-deny / multi-select submit). */
+.prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.prompt-actions .btn-primary,
+.prompt-actions .btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 13px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+  transition:
+    background 80ms ease,
+    border-color 80ms ease;
+}
+.prompt-actions .btn-primary {
+  background: var(--primary);
+  color: var(--base);
+}
+.prompt-actions .btn-primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+.prompt-actions .btn-ghost {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--subtext);
+}
+.prompt-actions .btn-ghost:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--text);
+  background: var(--surface);
+}
+.prompt-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.prompt-resolved {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}

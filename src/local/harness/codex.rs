@@ -23,6 +23,7 @@ use tokio::process::Command;
 use super::detect::{
     bin_version, find_on_path, jwt_payload, nonempty_str, read_json, title_case, HarnessInfo,
 };
+use super::options::{HarnessOptions, PermissionMode};
 use super::Harness;
 use crate::error::{anyhow, Result};
 use crate::local::chat::{prepare_env, TurnCtx, WirePart, WireToolState};
@@ -31,6 +32,12 @@ use crate::local::opencode::ensure_playbook;
 // ChatGPT-account codex rejects the -codex/-fast variants; these two are
 // what `codex exec -m` accepts (verified against codex-cli 0.142).
 const CODEX_MODELS: [&str; 2] = ["gpt-5.5", "gpt-5.4"];
+
+/// Codex's own reasoning vocabulary (id == the `model_reasoning_effort` config
+/// value). Deliberately NOT Claude's `low/medium/high/xhigh/max` — reasoning is
+/// per-harness (see `options.rs`). Verified against codex-cli 0.143.
+const CODEX_REASONING_LEVELS: [(&str, &str); 3] =
+    [("low", "Low"), ("medium", "Medium"), ("high", "High")];
 
 pub struct Codex;
 
@@ -95,6 +102,27 @@ impl Harness for Codex {
         run_turn(ctx).await
     }
 
+    fn options(&self) -> HarnessOptions {
+        // `codex exec` is non-interactive — no approval channel to prompt over
+        // (verified: on-request emits no approval event; the sandbox just allows
+        // or denies), so permission modes map onto the *sandbox policy*. We offer
+        // only Auto + Bypass, matching Claude. A `Plan`→`read-only` sandbox was
+        // considered but dropped for the same reason plan mode was dropped for
+        // Claude: read-only blocks the `orx` inspection the agent needs *and* the
+        // launches that are the point. (Codex has a real first-class Plan mode,
+        // but only over `app-server`/the TUI — `codex exec` doesn't honor it;
+        // verified `-c collaboration_mode="plan"` is accepted but ignored.)
+        //   * Auto  — workspace-write (the balanced default).
+        //   * Bypass— full access (`--dangerously-bypass-approvals-and-sandbox`).
+        HarnessOptions::none()
+            .with_permission_modes(
+                &[PermissionMode::Auto, PermissionMode::Bypass],
+                PermissionMode::Auto,
+            )
+            // Codex's own reasoning tiers via `-c model_reasoning_effort`.
+            .with_reasoning_levels(&CODEX_REASONING_LEVELS, "high")
+    }
+
     fn config_home(&self) -> Option<PathBuf> {
         Some(dirs::home_dir()?.join(".codex"))
     }
@@ -106,6 +134,34 @@ impl Harness for Codex {
     fn skill_shim(&self) -> Option<&'static str> {
         Some(super::CODEX_PROMPT)
     }
+}
+
+/// Session mode → Codex `exec` sandbox policy. `codex exec` can't prompt for
+/// approval, so the sandbox *is* the permission boundary. `Bypass` is the one
+/// mode that also drops the sandbox entirely (`--dangerously-...`); the rest run
+/// sandboxed with approvals set to `never` (nothing to escalate to). Returns
+/// `None` for `Bypass` to signal "use the bypass flag instead of `-s`".
+fn codex_sandbox(mode: Option<PermissionMode>) -> Option<&'static str> {
+    match mode.unwrap_or(PermissionMode::Auto) {
+        PermissionMode::Plan => Some("read-only"),
+        // AcceptEdits/Ask have no distinct exec semantics — treat as the
+        // balanced default so a session that carries them still runs sanely.
+        PermissionMode::Auto | PermissionMode::AcceptEdits | PermissionMode::Ask => {
+            Some("workspace-write")
+        }
+        PermissionMode::Bypass => None,
+    }
+}
+
+/// Session reasoning id → Codex `model_reasoning_effort` value. The composer only
+/// offers ids from `CODEX_REASONING_LEVELS`; an unrecognized/absent value omits
+/// the override and lets Codex apply its configured default.
+fn codex_reasoning(level: Option<&str>) -> Option<&str> {
+    let level = level?;
+    CODEX_REASONING_LEVELS
+        .iter()
+        .any(|(id, _)| *id == level)
+        .then_some(level)
 }
 
 fn command_string(v: &Value) -> String {
@@ -138,16 +194,37 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
             cmd.arg("exec");
         }
     }
-    cmd.args([
-        "--json",
-        "--skip-git-repo-check",
-        "--dangerously-bypass-approvals-and-sandbox",
-    ])
-    .current_dir(&repo)
-    .stdin(Stdio::null())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::from(crate::local::chat::harness_log("codex")?))
-    .kill_on_drop(true);
+    cmd.args(["--json", "--skip-git-repo-check"])
+        .current_dir(&repo)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(crate::local::chat::harness_log("codex")?))
+        .kill_on_drop(true);
+    // Permission mode → sandbox policy. `codex exec` can't prompt, so the
+    // sandbox is the approval boundary: non-bypass modes run sandboxed with
+    // approvals disabled (nothing to escalate to), `Bypass` drops both.
+    //
+    // Set the policy via `-c sandbox_mode=` rather than `-s`: the `exec resume`
+    // subcommand rejects `-s` ("unexpected argument"), but accepts `-c` on both
+    // the fresh and resume paths (verified against codex-cli 0.143), so one form
+    // works for the whole session lifecycle.
+    match codex_sandbox(ctx.permission_mode) {
+        Some(policy) => {
+            cmd.args([
+                "-c",
+                &format!("sandbox_mode=\"{policy}\""),
+                "-c",
+                "approval_policy=\"never\"",
+            ]);
+        }
+        None => {
+            cmd.arg("--dangerously-bypass-approvals-and-sandbox");
+        }
+    }
+    // Reasoning level → Codex's own `model_reasoning_effort` config override.
+    if let Some(effort) = codex_reasoning(ctx.reasoning_level.as_deref()) {
+        cmd.args(["-c", &format!("model_reasoning_effort=\"{effort}\"")]);
+    }
     if let Some(model) = &ctx.model {
         cmd.args(["-m", model]);
     }
@@ -337,5 +414,44 @@ fn handle_item(ctx: &mut TurnCtx, item: &Value, next_id: &mut impl FnMut(&str) -
             });
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sandbox_maps_modes_to_exec_policies() {
+        // Plan is the only read-only mode; the interactive-only modes collapse to
+        // the balanced default (exec can't tell them apart); Bypass drops the
+        // sandbox (None → the `--dangerously-...` flag).
+        assert_eq!(codex_sandbox(Some(PermissionMode::Plan)), Some("read-only"));
+        assert_eq!(
+            codex_sandbox(Some(PermissionMode::Auto)),
+            Some("workspace-write")
+        );
+        assert_eq!(
+            codex_sandbox(Some(PermissionMode::AcceptEdits)),
+            Some("workspace-write")
+        );
+        assert_eq!(
+            codex_sandbox(Some(PermissionMode::Ask)),
+            Some("workspace-write")
+        );
+        assert_eq!(codex_sandbox(Some(PermissionMode::Bypass)), None);
+        // No mode set → the balanced default, never an accidental full-access.
+        assert_eq!(codex_sandbox(None), Some("workspace-write"));
+    }
+
+    #[test]
+    fn reasoning_accepts_only_codex_ids() {
+        assert_eq!(codex_reasoning(Some("low")), Some("low"));
+        assert_eq!(codex_reasoning(Some("high")), Some("high"));
+        // Claude-only tiers and junk are dropped (the flag is omitted → CLI
+        // default), never forwarded as an invalid `model_reasoning_effort`.
+        assert_eq!(codex_reasoning(Some("xhigh")), None);
+        assert_eq!(codex_reasoning(Some("max")), None);
+        assert_eq!(codex_reasoning(None), None);
     }
 }

@@ -29,10 +29,40 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 
 use crate::error::{anyhow, Result};
-use crate::local::chat::TurnCtx;
+use crate::local::chat::{PromptAnswer, ResumeCtx, TurnCtx, WirePrompt};
 
 pub use detect::{HarnessInfo, ModelInfo};
 pub use options::{HarnessOptions, PermissionMode};
+
+/// How an answered interactive prompt flows back into the harness. The two axes
+/// a harness can live on:
+///
+/// * **End-turn-and-resume** (Claude Code): a prompt ends the CLI turn, and the
+///   answer becomes a *new user message* that continues the native session via
+///   `--resume`. These harnesses return [`ResumeAction::SendMessage`] and
+///   `ChatHost` spawns a fresh turn with that text + mode.
+/// * **Inline over a live protocol** (OpenCode): the turn is still running,
+///   paused on a `permission.asked` / `question.asked` over the serve session;
+///   the answer is POSTed back to that live process, which unblocks it. These
+///   harnesses perform the reply themselves in `resume_from_prompt` (they own
+///   the endpoint shape, and reach their live process through the `ResumeCtx`
+///   host handle) and return [`ResumeAction::Handled`] — no new turn to spawn.
+///
+/// Keeping the decision behind the trait is what lets `ChatHost::respond` stay
+/// harness-agnostic (mark resolved, busy-check, broadcast idle) while never
+/// routing an inline-approval harness through the new-message resume path.
+pub enum ResumeAction {
+    /// Resume by sending `text` as a new user message under `mode` (Claude).
+    SendMessage {
+        text: String,
+        mode: Option<PermissionMode>,
+    },
+    /// The harness already delivered the answer to its live process (OpenCode
+    /// inline reply). Nothing left for `ChatHost` but to clear `busy`.
+    Handled,
+    /// No resume — e.g. a denied permission that just closes the card.
+    Nothing,
+}
 
 /// One coding-agent integration. See the module docs for the capability model.
 #[async_trait]
@@ -68,6 +98,29 @@ pub trait Harness: Send + Sync {
     /// for the composer toggles. Default is neither control (the UI hides both).
     fn options(&self) -> HarnessOptions {
         HarnessOptions::none()
+    }
+
+    /// Decide how an answered prompt flows back, and (for inline harnesses)
+    /// deliver it. See [`ResumeAction`] for the two shapes. This runs *before*
+    /// `ChatHost::respond` marks the card resolved, so returning an `Err` (e.g.
+    /// an unanswerable selection, or a failed inline delivery) leaves the card
+    /// actionable and retryable.
+    ///
+    /// * End-turn harnesses (Claude) build a [`ResumeAction::SendMessage`] and
+    ///   let `ChatHost` spawn the follow-up turn.
+    /// * Inline harnesses (OpenCode) POST the reply to their live process here,
+    ///   reaching it through the `ctx` host handle + native session id, and
+    ///   return [`ResumeAction::Handled`].
+    ///
+    /// The default is [`ResumeAction::Nothing`] — a harness that never emits
+    /// prompts never has one to answer.
+    async fn resume_from_prompt(
+        &self,
+        _ctx: &ResumeCtx,
+        _prompt: &WirePrompt,
+        _answer: &PromptAnswer,
+    ) -> Result<ResumeAction> {
+        Ok(ResumeAction::Nothing)
     }
 
     // --- skill-install capability -----------------------------------------
@@ -221,3 +274,71 @@ If any command reports `Not logged in`, ask the user to run `orx login` first.
 Research goal:
 $ARGUMENTS
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options_for(id: &str) -> HarnessOptions {
+        registry()
+            .into_iter()
+            .find(|h| h.id() == id)
+            .unwrap_or_else(|| panic!("no harness {id}"))
+            .options()
+    }
+
+    fn mode_ids(o: &HarnessOptions) -> Vec<&str> {
+        o.permission_modes.iter().map(|c| c.id).collect()
+    }
+    fn reasoning_ids(o: &HarnessOptions) -> Vec<&str> {
+        o.reasoning_levels.iter().map(|c| c.id).collect()
+    }
+
+    /// Pin each harness's advertised composer vocabulary — this is the wire
+    /// contract the UI renders, and the whole point of the parity work. All ids
+    /// must be the neutralized (harness-agnostic) permission-mode spellings.
+    #[test]
+    fn advertised_options_per_harness() {
+        // Claude: only Auto + Bypass. `ask`/`accept-edits` aren't grantable
+        // headless, and `plan` fought the orx workflow — all three dropped.
+        let claude = options_for("claude-code");
+        assert_eq!(mode_ids(&claude), ["auto", "bypass"]);
+        assert_eq!(claude.default_permission_mode, Some("auto"));
+        assert_eq!(
+            reasoning_ids(&claude),
+            ["low", "medium", "high", "xhigh", "max"]
+        );
+
+        // Codex: Auto + Bypass (matches Claude — `plan`/read-only dropped for the
+        // same reason; `codex exec` has no real plan mode). Codex reasoning tiers.
+        let codex = options_for("codex");
+        assert_eq!(mode_ids(&codex), ["auto", "bypass"]);
+        assert_eq!(codex.default_permission_mode, Some("auto"));
+        assert_eq!(reasoning_ids(&codex), ["low", "medium", "high"]);
+
+        // OpenCode: Plan (the native plan agent) + Auto (its permissive default)
+        // + Bypass. No `ask` — opencode's default rarely prompts, so a dedicated
+        // ask mode would be hollow. No reasoning axis.
+        let opencode = options_for("opencode");
+        assert_eq!(mode_ids(&opencode), ["plan", "auto", "bypass"]);
+        assert_eq!(opencode.default_permission_mode, Some("auto"));
+        assert!(opencode.reasoning_levels.is_empty());
+    }
+
+    /// Every advertised permission-mode id must round-trip through
+    /// `PermissionMode::from_id` — i.e. a harness never advertises an id the
+    /// backend can't parse back when the session sends it.
+    #[test]
+    fn advertised_permission_ids_all_parse() {
+        for h in registry() {
+            for choice in h.options().permission_modes {
+                assert!(
+                    PermissionMode::from_id(choice.id).is_some(),
+                    "{} advertises unparseable mode {:?}",
+                    h.id(),
+                    choice.id
+                );
+            }
+        }
+    }
+}
