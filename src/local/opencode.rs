@@ -1,12 +1,14 @@
-//! opencode bootstrap for `orx up` — binary discovery, per-project config +
-//! playbook written into the repo clone, spawn + health check, and the shared
-//! `AgentHost` handle the axum server holds (`Arc<AgentHost>` in state).
+//! opencode bootstrap for `orx up` — binary discovery, per-session config +
+//! playbook written into the session's worktree, spawn + health check, and the
+//! shared `AgentHost` handle the axum server holds (`Arc<AgentHost>` in state).
 //!
-//! One opencode process at a time, cwd = the active project's clone, env
-//! inherited (that's where ANTHROPIC_API_KEY / OPENROUTER_API_KEY live —
-//! opencode auto-detects providers from env). The child dies with `orx up`
-//! via `kill_on_drop`.
+//! One opencode serve child **per chat session**, cwd = that session's private
+//! worktree (see `git::ensure_session_worktree`) so parallel agents never share
+//! a checkout. Env is inherited (that's where ANTHROPIC_API_KEY /
+//! OPENROUTER_API_KEY live — opencode auto-detects providers from env).
+//! Children die with `orx up` via `kill_on_drop`.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -21,8 +23,8 @@ use crate::local::git;
 use crate::local::model::LocalProject;
 use crate::store;
 
-/// Playbook path inside the repo clone; opencode re-reads it every turn, so
-/// rewriting the file retargets a running server without a restart.
+/// Playbook path inside the session worktree; opencode re-reads it every turn,
+/// so rewriting the file retargets a running server without a restart.
 const PLAYBOOK_REL: &str = ".openresearch/agent/autoresearch-local.md";
 
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -114,7 +116,9 @@ fn playbook_md(project: &LocalProject) -> String {
 
 You are the OpenResearch research agent for the **local** project **{name}**,
 running inside `orx up` on the user's own machine. Your working directory is
-the project's repo clone.
+**your own git worktree** of the project's repo — private to this chat
+session. Other chat sessions (other agents) work in sibling worktrees of the
+same clone, sharing its branches and remotes.
 
 - Project id: `{id}`
 - GitHub repo: `{repo}`
@@ -132,6 +136,26 @@ only the commands listed below exist; use this project id (`{id}`) for every
 `orx` command that takes one.
 
 Orient with `orx projects` and `orx runs {id}`.
+
+## Working alongside other agents
+
+Several chat sessions may drive this project at once, each in its own worktree
+of the same clone. Git state is shared between you:
+
+- **See their work before starting yours.** Local and remote branches are
+  shared across worktrees — `git branch -a` lists every experiment branch
+  (even unpushed ones), `orx runs {id}` shows what is running, and
+  `orx exp desc <expId>` holds each node's findings. Orient from these so you
+  extend the tree instead of duplicating a sibling's experiment.
+- **Keep your notes current as you go.** Other agents orient from
+  `orx exp desc` — write findings there when you learn them, not only at the
+  end of a line of work.
+- **One branch, one owner.** Git refuses to check out a branch that another
+  worktree already has checked out. If `git checkout <branch>` fails that
+  way, another agent owns that experiment — leave it alone and work on your
+  own node.
+- Your worktree starts **detached on the baseline tip**; check out your
+  experiment's branch before editing.
 
 ## Cardinal rules
 
@@ -185,8 +209,8 @@ Carry one goal across many runs:
 
 1. **Branch**: `orx create-experiment {id} --title "<idea>" --parent <parentId>`
    — one child per distinct thing you try.
-2. **Edit** in this clone: `git fetch origin && git checkout <branch>`, change
-   the code, commit, and `git push`. The job clones from GitHub, so
+2. **Edit** in this worktree: `git fetch origin && git checkout <branch>`,
+   change the code, commit, and `git push`. The job clones from GitHub, so
    **unpushed work never runs**.
 3. **Launch**: `orx exp run <expId> --backend <backend>` (`--flavor` for
    hf/modal, `--host` for ssh; k8s reads the committed manifest).
@@ -226,7 +250,7 @@ the wake-up to reconcile and continue the loop.)
 When you point the reader at a repo source file in chat, wrap it so they can
 open it in the dashboard's file viewer: `<file path="relative/path.py" />`, or
 with a line target `<file path="relative/path.py" lines="20-40" />`. Use
-repo-relative paths (from the clone root), not absolute paths. Reach for this
+repo-relative paths (from the worktree root), not absolute paths. Reach for this
 whenever you'd otherwise write a bare file path or a markdown link to a file —
 the file you edited, the entrypoint you're describing, the config you changed.
 
@@ -327,11 +351,13 @@ question/elicitation tool — it will hang.
     )
 }
 
-/// Keep the files we drop into the clone out of `git status` / accidental
+/// Keep the files we drop into the checkout out of `git status` / accidental
 /// commits via the local-only `.git/info/exclude` (never touches tracked
-/// files or the repo's own `.gitignore`). Best-effort.
-fn exclude_agent_files(repo: &Path) {
-    let path = repo.join(".git").join("info").join("exclude");
+/// files or the repo's own `.gitignore`). Takes the **hub clone** path — its
+/// `.git/info/exclude` is shared by every session worktree (a worktree's own
+/// `.git` is just a pointer file). Best-effort.
+fn exclude_agent_files(hub: &Path) {
+    let path = hub.join(".git").join("info").join("exclude");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     let missing: Vec<&str> = ["opencode.json", ".openresearch/"]
         .into_iter()
@@ -355,39 +381,48 @@ fn exclude_agent_files(repo: &Path) {
         .and_then(|mut f| std::io::Write::write_all(&mut f, block.as_bytes()));
 }
 
-/// Ensure the project's clone exists and the shared autoresearch playbook is
-/// written into it. Every harness adapter injects this same file (opencode via
-/// config `instructions`, Claude Code via `--append-system-prompt`, Codex via
-/// first-turn context). Returns `(repo, playbook)` paths.
-pub fn ensure_playbook(project: &LocalProject) -> Result<(PathBuf, PathBuf)> {
-    let repo = git::ensure_clone(
+/// Ensure the project's hub clone and this session's private worktree exist,
+/// and write the autoresearch playbook into the worktree. Every harness
+/// adapter injects this same file (opencode via config `instructions`, Claude
+/// Code via `--append-system-prompt`, Codex via first-turn context). Returns
+/// `(workdir, playbook)` — the worktree the harness runs in and the playbook
+/// path inside it.
+pub fn ensure_playbook(project: &LocalProject, session_id: &str) -> Result<(PathBuf, PathBuf)> {
+    let workdir = git::ensure_session_worktree(
         &project.github_owner,
         &project.github_repo,
         &project.baseline_branch,
+        session_id,
     )?;
-    let playbook = repo.join(PLAYBOOK_REL);
+    let playbook = workdir.join(PLAYBOOK_REL);
     if let Some(parent) = playbook.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| anyhow!("Could not create {}: {}", parent.display(), e))?;
     }
     std::fs::write(&playbook, playbook_md(project))
         .map_err(|e| anyhow!("Could not write {}: {}", playbook.display(), e))?;
-    exclude_agent_files(&repo);
+    // One shared exclude covers every worktree.
+    exclude_agent_files(&git::clone_path(
+        &project.github_owner,
+        &project.github_repo,
+    ));
     // The playbook points the agent at the artifacts dir — make sure it exists.
     let _ = super::artifacts::ensure_dir(project);
-    Ok((repo, playbook))
+    Ok((workdir, playbook))
 }
 
-/// Write the opencode config + the playbook into the project's clone
-/// (self-healing it via `ensure_clone` if the cache was wiped). Returns the
-/// clone path plus, when the repo tracks its own `opencode.json` (which we
-/// must never clobber — the agent commits and pushes from this clone), the
-/// path of our config to pass via `OPENCODE_CONFIG` instead.
+/// Write the opencode config + the playbook into the session's worktree
+/// (self-healing via `ensure_session_worktree` if the cache was wiped).
+/// Returns the worktree path plus, when the repo tracks its own
+/// `opencode.json` (which we must never clobber — the agent commits and
+/// pushes from this worktree), the path of our config to pass via
+/// `OPENCODE_CONFIG` instead.
 fn write_agent_files(
     project: &LocalProject,
     model: Option<&str>,
+    session_id: &str,
 ) -> Result<(PathBuf, Option<PathBuf>)> {
-    let (repo, playbook) = ensure_playbook(project)?;
+    let (repo, playbook) = ensure_playbook(project, session_id)?;
     let config_override = if git::is_tracked(&repo, "opencode.json") {
         // Out-of-root config: absolute instructions path (no root to anchor it).
         let path = repo
@@ -408,11 +443,10 @@ fn write_agent_files(
         .map_err(|e| anyhow!("Could not write opencode.json: {}", e))?;
         None
     };
-    exclude_agent_files(&repo);
     Ok((repo, config_override))
 }
 
-/// Wire status for `GET /api/agent/status`.
+/// Wire status of one serve child for `GET /api/agent/status`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentStatus {
@@ -422,24 +456,16 @@ pub struct AgentStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-}
-
-impl AgentStatus {
-    fn stopped() -> Self {
-        Self {
-            running: false,
-            port: None,
-            project_id: None,
-            model: None,
-        }
-    }
 }
 
 struct AgentChild {
     child: Child,
     port: u16,
     project_id: String,
+    session_id: String,
     model: Option<String>,
 }
 
@@ -449,6 +475,7 @@ impl AgentChild {
             running: true,
             port: Some(self.port),
             project_id: Some(self.project_id.clone()),
+            session_id: Some(self.session_id.clone()),
             model: self.model.clone(),
         }
     }
@@ -484,13 +511,20 @@ async fn wait_healthy(child: &mut Child, port: u16) -> Result<()> {
     }
 }
 
-/// Spawn `opencode serve` for the project and wait for it to come up healthy.
-async fn spawn_agent(project: &LocalProject, model: Option<&str>) -> Result<AgentChild> {
+/// Spawn `opencode serve` in the session's worktree and wait for it to come
+/// up healthy.
+async fn spawn_agent(
+    project: &LocalProject,
+    model: Option<&str>,
+    session_id: &str,
+) -> Result<AgentChild> {
     let bin = find_opencode()?;
-    // ensure_clone inside can hit the network; keep it off the async workers.
+    // The clone/worktree setup inside can hit the network; keep it off the
+    // async workers.
     let (repo, config_override) = {
         let (project, model) = (project.clone(), model.map(str::to_string));
-        tokio::task::spawn_blocking(move || write_agent_files(&project, model.as_deref()))
+        let session = session_id.to_string();
+        tokio::task::spawn_blocking(move || write_agent_files(&project, model.as_deref(), &session))
             .await
             .map_err(|e| anyhow!("agent file task failed: {e}"))??
     };
@@ -571,20 +605,23 @@ async fn spawn_agent(project: &LocalProject, model: Option<&str>) -> Result<Agen
         child,
         port,
         project_id: project.id.clone(),
+        session_id: session_id.to_string(),
         model: model.map(str::to_string),
     })
 }
 
-/// The `orx up` opencode host: at most one child at a time, replaced when the
-/// active project changes. Share as `Arc<AgentHost>` in axum state.
+/// The `orx up` opencode host: one serve child per chat session, keyed by the
+/// orx session id, each running in that session's worktree. Share as
+/// `Arc<AgentHost>` in axum state.
 pub struct AgentHost {
     /// `orx up --model` override, applied to every spawn.
     model_override: Option<String>,
-    /// Serializes ensure() spawns. Never taken by status()/proxy_port(), and
-    /// `inner` is never held across a spawn — a slow clone or health poll must
-    /// not block status reads or the /opencode proxy.
+    /// Serializes ensure() spawns (across all sessions — a spawn is seconds,
+    /// and one at a time keeps clone/fetch traffic sane). Never taken by
+    /// status()/port_for(), and `inner` is never held across a spawn — a slow
+    /// clone or health poll must not block status reads or turn replies.
     spawn_lock: Mutex<()>,
-    inner: Mutex<Option<AgentChild>>,
+    inner: Mutex<HashMap<String, AgentChild>>,
 }
 
 impl AgentHost {
@@ -592,58 +629,66 @@ impl AgentHost {
         Self {
             model_override,
             spawn_lock: Mutex::new(()),
-            inner: Mutex::new(None),
+            inner: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Current status; reaps a child that died behind our back.
-    pub async fn status(&self) -> AgentStatus {
+    /// Status of every live child; reaps children that died behind our back.
+    pub async fn status(&self) -> Vec<AgentStatus> {
         let mut guard = self.inner.lock().await;
-        match guard.as_mut() {
-            Some(agent) => match agent.child.try_wait() {
-                Ok(None) => agent.status(),
-                _ => {
-                    *guard = None;
-                    AgentStatus::stopped()
-                }
-            },
-            None => AgentStatus::stopped(),
+        guard.retain(|_, agent| matches!(agent.child.try_wait(), Ok(None)));
+        guard.values().map(AgentChild::status).collect()
+    }
+
+    /// Loopback port of the session's live server (for inline replies/aborts).
+    pub async fn port_for(&self, session_id: &str) -> Option<u16> {
+        let mut guard = self.inner.lock().await;
+        let agent = guard.get_mut(session_id)?;
+        if matches!(agent.child.try_wait(), Ok(None)) {
+            Some(agent.port)
+        } else {
+            guard.remove(session_id);
+            None
         }
     }
 
-    /// Loopback port of the live server (for the `/opencode/*` proxy).
-    pub async fn proxy_port(&self) -> Option<u16> {
-        let status = self.status().await;
-        status.running.then_some(status.port).flatten()
-    }
-
-    /// Spawn (or replace) the opencode server for `project`. Idempotent when
-    /// that project's server is already alive; a different project's server —
-    /// or a dead child — is killed and replaced.
-    pub async fn ensure(&self, project: &LocalProject) -> Result<AgentStatus> {
+    /// Spawn (or reuse) the opencode server for this session. Idempotent when
+    /// the session's server is already alive; a dead child is replaced.
+    pub async fn ensure(&self, project: &LocalProject, session_id: &str) -> Result<AgentStatus> {
         let _spawning = self.spawn_lock.lock().await;
         {
             let mut guard = self.inner.lock().await;
-            if let Some(agent) = guard.as_mut() {
+            if let Some(agent) = guard.get_mut(session_id) {
                 if agent.project_id == project.id && matches!(agent.child.try_wait(), Ok(None)) {
                     return Ok(agent.status());
                 }
             }
-            if let Some(mut old) = guard.take() {
+            if let Some(mut old) = guard.remove(session_id) {
                 let _ = old.child.kill().await; // kill() also reaps
             }
         }
-        // inner released: status()/proxy reads report "not running" while the
-        // spawn (clone/fetch + health poll) is in flight instead of hanging.
-        let agent = spawn_agent(project, self.model_override.as_deref()).await?;
+        // inner released: status()/port reads keep answering while the spawn
+        // (clone/fetch + health poll) is in flight instead of hanging.
+        let agent = spawn_agent(project, self.model_override.as_deref(), session_id).await?;
         let status = agent.status();
-        *self.inner.lock().await = Some(agent);
+        self.inner
+            .lock()
+            .await
+            .insert(session_id.to_string(), agent);
         Ok(status)
     }
 
-    /// Kill and reap the child (also happens via kill_on_drop on exit).
+    /// Kill and reap one session's child (on session delete). No-op when the
+    /// session has none.
+    pub async fn kill_session(&self, session_id: &str) {
+        if let Some(mut agent) = self.inner.lock().await.remove(session_id) {
+            let _ = agent.child.kill().await;
+        }
+    }
+
+    /// Kill and reap every child (also happens via kill_on_drop on exit).
     pub async fn shutdown(&self) {
-        if let Some(mut agent) = self.inner.lock().await.take() {
+        for (_, mut agent) in self.inner.lock().await.drain() {
             let _ = agent.child.kill().await;
         }
     }

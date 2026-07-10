@@ -20,6 +20,23 @@ pub fn clone_path(owner: &str, repo: &str) -> PathBuf {
     clones_root().join(owner).join(repo)
 }
 
+/// Root for per-chat-session worktrees of a repo's hub clone
+/// (`~/.cache/openresearch/worktrees/<owner>/<repo>/<session-id>`). Kept
+/// outside `repos/` so a worktree can never collide with a real repo name.
+pub fn worktrees_root(owner: &str, repo: &str) -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".cache")
+        .join("openresearch")
+        .join("worktrees")
+        .join(owner)
+        .join(repo)
+}
+
+pub fn session_worktree_path(owner: &str, repo: &str, session_id: &str) -> PathBuf {
+    worktrees_root(owner, repo).join(session_id)
+}
+
 /// Run git with `args`, returning trimmed stdout; failures carry git's stderr.
 /// Headless: git must fail fast rather than prompt on /dev/tty (these calls
 /// run under a server, where a prompt would hang a worker forever).
@@ -113,6 +130,66 @@ pub fn ensure_clone(owner: &str, repo: &str, baseline_branch: &str) -> Result<Pa
     }
     assert_branch_exists(&dir, owner, repo, baseline_branch)?;
     Ok(dir)
+}
+
+/// Ensure a private worktree of the hub clone for one chat session, so
+/// parallel agents on the same project never share (or stomp) a checkout.
+/// Worktrees share the hub's object store and refs: a branch created in one
+/// is immediately visible in all, one `fetch` updates everyone, and git
+/// refuses to check out a branch that another worktree already holds.
+///
+/// The worktree starts **detached** on the baseline tip — checking out the
+/// baseline branch itself would claim it and block every sibling; the agent
+/// checks out its own experiment branch from there.
+pub fn ensure_session_worktree(
+    owner: &str,
+    repo: &str,
+    baseline_branch: &str,
+    session_id: &str,
+) -> Result<PathBuf> {
+    let hub = ensure_clone(owner, repo, baseline_branch)?;
+    let dir = session_worktree_path(owner, repo, session_id);
+    if dir.join(".git").exists() {
+        // `.git` is a gitdir-pointer file in a worktree. Validate it — a wiped
+        // hub clone (cache cleared, then re-cloned by ensure_clone above)
+        // orphans old worktrees, which must be rebuilt, not returned.
+        if git(Some(&dir), &["rev-parse", "--is-inside-work-tree"]).is_ok() {
+            return Ok(dir);
+        }
+        std::fs::remove_dir_all(&dir)
+            .map_err(|e| anyhow!("Could not remove stale worktree {}: {}", dir.display(), e))?;
+    }
+    // A manually deleted worktree dir leaves a stale registration behind that
+    // would make `worktree add` at the same path fail.
+    let _ = git(Some(&hub), &["worktree", "prune"]);
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow!("Could not create {}: {}", parent.display(), e))?;
+    }
+    let target = dir.to_string_lossy().to_string();
+    let base = format!("refs/remotes/origin/{baseline_branch}");
+    git(Some(&hub), &["worktree", "add", "--detach", &target, &base])?;
+    Ok(dir)
+}
+
+/// Remove a session's worktree (on session/project delete). Uncommitted
+/// scratch is discarded deliberately — real work is committed and pushed per
+/// the playbook contract. Best-effort: cleanup must never block the delete.
+pub fn remove_session_worktree(owner: &str, repo: &str, session_id: &str) {
+    let dir = session_worktree_path(owner, repo, session_id);
+    if !dir.exists() {
+        return;
+    }
+    let hub = clone_path(owner, repo);
+    if hub.join(".git").is_dir() {
+        let _ = git(
+            Some(&hub),
+            &["worktree", "remove", "--force", &dir.to_string_lossy()],
+        );
+        let _ = git(Some(&hub), &["worktree", "prune"]);
+    }
+    // Hub gone (cache wiped) or `worktree remove` refused: take the dir anyway.
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Seed a fresh (empty) GitHub repo from the tip of another repo — the

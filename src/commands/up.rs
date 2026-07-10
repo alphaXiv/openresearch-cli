@@ -392,7 +392,7 @@ async fn update_project(Path(id): Path<String>, Json(req): Json<UpdateProjectReq
 /// GitHub repo and the cache clone are left untouched.
 async fn delete_project(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
     let store = Store::open()?;
-    store
+    let project = store
         .get_local_project(&id)?
         .ok_or_else(|| not_found("project"))?;
     let in_flight: Vec<_> = store
@@ -409,9 +409,12 @@ async fn delete_project(State(state): State<AppState>, Path(id): Path<String>) -
             in_flight.len()
         )));
     }
-    // Abort any in-flight chat turns before their rows disappear.
+    // Abort any in-flight chat turns before their rows disappear, and clean up
+    // each session's serve child + worktree (the rows cascade with the project).
     for session in store.list_chat_sessions_by_project(&id)? {
         let _ = state.chat.interrupt(&session.id).await;
+        state.chat.opencode.kill_session(&session.id).await;
+        local::chat::cleanup_session_worktree(&project, &session.id);
     }
     store.delete_local_project(&id)?;
     Ok(Json(json!({ "ok": true })))
@@ -1631,7 +1634,8 @@ async fn respond_chat(
 // --- agent ----------------------------------------------------------------
 
 async fn agent_status(State(state): State<AppState>) -> Json<Value> {
-    Json(json!(state.agent.status().await))
+    let agents = state.agent.status().await;
+    Json(json!({ "running": !agents.is_empty(), "agents": agents }))
 }
 
 // --- /api/events SSE ------------------------------------------------------
