@@ -1,4 +1,4 @@
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown, Lock } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getHarnesses,
@@ -170,6 +170,12 @@ export function ModelPicker({
             ))}
             {harnesses.length === 0 && <div className="model-more">Detecting harnesses…</div>}
           </div>
+          {lockHarness && value && harnesses.length > 1 && (
+            <div className="model-locked-note">
+              <Lock size={11} />
+              Sessions keep their harness — new chat to switch
+            </div>
+          )}
         </div>
       )}
     </div>
