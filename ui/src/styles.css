@@ -716,6 +716,17 @@ textarea::placeholder {
   max-width: var(--readable-col);
   margin: 0 auto;
 }
+/* Rail hidden: the header spans the full pane (Claude-desktop style) so the
+   reopen toggle lands in the window's top-left corner with the title beside
+   it; the tighter padding puts the icon on the screen-edge gutter. */
+.chat-header.rail-hidden {
+  max-width: none;
+  padding: 0 2px;
+}
+/* Breathing room between the corner toggle and the title. */
+.chat-header.rail-hidden > .icon-btn:first-child {
+  margin-right: 12px;
+}
 .chat-header::after {
   content: "";
   position: absolute;
