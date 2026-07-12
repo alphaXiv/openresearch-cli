@@ -2995,6 +2995,19 @@ textarea::placeholder {
   font-size: 11px;
   color: var(--muted);
 }
+/* Mid-session footer: the harness is fixed, so only its models are offered. */
+.model-locked-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  font-size: 11px;
+  color: var(--muted);
+  border-top: 1px solid var(--border-variant);
+}
+.model-locked-note svg {
+  flex-shrink: 0;
+}
 
 /* ---- composer slash-skill menu ---- */
 
