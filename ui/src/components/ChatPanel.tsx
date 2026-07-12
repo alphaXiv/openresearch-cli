@@ -805,6 +805,22 @@ export function ChatPanel({
     </aside>
   );
 
+  // With the rail hidden, the header stretches to the full pane width
+  // (Claude-desktop style): the reopen toggle sits in the window's top-left
+  // corner with the title beside it, instead of riding the centered readable
+  // column.
+  const headerClass = `chat-header${railOpen ? "" : " rail-hidden"}`;
+  const railReopen = !railOpen && (
+    <button
+      className="icon-btn"
+      title="Show sidebar"
+      aria-label="Show sidebar"
+      onClick={onShowRail}
+    >
+      <PanelLeft size={15} />
+    </button>
+  );
+
   // A settings section replaces the chat entirely (no chat header, no
   // composer, no right panel) — only the rail-reopen affordance survives.
   // The pane spans the leftover width; .settings-view re-applies the readable
@@ -814,18 +830,7 @@ export function ChatPanel({
       <>
         {railOpen && rail}
         <section className="chat-pane">
-          {!railOpen && (
-            <div className="chat-header">
-              <button
-                className="icon-btn"
-                title="Show sidebar"
-                aria-label="Show sidebar"
-                onClick={onShowRail}
-              >
-                <PanelLeft size={15} />
-              </button>
-            </div>
-          )}
+          {!railOpen && <div className={headerClass}>{railReopen}</div>}
           <div className="settings-view-scroll">{children}</div>
         </section>
       </>
@@ -838,17 +843,8 @@ export function ChatPanel({
       <section className="chat-pane">
       {/* Header — session title on the left, right-pane view switchers on the
           right, fading into the chat below (sessions live in the rail). */}
-      <div className="chat-header">
-        {!railOpen && (
-          <button
-            className="icon-btn"
-            title="Show sidebar"
-            aria-label="Show sidebar"
-            onClick={onShowRail}
-          >
-            <PanelLeft size={15} />
-          </button>
-        )}
+      <div className={headerClass}>
+        {railReopen}
         <div
           className="title"
           title={activeSession ? activeSession.title?.trim() || "Untitled" : "New session"}
