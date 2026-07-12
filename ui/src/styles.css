@@ -1793,6 +1793,27 @@ textarea::placeholder {
   align-items: center;
   justify-content: center;
   gap: 10px;
+  padding: 24px;
+  text-align: center;
+  color: var(--subtext);
+}
+.empty-state p {
+  max-width: 46ch;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  text-wrap: balance;
+}
+.empty-state-cta {
+  gap: 6px;
+}
+.empty-state p.empty-state-title {
+  font-size: 18px;
+  font-weight: 400;
+  color: var(--text);
+}
+.empty-state p.empty-state-hint {
+  font-size: 15px;
   color: var(--subtext);
 }
 
