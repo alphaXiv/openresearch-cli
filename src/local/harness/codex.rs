@@ -116,8 +116,9 @@ impl Harness for Codex {
         info.agent_ready = info.installed && info.authenticated;
         if info.agent_ready {
             info = info.with_models(&CODEX_MODELS);
-            // Old CLIs still work via the legacy exec path, but without the
-            // app-server wins (permission prompts on sandbox escalations).
+            // Old CLIs still work via the legacy exec path, but miss the
+            // app-server wins (thread resume; the approval channel the
+            // follow-up builds on).
             let too_old = info
                 .version
                 .as_deref()
@@ -188,20 +189,23 @@ impl Harness for Codex {
 /// live spike). Older CLIs take the exec fallback below.
 const MIN_APP_SERVER_VERSION: (u64, u64, u64) = (0, 144, 0);
 
-/// `codex --version` output → (major, minor, patch). Accepts "codex-cli
-/// 0.144.0" and bare "0.144.0"; a `-suffix` on the patch is tolerated.
+/// `codex --version` output → (major, minor, patch). The first token that
+/// parses wins, so "codex-cli 0.144.0", bare "0.144.0", and a future
+/// "codex-cli 0.150.0 (abc123)" all resolve; a `-suffix` on the patch is
+/// tolerated.
 fn parse_codex_version(version: &str) -> Option<(u64, u64, u64)> {
-    let token = version.split_whitespace().last()?;
-    let mut parts = token.splitn(3, '.');
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next()?.parse().ok()?;
-    let patch = parts.next()?;
-    let patch = patch
-        .split(|c: char| !c.is_ascii_digit())
-        .next()?
-        .parse()
-        .ok()?;
-    Some((major, minor, patch))
+    version.split_whitespace().find_map(|token| {
+        let mut parts = token.splitn(3, '.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts
+            .next()?
+            .split(|c: char| !c.is_ascii_digit())
+            .next()?
+            .parse()
+            .ok()?;
+        Some((major, minor, patch))
+    })
 }
 
 /// Whether the installed codex speaks the validated app-server protocol.
@@ -243,8 +247,8 @@ fn codex_policies(mode: Option<PermissionMode>) -> (&'static str, &'static str) 
 /// `.git` as writable roots (see `ensure_orx_data_dir` / `shared_git_dir`),
 /// and network on (the agent's job is driving the orx API and git). Like the
 /// exec `-c` override, this is a full policy replacement for the turn — a
-/// user's own config.toml `writableRoots` don't survive it (no append form
-/// exists on either transport).
+/// user's own config.toml `sandbox_workspace_write.writable_roots` don't
+/// survive it (no append form exists on either transport).
 async fn sandbox_policy_json(mode: Option<PermissionMode>, workspace: &Path) -> Value {
     match mode.unwrap_or(PermissionMode::Auto) {
         PermissionMode::Bypass => serde_json::json!({ "type": "dangerFullAccess" }),
@@ -265,14 +269,15 @@ async fn sandbox_policy_json(mode: Option<PermissionMode>, workspace: &Path) -> 
     }
 }
 
-/// One app-server notification → transcript state. Pure (fixture-tested):
-/// touches only `ctx.assistant.parts` via the TurnCtx helpers. Returns the
-/// turn's terminal state when this event ends it.
+/// How a turn ended, from `turn/completed`.
 enum TurnEnd {
     Done,
     Failed(String),
 }
 
+/// One app-server notification → transcript state. Pure (fixture-tested):
+/// touches only `ctx.assistant.parts` via the TurnCtx helpers. Returns the
+/// turn's terminal state when this event ends it.
 fn apply_notification(ctx: &mut TurnCtx, method: &str, params: &Value) -> Option<TurnEnd> {
     match method {
         "item/started" | "item/completed" => {
@@ -352,7 +357,7 @@ fn append_delta(ctx: &mut TurnCtx, params: &Value, make: impl FnOnce(String) -> 
     ) else {
         return;
     };
-    if ctx.assistant.parts.iter().all(|p| p.id != item_id) {
+    if !part_exists(ctx, item_id) {
         ctx.upsert_part(make(item_id.to_string()));
     }
     ctx.append_part_text(item_id, delta);
@@ -552,7 +557,10 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
                 // is lost either way. A transport failure, by contrast,
                 // propagates as the turn's error (the `?` above) — a resumable
                 // thread must never be discarded over a timeout/hiccup.
-                Err(_) => start_thread(ctx, &client, thread_setup).await?,
+                Err(err) => {
+                    eprintln!("codex thread/resume rejected ({err}); starting a fresh thread");
+                    start_thread(ctx, &client, thread_setup).await?
+                }
             }
         }
         None => start_thread(ctx, &client, thread_setup).await?,
@@ -586,21 +594,17 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
         .and_then(|t| t.get("id"))
         .and_then(Value::as_str)
         .map(str::to_string);
+    // Arm the native interrupt now rather than on `turn/started` — an
+    // interrupt landing before that notification would otherwise no-op.
+    if let Some(turn_id) = turn_id.as_deref() {
+        client.set_active_turn(turn_id);
+    }
 
     while let Some(event) = rx.recv().await {
         match event {
             TurnEvent::Notification { method, params } => {
                 if event_turn_mismatch(turn_id.as_deref(), &params) {
                     continue;
-                }
-                if method == "turn/started" {
-                    if let Some(turn_id) = params
-                        .get("turn")
-                        .and_then(|t| t.get("id"))
-                        .and_then(Value::as_str)
-                    {
-                        client.set_active_turn(turn_id);
-                    }
                 }
                 match apply_notification(ctx, &method, &params) {
                     Some(TurnEnd::Done) => {
@@ -625,7 +629,9 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
                 // approvalPolicy is `never` on every mode, so no approval
                 // should arrive; decline defensively rather than leave the
                 // server blocked on an unanswered request. The follow-up
-                // surfaces these as permission cards.
+                // surfaces these as permission cards — and must keep declining
+                // stale-turn requests (params carry turnId; `event_turn_mismatch`
+                // works on them unchanged) instead of surfacing them.
                 let _ = client.respond_decline(&id).await;
             }
             TurnEvent::Closed => {
@@ -678,24 +684,7 @@ async fn start_thread(ctx: &mut TurnCtx, client: &CodexClient, params: Value) ->
     Ok(thread_id)
 }
 
-// --- legacy exec path (codex < 0.144, and ORX_CODEX_EXEC=1) -------------------
-
-/// Session mode → Codex `exec` sandbox policy. `codex exec` can't prompt for
-/// approval, so the sandbox *is* the permission boundary. `Bypass` is the one
-/// mode that also drops the sandbox entirely (`--dangerously-...`); the rest run
-/// sandboxed with approvals set to `never` (nothing to escalate to). Returns
-/// `None` for `Bypass` to signal "use the bypass flag instead of `-s`".
-fn codex_sandbox(mode: Option<PermissionMode>) -> Option<&'static str> {
-    match mode.unwrap_or(PermissionMode::Auto) {
-        PermissionMode::Plan => Some("read-only"),
-        // AcceptEdits/Ask have no distinct exec semantics — treat as the
-        // balanced default so a session that carries them still runs sanely.
-        PermissionMode::Auto | PermissionMode::AcceptEdits | PermissionMode::Ask => {
-            Some("workspace-write")
-        }
-        PermissionMode::Bypass => None,
-    }
-}
+// --- shared by both transports -------------------------------------------
 
 /// The workspace's git dir (`git rev-parse --git-common-dir`), canonicalized.
 /// Codex's `workspace-write` sandbox denies every git metadata write: it marks
@@ -750,6 +739,48 @@ pub(crate) fn ensure_orx_data_dir() -> Option<PathBuf> {
     dir.canonicalize().ok()
 }
 
+/// Session reasoning id → Codex `model_reasoning_effort` value. The composer only
+/// offers ids from `CODEX_REASONING_LEVELS`; an unrecognized/absent value omits
+/// the override and lets Codex apply its configured default.
+fn codex_reasoning(level: Option<&str>) -> Option<&str> {
+    let level = level?;
+    CODEX_REASONING_LEVELS
+        .iter()
+        .any(|(id, _)| *id == level)
+        .then_some(level)
+}
+
+fn command_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => String::new(),
+    }
+}
+
+// --- legacy exec path (codex < 0.144, and ORX_CODEX_EXEC=1) -------------------
+
+/// Session mode → Codex `exec` sandbox policy. `codex exec` can't prompt for
+/// approval, so the sandbox *is* the permission boundary. `Bypass` is the one
+/// mode that also drops the sandbox entirely (`--dangerously-...`); the rest run
+/// sandboxed with approvals set to `never` (nothing to escalate to). Returns
+/// `None` for `Bypass` to signal "use the bypass flag instead of `-s`".
+fn codex_sandbox(mode: Option<PermissionMode>) -> Option<&'static str> {
+    match mode.unwrap_or(PermissionMode::Auto) {
+        PermissionMode::Plan => Some("read-only"),
+        // AcceptEdits/Ask have no distinct exec semantics — treat as the
+        // balanced default so a session that carries them still runs sanely.
+        PermissionMode::Auto | PermissionMode::AcceptEdits | PermissionMode::Ask => {
+            Some("workspace-write")
+        }
+        PermissionMode::Bypass => None,
+    }
+}
+
 /// The `-c` value granting `roots` as sandbox writable roots, e.g.
 /// `sandbox_workspace_write.writable_roots=["/a", "/b"]`. `None` when there
 /// are no roots (omit the flag: `-c ...=[]` would still *replace* the user's
@@ -773,29 +804,6 @@ fn toml_string(path: &Path) -> String {
     serde_json::to_string(&path.to_string_lossy())
         .unwrap_or_else(|_| String::from("\"\""))
         .replace('\u{7f}', "\\u007F")
-}
-
-/// Session reasoning id → Codex `model_reasoning_effort` value. The composer only
-/// offers ids from `CODEX_REASONING_LEVELS`; an unrecognized/absent value omits
-/// the override and lets Codex apply its configured default.
-fn codex_reasoning(level: Option<&str>) -> Option<&str> {
-    let level = level?;
-    CODEX_REASONING_LEVELS
-        .iter()
-        .any(|(id, _)| *id == level)
-        .then_some(level)
-}
-
-fn command_string(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Array(parts) => parts
-            .iter()
-            .filter_map(Value::as_str)
-            .collect::<Vec<_>>()
-            .join(" "),
-        _ => String::new(),
-    }
 }
 
 async fn run_turn_exec(ctx: &mut TurnCtx) -> Result<()> {
@@ -1159,8 +1167,7 @@ mod tests {
             match crate::local::codex::classify_line(line) {
                 crate::local::codex::Line::Notification { method, params } => {
                     assert!(
-                        !event_turn_mismatch(Some("turn1"), &params)
-                            || params.get("turnId").is_none(),
+                        !event_turn_mismatch(Some("turn1"), &params),
                         "fixture events all belong to turn1"
                     );
                     if let Some(end) = apply_notification(&mut ctx, &method, &params) {
@@ -1255,6 +1262,25 @@ mod tests {
         );
         let state = ctx.assistant.parts[0].state.as_ref().unwrap();
         assert_eq!(state.output.as_deref(), Some("final"));
+    }
+
+    /// The Failed-dedup guard matches exactly how `push_error` stores errors
+    /// (status "error" + the `error` field), and nothing else.
+    #[test]
+    fn has_error_part_matches_pushed_errors_only() {
+        let mut ctx = TurnCtx::test_stub();
+        assert!(!has_error_part(&ctx, "boom"));
+        ctx.push_error("boom".to_string());
+        assert!(has_error_part(&ctx, "boom"));
+        assert!(!has_error_part(&ctx, "other"));
+        // A failed *command* part is not an error part — its state.error is
+        // None, so identical text can't false-match.
+        apply_notification(
+            &mut ctx,
+            "item/completed",
+            &serde_json::json!({"item":{"type":"commandExecution","id":"c1","command":"x","status":"failed"}}),
+        );
+        assert!(!has_error_part(&ctx, "x"));
     }
 
     #[test]

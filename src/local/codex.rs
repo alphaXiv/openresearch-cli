@@ -33,6 +33,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(150);
 /// Interrupts are best-effort and sit on the user-facing interrupt/delete
 /// paths — never let a wedged child hold those hostage.
 const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(5);
+/// A healthy app-server answers `initialize` immediately.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One inbound line, classified. JSON-RPC over one stream: a message with both
 /// `id` and `method` is a server→client *request* (approvals — must be
@@ -127,7 +129,8 @@ pub struct CodexClient {
     /// Ids of server→client requests we have not answered yet, as raw JSON
     /// text (ids are echoed verbatim). Guards `respond` against stale answers.
     unanswered: std::sync::Mutex<HashSet<String>>,
-    /// The in-flight turn's id (from `turn/started`), for `turn/interrupt`.
+    /// The in-flight turn's id (from the `turn/start` response), for
+    /// `turn/interrupt`.
     active_turn: std::sync::Mutex<Option<String>>,
     /// The thread this child has started/resumed — a fresh child (after crash
     /// or restart) must `thread/resume` before its next `turn/start`.
@@ -317,7 +320,9 @@ async fn read_loop(client: Arc<CodexClient>, stdout: tokio::process::ChildStdout
     }
 }
 
-/// Spawn `codex app-server` and complete the `initialize` handshake.
+/// Spawn `codex app-server` (no handshake yet — see `CodexHost::ensure`, which
+/// registers the client *before* the handshake so every kill path can reach
+/// the child even if the spawning turn task is aborted mid-handshake).
 async fn spawn_client() -> Result<Arc<CodexClient>> {
     let bin = find_codex_required()?;
     let mut cmd = Command::new(&bin);
@@ -370,8 +375,13 @@ async fn spawn_client() -> Result<Arc<CodexClient>> {
         resumed_thread: std::sync::Mutex::new(None),
     });
     tokio::spawn(read_loop(client.clone(), stdout));
+    Ok(client)
+}
 
-    let handshake = client.request(
+/// The `initialize` → `initialized` handshake. Split from `spawn_client` so
+/// the host can register the client between the two (abort-safe teardown).
+async fn handshake(client: &CodexClient) -> Result<()> {
+    let init = client.request(
         "initialize",
         json!({ "clientInfo": {
             "name": "orx",
@@ -379,24 +389,18 @@ async fn spawn_client() -> Result<Arc<CodexClient>> {
             "version": env!("CARGO_PKG_VERSION"),
         }}),
     );
-    match tokio::time::timeout(Duration::from_secs(10), handshake).await {
+    match tokio::time::timeout(HANDSHAKE_TIMEOUT, init).await {
         Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            let _ = client.child.lock().await.kill().await;
-            return Err(e);
-        }
+        Ok(Err(e)) => return Err(e),
         Err(_) => {
-            let _ = client.child.lock().await.kill().await;
             return Err(anyhow!(
-                "codex app-server did not answer initialize within 10s; see {}",
+                "codex app-server did not answer initialize within {}s; see {}",
+                HANDSHAKE_TIMEOUT.as_secs(),
                 crate::store::data_dir().join("agent-codex.log").display()
             ));
         }
     }
-    client
-        .write_line(&json!({ "method": "initialized" }))
-        .await?;
-    Ok(client)
+    client.write_line(&json!({ "method": "initialized" })).await
 }
 
 /// The `orx up` codex host: one `codex app-server` child per chat session,
@@ -425,7 +429,15 @@ impl CodexHost {
     /// Spawn (or reuse) this session's app-server child. Idempotent while the
     /// child is alive; a dead child is replaced (its thread is re-resumed by
     /// the caller — `resumed_thread` starts empty on the replacement).
-    pub async fn ensure(&self, session_id: &str) -> Result<Arc<CodexClient>> {
+    ///
+    /// The spawn + handshake + registration run in a *detached* task: the
+    /// calling turn task is abortable (interrupt / delete), and an aborted
+    /// future would drop its `Arc` while the reader task keeps the child alive
+    /// — an unregistered client would be unreachable by every kill path and
+    /// leak the process for the rest of `orx up`'s life. Detached, the
+    /// bring-up always runs to completion: the client ends up registered
+    /// (killable via kill_session/shutdown) or killed on handshake failure.
+    pub async fn ensure(self: &Arc<Self>, session_id: &str) -> Result<Arc<CodexClient>> {
         let _spawning = self.spawn_lock.lock().await;
         {
             let mut guard = self.inner.lock().await;
@@ -436,12 +448,37 @@ impl CodexHost {
                 guard.remove(session_id);
             }
         }
-        let client = spawn_client().await?;
-        self.inner
-            .lock()
-            .await
-            .insert(session_id.to_string(), client.clone());
-        Ok(client)
+        let host = self.clone();
+        let session = session_id.to_string();
+        tokio::spawn(async move {
+            let client = spawn_client().await?;
+            // Never displace a live entry: if an abandoned bring-up's insert
+            // races a successor's (spawn_lock was released by the abort), the
+            // loser kills its own child and defers to the live one.
+            {
+                let mut guard = host.inner.lock().await;
+                if let Some(existing) = guard.get(&session) {
+                    if matches!(existing.child.lock().await.try_wait(), Ok(None)) {
+                        let existing = existing.clone();
+                        drop(guard);
+                        let _ = client.child.lock().await.kill().await;
+                        return Ok(existing);
+                    }
+                }
+                guard.insert(session.clone(), client.clone());
+            }
+            if let Err(e) = handshake(&client).await {
+                let _ = client.child.lock().await.kill().await;
+                let mut guard = host.inner.lock().await;
+                if guard.get(&session).is_some_and(|c| Arc::ptr_eq(c, &client)) {
+                    guard.remove(&session);
+                }
+                return Err(e);
+            }
+            Ok(client)
+        })
+        .await
+        .map_err(|e| anyhow!("codex app-server bring-up task failed: {e}"))?
     }
 
     /// The session's live client, if any (for inline replies / interrupts).
