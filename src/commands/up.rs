@@ -158,7 +158,7 @@ fn router(state: AppState) -> Router {
         )
         .route(
             "/api/chat/sessions/{id}",
-            axum::routing::delete(delete_chat_session),
+            axum::routing::delete(delete_chat_session).patch(update_chat_session),
         )
         .route("/api/chat/sessions/{id}/messages", get(chat_messages))
         .route("/api/chat/sessions/{id}/message", post(send_chat_message))
@@ -1671,6 +1671,7 @@ async fn create_chat_session(Json(req): Json<CreateChatSessionReq>) -> ApiResult
         model: nonempty(req.model),
         permission_mode: nonempty(req.permission_mode),
         reasoning_level: nonempty(req.reasoning_level),
+        archived: false,
         created_at: now_ms(),
         updated_at: now_ms(),
     };
@@ -1683,6 +1684,31 @@ async fn create_chat_session(Json(req): Json<CreateChatSessionReq>) -> ApiResult
 async fn delete_chat_session(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
     state.chat.delete_session(&id).await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateChatSessionReq {
+    archived: Option<bool>,
+}
+
+async fn update_chat_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateChatSessionReq>,
+) -> ApiResult {
+    let Some(archived) = req.archived else {
+        return Err(bad_request("nothing to update"));
+    };
+    let session = state
+        .chat
+        .set_archived(&id, archived)
+        .await?
+        .ok_or_else(|| not_found("chat session"))?;
+    let busy = state.chat.is_busy(&id).await;
+    Ok(Json(
+        json!({ "session": local::chat::session_json(&session, busy) }),
+    ))
 }
 
 async fn chat_messages(Path(id): Path<String>) -> ApiResult {
