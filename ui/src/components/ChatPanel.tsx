@@ -479,6 +479,7 @@ function Message({
 
 export function ChatPanel({
   projectId,
+  paperId,
   railHeader,
   railOpen,
   onShowRail,
@@ -490,6 +491,8 @@ export function ChatPanel({
   children,
 }: {
   projectId: string;
+  /** arXiv id the project starts from — surfaces a /reproduce-paper shortcut. */
+  paperId?: string | null;
   /** Back-to-projects + project name block rendered at the top of the rail. */
   railHeader?: React.ReactNode;
   /** Whether the agents rail is showing (collapsed via its own header icon). */
@@ -899,6 +902,19 @@ export function ChatPanel({
             harnesses={harnesses}
             selection={selection ?? defaultSelection(harnesses)}
           />
+          {paperId && (
+            <button
+              type="button"
+              className="chat-suggest mono"
+              title="Prefills the composer — add the compute to run on, then send"
+              onClick={() => {
+                setDraft(`/reproduce-paper ${paperId} on `);
+                composerRef.current?.focus();
+              }}
+            >
+              /reproduce-paper {paperId} on [describe your compute setup]
+            </button>
+          )}
         </div>
       ) : (
         <div

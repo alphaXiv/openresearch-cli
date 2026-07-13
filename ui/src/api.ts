@@ -9,6 +9,8 @@ export interface Project {
   baselineBranch: string;
   repoPath: string;
   runCommand?: string | null;
+  /** arXiv id the project starts from (versionless). */
+  paperId?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -82,6 +84,8 @@ export interface NewProject {
   githubRepo?: string;
   baselineBranch?: string;
   runCommand?: string;
+  /** arXiv id the project starts from (versionless). */
+  paperId?: string;
   /** Create a blank private repo on the user's GitHub account instead. */
   createRepo?: boolean;
   /** Fork-by-copy the repo into a fresh `<repo>-<hash>` repo on the user's
@@ -91,6 +95,31 @@ export interface NewProject {
 
 export const createProject = (body: NewProject) =>
   post<{ project: Project }>("/api/projects", body).then((r) => r.project);
+
+export interface PaperHit {
+  paperId: string;
+  title: string;
+  snippet?: string | null;
+}
+
+export interface ResolvedPaper {
+  paperId: string;
+  title?: string | null;
+  repoUrl?: string | null;
+  repoStars?: number | null;
+}
+
+export const searchPapers = (q: string) =>
+  get<{ papers: PaperHit[] }>(`/api/papers/search?q=${encodeURIComponent(q)}`).then(
+    (r) => r.papers,
+  );
+
+/** Resolve an arXiv id / URL to title + linked GitHub repo. May take a few
+ * seconds for papers alphaXiv hasn't indexed yet (it scrapes arXiv on a miss). */
+export const resolvePaper = (id: string) =>
+  get<{ paper: ResolvedPaper }>(`/api/papers/resolve?id=${encodeURIComponent(id)}`).then(
+    (r) => r.paper,
+  );
 
 export const updateProject = (projectId: string, body: { runCommand?: string; name?: string }) =>
   patch<{ project: Project }>(`/api/projects/${projectId}`, body).then((r) => r.project);

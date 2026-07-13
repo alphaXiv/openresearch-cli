@@ -1247,16 +1247,163 @@ pub async fn search_papers(query: &str, limit: u32) -> Result<Vec<PaperHit>> {
     Ok(res.json::<Vec<PaperHit>>().await?)
 }
 
+/// `2401.12345v2` → `2401.12345`; alphaXiv lookups want the versionless id.
+fn versionless_id(paper_id: &str) -> &str {
+    paper_id
+        .rfind('v')
+        .filter(|&i| i > 0 && !paper_id[i + 1..].is_empty())
+        .filter(|&i| paper_id[i + 1..].chars().all(|c| c.is_ascii_digit()))
+        .map_or(paper_id, |i| &paper_id[..i])
+}
+
+/// One hit from the fast (Google-backed) paper search — the endpoint built for
+/// title lookups, vs the BM25 full-text search `orx lit` uses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FastPaperHit {
+    pub paper_id: String,
+    pub title: String,
+    #[serde(default)]
+    pub snippet: Option<String>,
+}
+
+/// Title/keyword paper search (`GET /search/v2/paper/fast`).
+pub async fn search_papers_fast(query: &str) -> Result<Vec<FastPaperHit>> {
+    let base = crate::config::alphaxiv_api_url();
+    let url = format!(
+        "{}/search/v2/paper/fast?q={}&includePrivate=false",
+        base,
+        urlencoding::encode(query)
+    );
+    let res = http()
+        .get(&url)
+        .header("user-agent", ALPHAXIV_UA)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Could not reach alphaXiv at {}: {}", base, e))?;
+    let status = res.status();
+    if !status.is_success() {
+        let reason = status.canonical_reason().unwrap_or("");
+        return Err(anyhow!(
+            "alphaXiv search failed ({} {})",
+            status.as_u16(),
+            reason
+        ));
+    }
+    Ok(res.json::<Vec<FastPaperHit>>().await?)
+}
+
+/// A paper resolved for the "start from a paper" project flow.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedPaper {
+    /// Canonical versionless id (`2401.12345`).
+    pub paper_id: String,
+    pub title: Option<String>,
+    /// Linked GitHub repo — author repos first, then most stars.
+    pub repo_url: Option<String>,
+    pub repo_stars: Option<i64>,
+}
+
+/// Resolve an arXiv id to title + linked GitHub repo. `/papers/v3/{id}` scrapes
+/// arXiv on a miss, so brand-new papers resolve too (their repo links may lag).
+/// The implementations lookup is best-effort — a failure there just means no repo.
+pub async fn resolve_paper(paper_id: &str) -> Result<ResolvedPaper> {
+    let id = versionless_id(paper_id);
+    let base = crate::config::alphaxiv_api_url();
+    let url = format!("{}/papers/v3/{}", base, urlencoding::encode(id));
+    let res = http()
+        .get(&url)
+        .header("user-agent", ALPHAXIV_UA)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Could not reach alphaXiv at {}: {}", base, e))?;
+    let status = res.status();
+    if !status.is_success() {
+        return Err(anyhow!(
+            "Paper {} not found on alphaXiv/arXiv ({})",
+            id,
+            status.as_u16()
+        ));
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Paper {
+        group_id: Option<String>,
+        universal_id: Option<String>,
+        title: Option<String>,
+    }
+    let paper = res.json::<Paper>().await?;
+    let mut resolved = ResolvedPaper {
+        paper_id: paper.universal_id.unwrap_or_else(|| id.to_string()),
+        title: paper.title,
+        repo_url: None,
+        repo_stars: None,
+    };
+    let Some(group_id) = paper.group_id.filter(|g| !g.is_empty()) else {
+        return Ok(resolved);
+    };
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Implementations {
+        #[serde(default)]
+        paper_resources: Vec<Resource>,
+        #[serde(default)]
+        alpha_xiv_implementations: Vec<Resource>,
+    }
+    #[derive(Deserialize)]
+    struct Resource {
+        #[serde(rename = "type")]
+        kind: Option<String>,
+        url: Option<String>,
+        #[serde(default)]
+        stars: Option<i64>,
+        #[serde(default)]
+        source: Option<String>,
+    }
+    let url = format!(
+        "{}/papers/v3/{}/implementations",
+        base,
+        urlencoding::encode(&group_id)
+    );
+    let impls = match http()
+        .get(&url)
+        .header("user-agent", ALPHAXIV_UA)
+        .send()
+        .await
+    {
+        Ok(res) if res.status().is_success() => match res.json::<Implementations>().await {
+            Ok(body) => body,
+            Err(_) => return Ok(resolved),
+        },
+        _ => return Ok(resolved),
+    };
+
+    let is_github = |r: &&Resource| {
+        r.kind.as_deref() == Some("github") && r.url.as_deref().is_some_and(|u| !u.is_empty())
+    };
+    let best = impls
+        .paper_resources
+        .iter()
+        .filter(is_github)
+        // Author repos beat community ones; stars break ties.
+        .max_by_key(|r| (r.source.as_deref() == Some("author"), r.stars.unwrap_or(0)))
+        .or_else(|| impls.alpha_xiv_implementations.iter().find(is_github));
+    if let Some(repo) = best {
+        resolved.repo_url = repo.url.clone();
+        resolved.repo_stars = repo.stars;
+    }
+    Ok(resolved)
+}
+
 /// Look up a paper's linked GitHub repository (the most-starred repo associated
 /// with it on alphaXiv). Returns `Ok(None)` when the paper has no linked repo or
 /// isn't known to alphaXiv. Best-effort metadata — callers shouldn't fail on it.
 pub async fn fetch_paper_github(paper_id: &str) -> Result<Option<String>> {
     // The feed lookup wants a versionless universal id (`2401.12345`, not `2401.12345v2`).
-    let versionless = paper_id
-        .rfind('v')
-        .filter(|&i| i > 0 && !paper_id[i + 1..].is_empty())
-        .filter(|&i| paper_id[i + 1..].chars().all(|c| c.is_ascii_digit()))
-        .map_or(paper_id, |i| &paper_id[..i]);
+    let versionless = versionless_id(paper_id);
     let base = crate::config::alphaxiv_api_url();
     let url = format!(
         "{}/papers/v3/feed?universalId={}&pageNum=0&pageSize=1&sort=Hot&interval=All%20time",

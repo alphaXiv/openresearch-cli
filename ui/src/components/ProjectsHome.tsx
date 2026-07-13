@@ -65,6 +65,7 @@ export function ProjectsHome({
                 <span className="repo mono">
                   {p.githubOwner}/{p.githubRepo} · {p.baselineBranch}
                 </span>
+                {p.paperId && <span className="paper mono">arXiv {p.paperId}</span>}
                 <span className="time">created {timeAgo(p.createdAt)}</span>
                 <button
                   className="project-delete"

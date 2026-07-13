@@ -111,10 +111,12 @@ pub async fn run(args: crate::CreateExperimentArgs) -> Result<()> {
     Ok(())
 }
 
-/// Local-mode create: child = branch `orx/<slug>` off the parent (pushed to
-/// origin so HF jobs can clone it). No parent = child of the project's oldest
-/// root when one exists; on an empty project (or with `--baseline`) the new
-/// row becomes a baseline root. Projects may hold multiple baselines.
+/// Local-mode create: every node gets a branch `orx/<slug>` pushed to origin
+/// so jobs can clone it — children fork off the parent's tip, baselines off
+/// the project's base branch (which itself is never an experiment node). No
+/// parent = child of the project's oldest root when one exists; on an empty
+/// project (or with `--baseline`) the new row becomes a baseline root.
+/// Projects may hold multiple baselines.
 fn run_local(
     store: &Store,
     project: &crate::local::model::LocalProject,
@@ -160,6 +162,12 @@ fn run_local(
     if defaulted_to_root {
         let root = parent_exp.as_ref().unwrap();
         println!("  parent:  {} (project root, defaulted)", root.id);
+    }
+    if let Some(warning) = parent_exp
+        .as_ref()
+        .and_then(|p| crate::local::experiments::legacy_root_warning(project, p))
+    {
+        eprintln!("  {warning}");
     }
     println!("  id:      {}", experiment.id);
     println!("  title:   {}", experiment.display_name());

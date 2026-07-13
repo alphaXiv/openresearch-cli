@@ -102,6 +102,7 @@ impl Store {
                 baseline_branch TEXT NOT NULL DEFAULT 'main',
                 repo_path       TEXT NOT NULL,
                 run_command     TEXT,
+                paper_id        TEXT,
                 created_at      INTEGER NOT NULL,
                 updated_at      INTEGER NOT NULL
             );
@@ -157,6 +158,7 @@ impl Store {
             "ALTER TABLE runs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE chat_sessions ADD COLUMN permission_mode TEXT",
             "ALTER TABLE chat_sessions ADD COLUMN reasoning_level TEXT",
+            "ALTER TABLE local_projects ADD COLUMN paper_id TEXT",
         ] {
             let _ = conn.execute(ddl, []);
         }
@@ -327,10 +329,10 @@ impl Store {
 
     pub fn create_local_project(&self, p: &LocalProject) -> Result<()> {
         self.conn.execute(
-            &format!("INSERT INTO local_projects ({PROJECT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"),
+            &format!("INSERT INTO local_projects ({PROJECT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"),
             params![
                 p.id, p.name, p.slug, p.github_owner, p.github_repo,
-                p.baseline_branch, p.repo_path, p.run_command, p.created_at, p.updated_at,
+                p.baseline_branch, p.repo_path, p.run_command, p.paper_id, p.created_at, p.updated_at,
             ],
         )?;
         Ok(())
@@ -408,7 +410,8 @@ impl Store {
     pub fn update_local_project(&self, p: &LocalProject) -> Result<()> {
         self.conn.execute(
             "UPDATE local_projects SET name = ?2, slug = ?3, github_owner = ?4, github_repo = ?5,
-                    baseline_branch = ?6, repo_path = ?7, run_command = ?8, updated_at = ?9
+                    baseline_branch = ?6, repo_path = ?7, run_command = ?8, paper_id = ?9,
+                    updated_at = ?10
              WHERE id = ?1",
             params![
                 p.id,
@@ -419,6 +422,7 @@ impl Store {
                 p.baseline_branch,
                 p.repo_path,
                 p.run_command,
+                p.paper_id,
                 now_ms(),
             ],
         )?;
@@ -726,7 +730,7 @@ const SELECT_RUN: &str = "SELECT id, experiment_id, project_id, status, backend_
                                  commit_sha, result_markdown, cancel_requested FROM runs";
 
 const PROJECT_COLS: &str = "id, name, slug, github_owner, github_repo, baseline_branch, \
-                            repo_path, run_command, created_at, updated_at";
+                            repo_path, run_command, paper_id, created_at, updated_at";
 
 const EXPERIMENT_COLS: &str = "id, project_id, parent_experiment_id, slug, branch_name, \
                                title, description, run_command, agent_status, created_at, updated_at";

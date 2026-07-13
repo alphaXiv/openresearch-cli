@@ -277,6 +277,10 @@ textarea::placeholder {
 .project-card .repo {
   color: var(--subtext);
 }
+.project-card .paper {
+  font-size: 11px;
+  color: var(--muted);
+}
 .project-card .time {
   font-size: 11px;
   color: var(--muted);
@@ -849,6 +853,21 @@ textarea::placeholder {
   margin: 0;
   font-size: 13px;
   max-width: 320px;
+}
+/* one-click /reproduce-paper prefill for paper-born projects */
+.chat-empty .chat-suggest {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: border-color 120ms ease;
+}
+.chat-empty .chat-suggest:hover {
+  border-color: var(--text);
 }
 
 /* user message: a right-aligned rounded bubble, no border, no label */
@@ -2025,6 +2044,63 @@ textarea::placeholder {
 }
 .form .repo-hint.ok {
   color: var(--accent-teal);
+}
+
+/* new-project "from a paper": search results + selected-paper card */
+.form .paper-results {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.form .paper-results button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border-variant);
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+}
+.form .paper-results button:last-child {
+  border-bottom: none;
+}
+.form .paper-results button:hover {
+  background: var(--surface);
+}
+.form .paper-results .title {
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.form .paper-results .id,
+.form .paper-pick .id {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.form .paper-pick {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.form .paper-pick .meta {
+  min-width: 0;
+}
+.form .paper-pick .title {
+  font-size: 13px;
+  font-weight: 600;
 }
 
 /* ---- forms / modal ---- */

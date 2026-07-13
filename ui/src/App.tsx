@@ -348,6 +348,7 @@ export default function App() {
         {projectId && (
           <ChatPanel
             projectId={projectId}
+            paperId={projects.find((p) => p.id === projectId)?.paperId}
             railHeader={railHeader}
             railOpen={railOpen}
             onShowRail={() => setRailOpen(true)}

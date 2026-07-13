@@ -12,10 +12,15 @@ pub struct LocalProject {
     pub slug: String,
     pub github_owner: String,
     pub github_repo: String,
+    /// Fork point for baseline roots and the clone's default checkout — not
+    /// where any experiment lives (legacy roots predating per-baseline
+    /// branches may still ride it).
     pub baseline_branch: String,
     /// Local clone path (`~/.cache/openresearch/repos/<owner>/<repo>`).
     pub repo_path: String,
     pub run_command: Option<String>,
+    /// arXiv id the project starts from (versionless, e.g. `2401.12345`).
+    pub paper_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -32,8 +37,9 @@ impl LocalProject {
             baseline_branch: row.get(5)?,
             repo_path: row.get(6)?,
             run_command: row.get(7)?,
-            created_at: row.get(8)?,
-            updated_at: row.get(9)?,
+            paper_id: row.get(8)?,
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
         })
     }
 }
@@ -46,7 +52,7 @@ pub struct LocalExperiment {
     /// NULL = baseline/root.
     pub parent_experiment_id: Option<String>,
     pub slug: String,
-    /// `orx/<slug>`; the baseline rides the project's baseline branch.
+    /// `orx/<slug>` (legacy baselines ride the project's baseline branch).
     pub branch_name: String,
     pub title: Option<String>,
     pub description: Option<String>,

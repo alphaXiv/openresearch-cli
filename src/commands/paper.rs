@@ -42,7 +42,7 @@ pub async fn run(args: crate::PaperArgs) -> Result<()> {
 /// Handles `arxiv.org/abs/<id>`, `arxiv.org/pdf/<id>[.pdf]`,
 /// `alphaxiv.org/overview/<id>`, `alphaxiv.org/abs/<id>`, and bare ids — by
 /// taking the last path segment and stripping any `?`/`#` and `.pdf`/`.md` suffix.
-fn parse_paper_id(input: &str) -> String {
+pub(crate) fn parse_paper_id(input: &str) -> String {
     let s = input.trim();
     let s = s.split(['?', '#']).next().unwrap_or(s);
     let last = s.rsplit('/').next().unwrap_or(s);
