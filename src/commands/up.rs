@@ -802,12 +802,18 @@ async fn project_working_tree(Path(id): Path<String>) -> ApiResult {
 const FILE_READ_LIMIT: u64 = 512_000;
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ProjectFileQuery {
     path: String,
+    /// Chat session whose worktree holds the file. Absent (or the worktree
+    /// already pruned) falls back to the hub clone.
+    session_id: Option<String>,
 }
 
-/// One file from the project's clone (the agent's working tree), for the UI
-/// file viewer. Path is repo-relative; traversal outside the clone is rejected.
+/// One file from the project's checkout — the chat session's worktree when
+/// `sessionId` is given, else the hub clone — for the UI file viewer. Path is
+/// repo-relative; traversal outside the checkout is rejected. The response's
+/// `root` says which checkout actually answered, so the UI can flag fallback.
 async fn project_file(Path(id): Path<String>, Query(q): Query<ProjectFileQuery>) -> ApiResult {
     blocking_api(move || {
         use std::io::Read as _;
@@ -828,12 +834,50 @@ async fn project_file(Path(id): Path<String>, Query(q): Query<ProjectFileQuery>)
         let project = store
             .get_local_project(&id)?
             .ok_or_else(|| not_found("project"))?;
-        let root = std::fs::canonicalize(&project.repo_path)
-            .map_err(|e| ApiError::from(anyhow!("repo clone unavailable: {e}")))?;
+        // The session's worktree is where the agent actually works, so it can
+        // hold files the hub clone's checkout never sees. The session must be
+        // this project's (which also pins the worktree dir to a store-issued
+        // id); a missing worktree (pruned, or never created) degrades to the
+        // clone rather than erroring, but any other worktree failure is
+        // reported, not papered over.
+        let session_id = q
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let worktree = match session_id {
+            Some(s) => {
+                let session = store
+                    .get_chat_session(s)?
+                    .filter(|sess| sess.project_id == project.id)
+                    .ok_or_else(|| not_found("chat session"))?;
+                let dir = local::git::session_worktree_path(
+                    &project.github_owner,
+                    &project.github_repo,
+                    &session.id,
+                );
+                match std::fs::canonicalize(&dir) {
+                    Ok(p) => Some(p),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(e) => {
+                        return Err(ApiError::from(anyhow!("session worktree unavailable: {e}")))
+                    }
+                }
+            }
+            None => None,
+        };
+        let (root, root_kind) = match worktree {
+            Some(r) => (r, "worktree"),
+            None => (
+                std::fs::canonicalize(&project.repo_path)
+                    .map_err(|e| ApiError::from(anyhow!("repo clone unavailable: {e}")))?,
+                "clone",
+            ),
+        };
         let not_found_json = json!({
-            "path": rel, "content": "", "truncated": false, "notFound": true,
+            "path": rel, "content": "", "truncated": false, "notFound": true, "root": root_kind,
         });
-        // Canonicalize so symlinks can't escape the clone.
+        // Canonicalize so symlinks can't escape the checkout.
         let full = match std::fs::canonicalize(root.join(rel_path)) {
             Ok(p) => p,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Json(not_found_json)),
@@ -861,6 +905,7 @@ async fn project_file(Path(id): Path<String>, Query(q): Query<ProjectFileQuery>)
             "content": String::from_utf8_lossy(&buf).into_owned(),
             "truncated": truncated,
             "notFound": false,
+            "root": root_kind,
         })))
     })
     .await

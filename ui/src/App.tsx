@@ -36,6 +36,44 @@ const sameExpTab = (a: ExpViewDef, b: ExpViewDef) => a.id === b.id && a.view ===
 /** A project file open as a right-panel tab (clicked in chat tool rows). */
 interface FileViewDef {
   path: string;
+  /** Chat session whose worktree holds the file (absent → hub clone). */
+  sessionId?: string;
+}
+
+const sameFileTab = (a: FileViewDef, b: FileViewDef) =>
+  a.path === b.path && a.sessionId === b.sessionId;
+
+const fileTabKey = (t: FileViewDef) => `${t.sessionId ?? ""}:${t.path}`;
+
+// Map a path an agent reported to a repo-relative one — keeping the session
+// id when it points into a per-session worktree, so the file is read from the
+// right checkout. Relative paths name files in the click context's checkout
+// and inherit `contextSessionId`; the regex fallbacks encode the
+// ~/.cache/openresearch/ layouts from src/local/git.rs:
+// worktrees/<owner>/<repo>/<session>/… and repos/<owner>/<repo>/….
+function parseFilePath(
+  rawPath: string,
+  repoPath?: string,
+  contextSessionId?: string,
+): FileViewDef | null {
+  let path = rawPath;
+  let sessionId: string | undefined;
+  const clone = repoPath?.replace(/\/+$/, "");
+  if (!path.startsWith("/")) {
+    sessionId = contextSessionId;
+  } else if (clone && (path === clone || path.startsWith(`${clone}/`))) {
+    path = path.slice(clone.length).replace(/^\/+/, "");
+  } else {
+    const wt = path.match(/\/openresearch\/worktrees\/[^/]+\/[^/]+\/([^/]+)\/(.+)$/);
+    const hub = wt ? null : path.match(/\/openresearch\/repos\/[^/]+\/[^/]+\/(.+)$/);
+    if (wt) {
+      sessionId = wt[1];
+      path = wt[2];
+    } else if (hub) {
+      path = hub[1];
+    }
+  }
+  return path ? { path, sessionId } : null;
 }
 
 const ONBOARDED_KEY = "orx:onboarded";
@@ -198,23 +236,15 @@ export default function App() {
     [expTabs, rightTab],
   );
 
-  // Open a project file as a right-panel tab. Agents report absolute paths
-  // inside the clone; strip the clone prefix so tabs and the API stay
-  // repo-relative.
+  // Open a project file as a right-panel tab. `contextSessionId` is the chat
+  // session (or viewed file's session) the click came from — see
+  // parseFilePath for how it resolves against the reported path.
   const openFileTab = useCallback(
-    (rawPath: string) => {
-      let path = rawPath;
+    (rawPath: string, contextSessionId?: string) => {
       const repoPath = projects?.find((p) => p.id === projectId)?.repoPath;
-      if (repoPath && path.startsWith(repoPath)) {
-        path = path.slice(repoPath.length).replace(/^\/+/, "");
-      } else if (path.startsWith("/")) {
-        // Fallback: the ~/.cache/openresearch/repos/<owner>/<repo>/ layout.
-        const m = path.match(/\/repos\/[^/]+\/[^/]+\/(.+)$/);
-        if (m) path = m[1];
-      }
-      if (!path) return;
-      const tab = { path };
-      setFileTabs((prev) => (prev.some((t) => t.path === path) ? prev : [...prev, tab]));
+      const tab = parseFilePath(rawPath, repoPath, contextSessionId);
+      if (!tab) return;
+      setFileTabs((prev) => (prev.some((t) => sameFileTab(t, tab)) ? prev : [...prev, tab]));
       setRightTab(tab);
       setPanelOpen(true);
     },
@@ -223,11 +253,11 @@ export default function App() {
 
   const closeFileTab = useCallback(
     (tab: FileViewDef) => {
-      const idx = fileTabs.findIndex((t) => t.path === tab.path);
+      const idx = fileTabs.findIndex((t) => sameFileTab(t, tab));
       if (idx === -1) return;
       const next = fileTabs.filter((_, i) => i !== idx);
       setFileTabs(next);
-      if (typeof rightTab === "object" && "path" in rightTab && rightTab.path === tab.path)
+      if (typeof rightTab === "object" && "path" in rightTab && sameFileTab(rightTab, tab))
         setRightTab(next[Math.min(idx, next.length - 1)] ?? "experiments");
     },
     [fileTabs, rightTab],
@@ -411,8 +441,8 @@ export default function App() {
               })}
               {fileTabs.map((t) => (
                 <ClosableTab
-                  key={`file:${t.path}`}
-                  active={fileTab !== null && fileTab.path === t.path}
+                  key={`file:${fileTabKey(t)}`}
+                  active={fileTab !== null && sameFileTab(fileTab, t)}
                   label={t.path.split("/").pop() || t.path}
                   icon={<FileCode size={12} style={{ flexShrink: 0 }} />}
                   onSelect={() => setRightTab(t)}
@@ -490,9 +520,10 @@ export default function App() {
             <div className="tab-body">
               {projectId && (
                 <FileViewer
-                  key={fileTab.path}
+                  key={fileTabKey(fileTab)}
                   projectId={projectId}
                   path={fileTab.path}
+                  sessionId={fileTab.sessionId}
                   onOpenFile={openFileTab}
                 />
               )}
