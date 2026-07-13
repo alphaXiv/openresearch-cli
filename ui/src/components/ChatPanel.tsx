@@ -359,12 +359,17 @@ function PromptCard({
       (typeof p.toolInput?.command === "string" && p.toolInput.command) ||
       (typeof p.toolInput?.filePath === "string" && p.toolInput.filePath) ||
       "";
+    // Codex approval cards ship a human-readable reason (and fileChange cards
+    // carry nothing else) — show it so the user knows what they're granting.
+    const reason =
+      (typeof p.toolInput?.reason === "string" && p.toolInput.reason) || "";
     return (
       <div className={`prompt-card permission ${done ? "resolved" : ""}`}>
         <div className="prompt-head">
           Permission needed: <code>{p.tool}</code>
         </div>
         {summary && <div className="prompt-sub">{summary}</div>}
+        {reason && <div className="prompt-sub">{reason}</div>}
         {done ? (
           <div className="prompt-resolved">Resolved</div>
         ) : (

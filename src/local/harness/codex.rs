@@ -7,7 +7,11 @@
 //! streamed as JSON-RPC notifications. The playbook rides
 //! `developerInstructions` (a real instruction channel — no more first-turn
 //! `<system-context>` text wrapping), and the sandbox policy travels per turn
-//! (`sandboxPolicy` with writable roots + network). Verified against
+//! (`sandboxPolicy` with writable roots + network). Auto runs
+//! `approvalPolicy: on-request`: a command that needs to escalate past the
+//! sandbox arrives as a server→client approval request, surfaced as a
+//! permission card and answered inline over the same connection
+//! (`resume_from_prompt` → `{"decision": accept|decline}`). Verified against
 //! codex-cli 0.144.0 via `codex app-server generate-json-schema` plus a live
 //! spike; the fixture transcript in the tests pins the wire shapes.
 //!
@@ -19,8 +23,10 @@
 //! Detection: `~/.codex/auth.json` holds either an `OPENAI_API_KEY` or an OAuth
 //! `id_token` JWT we decode (unverified) for the account email and plan.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -32,9 +38,11 @@ use super::detect::{
     HarnessInfo,
 };
 use super::options::{HarnessOptions, PermissionMode};
-use super::Harness;
+use super::{Harness, ResumeAction};
 use crate::error::{anyhow, Result};
-use crate::local::chat::{prepare_env, TurnCtx, WirePart, WireToolState};
+use crate::local::chat::{
+    prepare_env, PromptAnswer, ResumeCtx, TurnCtx, WirePart, WirePrompt, WireToolState,
+};
 use crate::local::codex::{CodexClient, TurnEvent};
 use crate::local::opencode::ensure_playbook;
 
@@ -117,8 +125,8 @@ impl Harness for Codex {
         if info.agent_ready {
             info = info.with_models(&CODEX_MODELS);
             // Old CLIs still work via the legacy exec path, but miss the
-            // app-server wins (thread resume; the approval channel the
-            // follow-up builds on).
+            // app-server wins (permission prompts on sandbox escalations;
+            // thread resume).
             let too_old = info
                 .version
                 .as_deref()
@@ -126,7 +134,7 @@ impl Harness for Codex {
                 .is_some_and(|v| v < MIN_APP_SERVER_VERSION);
             if too_old {
                 info.agent_note = Some(
-                    "This Codex version chats via the legacy exec path — update to 0.144+ for the app-server integration.".to_string(),
+                    "This Codex version chats via the legacy exec path — update to 0.144+ for permission prompts.".to_string(),
                 );
             }
         } else {
@@ -148,19 +156,17 @@ impl Harness for Codex {
     }
 
     fn options(&self) -> HarnessOptions {
-        // Approvals are `never` on both transports this release, so permission
-        // modes map onto the *sandbox policy*; we offer only Auto + Bypass,
-        // matching Claude. On app-server that's a deliberate hold — the pure
-        // transport swap (see `codex_policies`); the follow-up flips Auto to
-        // `on-request` and can then revisit Codex's first-class Plan mode,
-        // which app-server does support. On the legacy exec fallback there is
-        // no approval channel at all, and a `Plan`→`read-only` sandbox was
-        // dropped for the same reason as Claude's: read-only blocks the `orx`
-        // inspection the agent needs *and* the launches that are the point.
-        //   * Auto  — workspace-write, plus network, the orx data dir, and
-        //     the hub clone's `.git` (see `sandbox_policy_json`, and
-        //     `run_turn_exec` for the legacy `-c` form).
-        //   * Bypass— full access.
+        // Two modes, matching Claude. (A real Plan mode — which app-server
+        // does support — is a candidate follow-up now that approvals work;
+        // the legacy exec fallback has no approval channel and dropped
+        // `Plan`→`read-only` because it blocks the `orx` inspection the agent
+        // needs *and* the launches that are the point.)
+        //   * Auto  — workspace-write + `on-request` approvals: the writable
+        //     roots (orx data dir, hub `.git` — see `sandbox_policy_json`)
+        //     plus network keep routine work prompt-free, and anything past
+        //     the sandbox surfaces as a permission card. On the exec fallback
+        //     approvals stay off (denials fail to the model).
+        //   * Bypass— full access, approvals off.
         HarnessOptions::none()
             .with_permission_modes(
                 &[PermissionMode::Auto, PermissionMode::Bypass],
@@ -168,6 +174,52 @@ impl Harness for Codex {
             )
             // Codex's own reasoning tiers via `-c model_reasoning_effort`.
             .with_reasoning_levels(&CODEX_REASONING_LEVELS, "high")
+    }
+
+    /// Codex is paused mid-turn on a server→client approval request; the
+    /// answer is the JSON-RPC reply, delivered over the live app-server child.
+    /// Inline (the opencode pattern): the still-running turn loop keeps
+    /// streaming once codex unblocks, so this returns
+    /// [`ResumeAction::Handled`] — never the new-message path. Only
+    /// `answer.approve` is consulted (accept/decline; codex has no
+    /// question-style answers here).
+    async fn resume_from_prompt(
+        &self,
+        ctx: &ResumeCtx,
+        prompt: &WirePrompt,
+        answer: &PromptAnswer,
+    ) -> Result<ResumeAction> {
+        if prompt.kind != "permission" {
+            return Err(anyhow!("codex cannot reply to a `{}` prompt", prompt.kind));
+        }
+        // A reply only lands if the turn is still paused on it — after an
+        // interrupt/error the request was already cancelled and a late reply
+        // would be a stale answer into the void.
+        if !ctx.is_busy().await {
+            return Err(anyhow!(
+                "this turn is no longer running — its prompt can't be answered"
+            ));
+        }
+        let native = prompt
+            .native_id
+            .as_deref()
+            .ok_or_else(|| anyhow!("codex prompt has no reply id"))?;
+        // native_id is the JSON-RPC request id's raw text (integer or string).
+        let rpc_id: Value = serde_json::from_str(native)
+            .map_err(|_| anyhow!("codex prompt reply id is invalid"))?;
+        let client = ctx
+            .host
+            .codex
+            .client_for(&ctx.session_id)
+            .await
+            .ok_or_else(|| anyhow!("codex app-server is not running — cannot deliver the reply"))?;
+        client
+            .respond(
+                &rpc_id,
+                serde_json::json!({ "decision": approval_decision(answer.approve) }),
+            )
+            .await?;
+        Ok(ResumeAction::Handled)
     }
 
     fn config_home(&self) -> Option<PathBuf> {
@@ -188,6 +240,13 @@ impl Harness for Codex {
 /// First protocol version the harness was validated against (schema dump +
 /// live spike). Older CLIs take the exec fallback below.
 const MIN_APP_SERVER_VERSION: (u64, u64, u64) = (0, 144, 0);
+
+/// A turn with NO events for this long is treated as wedged and interrupted
+/// rather than held busy forever. Known false positive: a command that is
+/// legitimately silent this long (a quiet build, a training step with
+/// buffered output) is indistinguishable from a hang — hence the generous
+/// bound; the interruption is a clear, recoverable error either way.
+const TURN_WATCHDOG: Duration = Duration::from_secs(30 * 60);
 
 /// `codex --version` output → (major, minor, patch). The first token that
 /// parses wins, so "codex-cli 0.144.0", bare "0.144.0", and a future
@@ -227,18 +286,19 @@ async fn app_server_supported() -> bool {
         .await
 }
 
-/// Session mode → (thread `sandbox` mode, `approvalPolicy`). Approvals stay
-/// `never` on every mode for now — the sandbox is still the boundary, exactly
-/// like the exec path — so this PR is a pure transport swap. The follow-up
-/// flips Auto to `on-request`, surfacing sandbox escalations as permission
-/// cards (verified live: 0.144 asks *before* running an out-of-sandbox
-/// command).
+/// Session mode → (thread `sandbox` mode, `approvalPolicy`). Auto runs
+/// `on-request`: the sandbox is still the boundary for routine work (the
+/// writable roots keep orx traffic prompt-free), and anything that needs to
+/// escalate past it arrives as an approval request we surface as a permission
+/// card (verified live: 0.144 asks *before* running an out-of-sandbox
+/// command). Bypass drops the sandbox, so there is nothing to escalate —
+/// approvals stay off.
 fn codex_policies(mode: Option<PermissionMode>) -> (&'static str, &'static str) {
     match mode.unwrap_or(PermissionMode::Auto) {
         PermissionMode::Bypass => ("danger-full-access", "never"),
         // Plan/AcceptEdits/Ask have no distinct semantics here (mirrors
         // `codex_sandbox` on the exec path): the balanced default.
-        _ => ("workspace-write", "never"),
+        _ => ("workspace-write", "on-request"),
     }
 }
 
@@ -516,6 +576,12 @@ fn error_message(error: Option<&Value>) -> String {
 }
 
 async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
+    // Entry sweep: any card still unresolved from an earlier turn is a zombie
+    // — its JSON-RPC request died with its turn (or child), and worse, codex
+    // request ids restart per child, so a click on a stale card could be
+    // delivered to a live request minted later. Resolve them all before this
+    // turn can surface anything.
+    ctx.host.resolve_stale_prompts(&ctx.session_id).await?;
     let project = ctx.project.clone();
     let session_id = ctx.session_id.clone();
     let (repo, playbook) =
@@ -602,18 +668,64 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
         client.set_active_turn(turn_id);
     }
 
-    while let Some(event) = rx.recv().await {
+    // Approval cards surfaced this turn: WirePart id → JSON-RPC request id.
+    // Invariant: no unresolved codex card outlives its turn — every exit path
+    // below sweeps them (resolve + settle with codex), so a dead turn can't
+    // leave a live-looking card. (A task *abort* skips the sweep, but
+    // `ChatHost::interrupt` cancels pending approvals natively first, and the
+    // next turn's entry sweep in this function resolves whatever survived.)
+    let mut open_approvals: HashMap<String, Value> = HashMap::new();
+
+    loop {
+        // Watchdog (see TURN_WATCHDOG for the false-positive trade-off).
+        // Suspended while a card is pending — user think-time is unbounded by
+        // design; codex's own ~5-minute approval deadline still applies
+        // server-side.
+        let event = if open_approvals.is_empty() {
+            match tokio::time::timeout(TURN_WATCHDOG, rx.recv()).await {
+                Ok(event) => event,
+                Err(_) => {
+                    client.interrupt_active_turn().await;
+                    ctx.push_error(format!(
+                        "codex produced no output for {} minutes — turn interrupted",
+                        TURN_WATCHDOG.as_secs() / 60
+                    ));
+                    let _ = ctx.flush();
+                    return Ok(());
+                }
+            }
+        } else {
+            rx.recv().await
+        };
+        let Some(event) = event else {
+            return Err(anyhow!("codex app-server event stream ended mid-turn"));
+        };
         match event {
             TurnEvent::Notification { method, params } => {
                 if event_turn_mismatch(turn_id.as_deref(), &params) {
                     continue;
                 }
+                // Codex settled a request itself (its approval deadline hit,
+                // or our reply raced this notification): the card must not
+                // stay live. Part ids are a pure function of the request id;
+                // flushed immediately so the card goes read-only right away.
+                if method == "serverRequest/resolved" {
+                    if let Some(request_id) = params.get("requestId") {
+                        let part_id = approval_part_id(turn_id.as_deref(), request_id);
+                        if open_approvals.remove(&part_id).is_some() {
+                            resolve_card(ctx, &part_id);
+                            let _ = ctx.flush();
+                        }
+                    }
+                }
                 match apply_notification(ctx, &method, &params) {
                     Some(TurnEnd::Done) => {
+                        sweep_open_approvals(ctx, &client, &mut open_approvals).await;
                         let _ = ctx.flush();
                         return Ok(());
                     }
                     Some(TurnEnd::Failed(message)) => {
+                        sweep_open_approvals(ctx, &client, &mut open_approvals).await;
                         // A terminal `error` notification may have already
                         // pushed this exact message — don't render it twice.
                         if !has_error_part(ctx, &message) {
@@ -627,16 +739,48 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
                     None => {}
                 }
             }
-            TurnEvent::Request { id, .. } => {
-                // approvalPolicy is `never` on every mode, so no approval
-                // should arrive; decline defensively rather than leave the
-                // server blocked on an unanswered request. The follow-up
-                // surfaces these as permission cards — and must keep declining
-                // stale-turn requests (params carry turnId; `event_turn_mismatch`
-                // works on them unchanged) instead of surfacing them.
-                let _ = client.respond_decline(&id).await;
+            TurnEvent::Request { id, method, params } => {
+                if event_turn_mismatch(turn_id.as_deref(), &params) {
+                    // A stale turn's request (aborted predecessor still
+                    // streaming) is declined, never surfaced — with the reply
+                    // shape its method can actually parse.
+                    if crate::local::codex::is_approval_request(&method) {
+                        let _ = client.respond_decline(&id).await;
+                    } else {
+                        let _ = client.respond_method_unsupported(&id).await;
+                    }
+                } else if let Some((part_id, part)) =
+                    approval_card(turn_id.as_deref(), &method, &id, &params)
+                {
+                    if matches!(ctx.permission_mode, Some(PermissionMode::Bypass)) {
+                        // Bypass runs sandbox-less with approvals off; if codex
+                        // asks anyway, the user's chosen mode answers for them.
+                        let _ = client
+                            .respond(
+                                &id,
+                                serde_json::json!({ "decision": approval_decision(true) }),
+                            )
+                            .await;
+                    } else {
+                        // Surface the card and keep consuming events — codex
+                        // holds the command; the reply arrives via
+                        // `resume_from_prompt` on the user's click.
+                        open_approvals.insert(part_id, id);
+                        ctx.upsert_part(part);
+                        let _ = ctx.flush();
+                    }
+                } else {
+                    // Non-approval request type (different reply schema, e.g.
+                    // item/tool/requestUserInput) — in every mode: fail the
+                    // call rather than answer in a shape codex can't parse.
+                    let _ = client.respond_method_unsupported(&id).await;
+                }
             }
             TurnEvent::Closed => {
+                // Child gone: nothing to settle with codex; just close cards.
+                for part_id in std::mem::take(&mut open_approvals).into_keys() {
+                    resolve_card(ctx, &part_id);
+                }
                 return Err(anyhow!(
                     "codex app-server exited mid-turn; see {}",
                     crate::store::data_dir().join("agent-codex.log").display()
@@ -645,7 +789,21 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
         }
         ctx.maybe_flush();
     }
-    Err(anyhow!("codex app-server event stream ended mid-turn"))
+}
+
+/// Turn-exit sweep half of the no-card-outlives-its-turn invariant: cards the
+/// user never answered are resolved in the transcript and declined with codex.
+/// The decline is unconditional — `CodexClient::respond`'s pending-set guard
+/// is the single arbiter, so an already-answered/settled id no-ops there.
+async fn sweep_open_approvals(
+    ctx: &mut TurnCtx,
+    client: &CodexClient,
+    open: &mut HashMap<String, Value>,
+) {
+    for (part_id, rpc_id) in open.drain() {
+        resolve_card(ctx, &part_id);
+        let _ = client.respond_decline(&rpc_id).await;
+    }
 }
 
 /// True when the notification names a turn that is not ours. Notifications
@@ -661,6 +819,76 @@ fn event_turn_mismatch(expected: Option<&str>, params: &Value) -> bool {
             .and_then(Value::as_str)
     });
     event_turn.is_some_and(|t| t != expected)
+}
+
+/// PromptAnswer.approve → the codex decision string. Per-command `accept`
+/// (never `acceptForSession` — a single Allow must not silently widen future
+/// commands); `decline` lets the model continue and report the denial.
+fn approval_decision(approve: bool) -> &'static str {
+    if approve {
+        "accept"
+    } else {
+        "decline"
+    }
+}
+
+/// The WirePart id of an approval card, a pure function of (turn, request id)
+/// — shared by `approval_card` and the `serverRequest/resolved` reconciliation
+/// so neither needs a reverse lookup. Turn-scoped because codex request ids
+/// restart at 0 per child process: without the scope, a stale card from a
+/// previous child generation would collide with a live one. (The turn-entry
+/// `resolve_stale_prompts` sweep is the primary defense; this makes ids
+/// honest too.)
+fn approval_part_id(turn: Option<&str>, id: &Value) -> String {
+    format!("appr-{}-{id}", turn.unwrap_or("t"))
+}
+
+/// A server→client approval request → a permission card. Returns the WirePart
+/// id and the part; `native_id` carries the JSON-RPC request id's raw text —
+/// the reply target for `resume_from_prompt`. `None` for request methods we
+/// don't card (they get a JSON-RPC error reply instead — including
+/// `item/permissions/requestApproval`, whose reply is a permission-profile
+/// object, not a `{decision}`). The key list spans both carded schemas:
+/// command/cwd exist only on commandExecution; fileChange carries just
+/// reason/grantRoot, so its card leans on `reason`.
+fn approval_card(
+    turn: Option<&str>,
+    method: &str,
+    id: &Value,
+    params: &Value,
+) -> Option<(String, WirePart)> {
+    let tool = match method {
+        "item/commandExecution/requestApproval" => "bash",
+        "item/fileChange/requestApproval" => "edit",
+        _ => return None,
+    };
+    let mut input = serde_json::Map::new();
+    for key in ["command", "cwd", "reason", "grantRoot"] {
+        if let Some(v) = params.get(key).filter(|v| !v.is_null()) {
+            input.insert(key.to_string(), v.clone());
+        }
+    }
+    let part_id = approval_part_id(turn, id);
+    let prompt = WirePrompt {
+        kind: "permission".into(),
+        tool: Some(tool.into()),
+        tool_input: Some(Value::Object(input)),
+        native_id: Some(id.to_string()),
+        ..Default::default()
+    };
+    Some((part_id.clone(), WirePart::prompt(part_id, prompt)))
+}
+
+/// Mark a surfaced card resolved in the in-memory transcript (no-op when the
+/// user already answered it). A card resolved by the user goes through
+/// `ChatHost::respond` → store; `adopt_resolved_prompts` keeps the two views
+/// consistent on flush.
+fn resolve_card(ctx: &mut TurnCtx, part_id: &str) {
+    if let Some(part) = ctx.assistant.parts.iter_mut().find(|p| p.id == part_id) {
+        if let Some(prompt) = part.prompt.as_mut() {
+            prompt.resolved = true;
+        }
+    }
 }
 
 /// Whether the transcript already shows an error part with this message.
@@ -1127,12 +1355,13 @@ mod tests {
 
     #[test]
     fn policies_map_modes_to_thread_params() {
-        // Every non-bypass mode is the balanced sandbox; approvals stay off
-        // in this release (pure transport swap — see codex_policies docs).
-        assert_eq!(codex_policies(None), ("workspace-write", "never"));
+        // Every non-bypass mode is the balanced sandbox with on-request
+        // approvals (escalations become permission cards); Bypass drops the
+        // sandbox, so approvals stay off — nothing to escalate.
+        assert_eq!(codex_policies(None), ("workspace-write", "on-request"));
         assert_eq!(
             codex_policies(Some(PermissionMode::Auto)),
-            ("workspace-write", "never")
+            ("workspace-write", "on-request")
         );
         assert_eq!(
             codex_policies(Some(PermissionMode::Bypass)),
@@ -1264,6 +1493,105 @@ mod tests {
         );
         let state = ctx.assistant.parts[0].state.as_ref().unwrap();
         assert_eq!(state.output.as_deref(), Some("final"));
+    }
+
+    /// The live spike's approval request (trimmed) → a permission card whose
+    /// native_id round-trips the JSON-RPC id, plus the decision mapping.
+    #[test]
+    fn approval_request_becomes_a_permission_card() {
+        let id = serde_json::json!(0);
+        let params = serde_json::json!({
+            "threadId": "t1", "turnId": "turn1", "itemId": "call_1",
+            "command": "/bin/zsh -lc 'touch /outside/probe.txt'",
+            "cwd": "/ws",
+            "reason": "Allow writing the requested probe file outside the workspace?",
+            "grantRoot": null,
+        });
+        let (part_id, part) = approval_card(
+            Some("turn1"),
+            "item/commandExecution/requestApproval",
+            &id,
+            &params,
+        )
+        .unwrap();
+        assert_eq!(part_id, "appr-turn1-0");
+        assert_eq!(part.kind, "prompt");
+        let prompt = part.prompt.as_ref().unwrap();
+        assert_eq!(prompt.kind, "permission");
+        assert_eq!(prompt.tool.as_deref(), Some("bash"));
+        assert!(!prompt.resolved);
+        // native_id is the raw JSON text of the id — parseable back to Value.
+        assert_eq!(prompt.native_id.as_deref(), Some("0"));
+        let input = prompt.tool_input.as_ref().unwrap();
+        assert_eq!(input["command"], "/bin/zsh -lc 'touch /outside/probe.txt'");
+        assert_eq!(input["cwd"], "/ws");
+        assert!(input.get("grantRoot").is_none(), "nulls are dropped");
+
+        // fileChange requests carry only reason/grantRoot (no command/cwd) —
+        // the edit card leans on `reason`.
+        let fc_params = serde_json::json!({
+            "threadId": "t1", "turnId": "turn1", "itemId": "fc_1",
+            "reason": "Allow writing outside the workspace?",
+            "grantRoot": "/outside",
+        });
+        let (_, part) = approval_card(
+            Some("turn1"),
+            "item/fileChange/requestApproval",
+            &id,
+            &fc_params,
+        )
+        .unwrap();
+        let prompt = part.prompt.unwrap();
+        assert_eq!(prompt.tool.as_deref(), Some("edit"));
+        let input = prompt.tool_input.as_ref().unwrap();
+        assert!(input.get("command").is_none());
+        assert_eq!(input["reason"], "Allow writing outside the workspace?");
+        assert_eq!(input["grantRoot"], "/outside");
+
+        // Non-approval request types → no card (JSON-RPC error reply instead).
+        assert!(approval_card(Some("turn1"), "item/tool/requestUserInput", &id, &params).is_none());
+        assert!(approval_card(
+            Some("turn1"),
+            "item/permissions/requestApproval",
+            &id,
+            &params
+        )
+        .is_none());
+
+        assert_eq!(approval_decision(true), "accept");
+        assert_eq!(approval_decision(false), "decline");
+    }
+
+    /// Part ids are turn-scoped: codex request ids restart at 0 per child
+    /// process, so the same rpc id in two turns must yield distinct cards.
+    #[test]
+    fn approval_part_ids_are_turn_scoped() {
+        let id = serde_json::json!(0);
+        assert_eq!(approval_part_id(Some("turn1"), &id), "appr-turn1-0");
+        assert_ne!(
+            approval_part_id(Some("turn1"), &id),
+            approval_part_id(Some("turn2"), &id)
+        );
+        // No turn id (filter disabled): still deterministic.
+        assert_eq!(approval_part_id(None, &id), "appr-t-0");
+    }
+
+    #[test]
+    fn resolve_card_marks_prompts_and_ignores_unknown_parts() {
+        let mut ctx = TurnCtx::test_stub();
+        let (part_id, part) = approval_card(
+            Some("turn1"),
+            "item/commandExecution/requestApproval",
+            &serde_json::json!(7),
+            &serde_json::json!({"command": "x"}),
+        )
+        .unwrap();
+        ctx.upsert_part(part);
+        resolve_card(&mut ctx, &part_id);
+        assert!(ctx.assistant.parts[0].prompt.as_ref().unwrap().resolved);
+        resolve_card(&mut ctx, &part_id); // idempotent
+        resolve_card(&mut ctx, "missing"); // no-op, no panic
+        assert_eq!(ctx.assistant.parts.len(), 1);
     }
 
     /// The Failed-dedup guard matches exactly how `push_error` stores errors
