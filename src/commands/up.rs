@@ -481,6 +481,7 @@ async fn delete_project(State(state): State<AppState>, Path(id): Path<String>) -
     for session in store.list_chat_sessions_by_project(&id)? {
         let _ = state.chat.interrupt(&session.id).await;
         state.chat.opencode.kill_session(&session.id).await;
+        state.chat.codex.kill_session(&session.id).await;
         local::chat::cleanup_session_worktree(&project, &session.id);
     }
     store.delete_local_project(&id)?;

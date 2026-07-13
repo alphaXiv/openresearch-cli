@@ -407,7 +407,8 @@ fn exclude_agent_files(hub: &Path) {
 /// Ensure the project's hub clone and this session's private worktree exist,
 /// and write the autoresearch playbook into the worktree. Every harness
 /// adapter injects this same file (opencode via config `instructions`, Claude
-/// Code via `--append-system-prompt`, Codex via first-turn context). Returns
+/// Code via `--append-system-prompt`, Codex via `developerInstructions` —
+/// legacy exec: first-turn context). Returns
 /// `(workdir, playbook)` — the worktree the harness runs in and the playbook
 /// path inside it.
 pub fn ensure_playbook(project: &LocalProject, session_id: &str) -> Result<(PathBuf, PathBuf)> {

@@ -13,7 +13,7 @@
 //! are plain UUIDs persisted as rollout files under `~/.codex/sessions`, so
 //! `thread/resume {threadId}` survives an `orx up` restart.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
@@ -25,7 +25,14 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::error::{anyhow, Result};
-use crate::local::harness::codex::{ensure_orx_data_dir, find_codex};
+use crate::local::harness::codex::{ensure_orx_data_dir, find_codex_required};
+
+/// Ceiling on a request's response wait — generous because `thread/start`
+/// blocks on the user's own MCP servers coming up.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(150);
+/// Interrupts are best-effort and sit on the user-facing interrupt/delete
+/// paths — never let a wedged child hold those hostage.
+const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// One inbound line, classified. JSON-RPC over one stream: a message with both
 /// `id` and `method` is a server→client *request* (approvals — must be
@@ -106,13 +113,6 @@ pub enum TurnEvent {
     Closed,
 }
 
-/// The in-flight turn's ids, for `turn/interrupt`.
-#[derive(Clone, Default)]
-struct ActiveTurn {
-    thread_id: Option<String>,
-    turn_id: Option<String>,
-}
-
 /// A live JSON-RPC connection to one session's `codex app-server` child.
 pub struct CodexClient {
     child: Mutex<Child>,
@@ -126,16 +126,21 @@ pub struct CodexClient {
     turn: std::sync::Mutex<Option<mpsc::UnboundedSender<TurnEvent>>>,
     /// Ids of server→client requests we have not answered yet, as raw JSON
     /// text (ids are echoed verbatim). Guards `respond` against stale answers.
-    unanswered: std::sync::Mutex<HashMap<String, ()>>,
-    active: std::sync::Mutex<ActiveTurn>,
+    unanswered: std::sync::Mutex<HashSet<String>>,
+    /// The in-flight turn's id (from `turn/started`), for `turn/interrupt`.
+    active_turn: std::sync::Mutex<Option<String>>,
     /// The thread this child has started/resumed — a fresh child (after crash
     /// or restart) must `thread/resume` before its next `turn/start`.
     resumed_thread: std::sync::Mutex<Option<String>>,
 }
 
 impl CodexClient {
-    /// Send a client→server request and await its response.
-    pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
+    /// Send a client→server request; `Ok(Err(msg))` is a *server-reported*
+    /// JSON-RPC error, `Err(..)` a transport failure (child gone / timeout).
+    /// Callers that must tell "codex said no" apart from "codex didn't answer"
+    /// (e.g. the thread/resume fallback) use this; everyone else wants
+    /// [`Self::request`].
+    pub async fn try_request(&self, method: &str, params: Value) -> Result<Result<Value, String>> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
@@ -146,41 +151,41 @@ impl CodexClient {
             self.pending.lock().unwrap().remove(&id);
             return Err(e);
         }
-        // Generous ceiling: thread/start can wait on the user's MCP servers.
-        match tokio::time::timeout(Duration::from_secs(150), rx).await {
-            Ok(Ok(Ok(result))) => Ok(result),
-            Ok(Ok(Err(err))) => Err(anyhow!("codex {method} failed: {err}")),
+        match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
+            Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => Err(anyhow!("codex app-server closed during {method}")),
             Err(_) => {
                 self.pending.lock().unwrap().remove(&id);
-                Err(anyhow!("codex app-server did not answer {method}"))
+                Err(anyhow!(
+                    "codex app-server did not answer {method} within {}s",
+                    REQUEST_TIMEOUT.as_secs()
+                ))
             }
         }
     }
 
-    /// Send a notification (no id, no reply).
-    pub async fn notify(&self, method: &str, params: Option<Value>) -> Result<()> {
-        let mut msg = json!({ "method": method });
-        if let Some(params) = params {
-            msg["params"] = params;
+    /// [`Self::try_request`] with server errors collapsed into `Err`.
+    pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        match self.try_request(method, params).await? {
+            Ok(result) => Ok(result),
+            Err(err) => Err(anyhow!("codex {method} failed: {err}")),
         }
-        self.write_line(&msg).await
     }
 
     /// Answer a server→client request (approval). Errors if `id` isn't
     /// pending — the stale-answer guard (child restarted, turn ended).
     pub async fn respond(&self, id: &Value, result: Value) -> Result<()> {
-        if self
-            .unanswered
-            .lock()
-            .unwrap()
-            .remove(&id.to_string())
-            .is_none()
-        {
+        if !self.unanswered.lock().unwrap().remove(&id.to_string()) {
             return Err(anyhow!("this approval is no longer pending"));
         }
         self.write_line(&json!({ "id": id, "result": result }))
             .await
+    }
+
+    /// Decline a server→client request — the fail-safe answer whenever no one
+    /// can (or should) decide, so the server is never left blocked on us.
+    pub async fn respond_decline(&self, id: &Value) -> Result<()> {
+        self.respond(id, json!({ "decision": "decline" })).await
     }
 
     async fn write_line(&self, msg: &Value) -> Result<()> {
@@ -199,9 +204,10 @@ impl CodexClient {
     /// Register the session's turn event sink. The returned guard deregisters
     /// on drop (including task abort mid-turn).
     pub fn register_turn(self: &Arc<Self>, tx: mpsc::UnboundedSender<TurnEvent>) -> TurnRoute {
-        *self.turn.lock().unwrap() = Some(tx);
+        *self.turn.lock().unwrap() = Some(tx.clone());
         TurnRoute {
             client: self.clone(),
+            tx,
         }
     }
 
@@ -212,37 +218,49 @@ impl CodexClient {
 
     pub fn set_resumed_thread(&self, thread_id: &str) {
         *self.resumed_thread.lock().unwrap() = Some(thread_id.to_string());
-        self.active.lock().unwrap().thread_id = Some(thread_id.to_string());
     }
 
     pub fn set_active_turn(&self, turn_id: &str) {
-        self.active.lock().unwrap().turn_id = Some(turn_id.to_string());
+        *self.active_turn.lock().unwrap() = Some(turn_id.to_string());
     }
 
-    /// Best-effort native interrupt of the in-flight turn.
+    /// Best-effort native interrupt of the in-flight turn. Bounded: this sits
+    /// on the user-facing interrupt/delete paths, and a wedged child (stdin
+    /// full, not answering) must not hold them for the full request timeout.
     pub async fn interrupt_active_turn(&self) {
-        let ActiveTurn { thread_id, turn_id } = self.active.lock().unwrap().clone();
+        let thread_id = self.resumed_thread();
+        let turn_id = self.active_turn.lock().unwrap().clone();
         if let (Some(thread_id), Some(turn_id)) = (thread_id, turn_id) {
-            let _ = self
-                .request(
+            let _ = tokio::time::timeout(
+                INTERRUPT_TIMEOUT,
+                self.request(
                     "turn/interrupt",
                     json!({ "threadId": thread_id, "turnId": turn_id }),
-                )
-                .await;
+                ),
+            )
+            .await;
         }
     }
 }
 
 /// RAII turn registration — dropping (normal exit or task abort) detaches the
-/// event sink so a dangling turn can't receive another turn's events.
+/// event sink so a dangling turn can't receive another turn's events. An
+/// aborted task's guard drops *asynchronously*, possibly after a successor
+/// turn has already registered — so drop only detaches its *own* channel,
+/// never a successor's.
 pub struct TurnRoute {
     client: Arc<CodexClient>,
+    tx: mpsc::UnboundedSender<TurnEvent>,
 }
 
 impl Drop for TurnRoute {
     fn drop(&mut self) {
-        *self.client.turn.lock().unwrap() = None;
-        self.client.active.lock().unwrap().turn_id = None;
+        let mut turn = self.client.turn.lock().unwrap();
+        if turn.as_ref().is_some_and(|t| t.same_channel(&self.tx)) {
+            *turn = None;
+            drop(turn);
+            *self.client.active_turn.lock().unwrap() = None;
+        }
     }
 }
 
@@ -258,24 +276,22 @@ async fn read_loop(client: Arc<CodexClient>, stdout: tokio::process::ChildStdout
                 }
             }
             Line::Request { id, method, params } => {
-                client.unanswered.lock().unwrap().insert(id.to_string(), ());
+                client.unanswered.lock().unwrap().insert(id.to_string());
                 let routed = {
                     let turn = client.turn.lock().unwrap();
-                    turn.as_ref()
-                        .map(|tx| {
-                            tx.send(TurnEvent::Request {
-                                id: id.clone(),
-                                method: method.clone(),
-                                params: params.clone(),
-                            })
-                            .is_ok()
+                    turn.as_ref().is_some_and(|tx| {
+                        tx.send(TurnEvent::Request {
+                            id: id.clone(),
+                            method,
+                            params,
                         })
-                        .unwrap_or(false)
+                        .is_ok()
+                    })
                 };
                 if !routed {
                     // No turn is listening (raced an abort). Never leave the
                     // server hanging on a request nobody will answer.
-                    let _ = client.respond(&id, json!({ "decision": "decline" })).await;
+                    let _ = client.respond_decline(&id).await;
                 }
             }
             Line::Notification { method, params } => {
@@ -287,7 +303,11 @@ async fn read_loop(client: Arc<CodexClient>, stdout: tokio::process::ChildStdout
             Line::Junk => {}
         }
     }
-    // EOF: the child is gone. Fail everything that is still waiting.
+    // EOF or read error: the connection is unusable either way. Kill the child
+    // if it is somehow still alive (a half-dead child left in the registry
+    // would eat a request timeout per turn until restart), then fail everything
+    // still waiting.
+    let _ = client.child.lock().await.kill().await;
     for (_, tx) in client.pending.lock().unwrap().drain() {
         let _ = tx.send(Err("codex app-server exited".into()));
     }
@@ -299,9 +319,7 @@ async fn read_loop(client: Arc<CodexClient>, stdout: tokio::process::ChildStdout
 
 /// Spawn `codex app-server` and complete the `initialize` handshake.
 async fn spawn_client() -> Result<Arc<CodexClient>> {
-    let bin = find_codex().ok_or_else(|| {
-        anyhow!("codex not found on PATH — install Codex and run `codex login` first")
-    })?;
+    let bin = find_codex_required()?;
     let mut cmd = Command::new(&bin);
     cmd.arg("app-server")
         .stdin(Stdio::piped())
@@ -347,8 +365,8 @@ async fn spawn_client() -> Result<Arc<CodexClient>> {
         next_id: AtomicI64::new(1),
         pending: std::sync::Mutex::new(HashMap::new()),
         turn: std::sync::Mutex::new(None),
-        unanswered: std::sync::Mutex::new(HashMap::new()),
-        active: std::sync::Mutex::new(ActiveTurn::default()),
+        unanswered: std::sync::Mutex::new(HashSet::new()),
+        active_turn: std::sync::Mutex::new(None),
         resumed_thread: std::sync::Mutex::new(None),
     });
     tokio::spawn(read_loop(client.clone(), stdout));
@@ -375,7 +393,9 @@ async fn spawn_client() -> Result<Arc<CodexClient>> {
             ));
         }
     }
-    client.notify("initialized", None).await?;
+    client
+        .write_line(&json!({ "method": "initialized" }))
+        .await?;
     Ok(client)
 }
 
@@ -436,7 +456,7 @@ impl CodexHost {
         }
     }
 
-    /// Natively interrupt the session's in-flight turn (best-effort).
+    /// Natively interrupt the session's in-flight turn (best-effort, bounded).
     pub async fn interrupt_session(&self, session_id: &str) {
         if let Some(client) = self.client_for(session_id).await {
             client.interrupt_active_turn().await;
@@ -464,15 +484,21 @@ mod tests {
 
     #[test]
     fn classify_discriminates_the_three_wire_shapes() {
-        // Server→client request: id + method. Id kept as raw Value.
+        // Server→client request: id + method. Id kept as raw Value. (Fixture
+        // captured live from the 0.144 spike, trimmed.)
         assert_eq!(
             classify_line(
-                r#"{"id":0,"method":"item/commandExecution/requestApproval","params":{"threadId":"t"}}"#
+                r#"{"method":"item/commandExecution/requestApproval","id":0,"params":{"threadId":"t1","turnId":"turn1","itemId":"call_1","startedAtMs":1,"reason":"Allow writing the requested probe file outside the workspace?","command":"/bin/zsh -lc 'touch /outside/probe.txt'","cwd":"/ws"}}"#
             ),
             Line::Request {
                 id: json!(0),
                 method: "item/commandExecution/requestApproval".into(),
-                params: json!({"threadId": "t"}),
+                params: json!({
+                    "threadId": "t1", "turnId": "turn1", "itemId": "call_1",
+                    "startedAtMs": 1,
+                    "reason": "Allow writing the requested probe file outside the workspace?",
+                    "command": "/bin/zsh -lc 'touch /outside/probe.txt'", "cwd": "/ws",
+                }),
             }
         );
         // Response to one of our requests: id only.

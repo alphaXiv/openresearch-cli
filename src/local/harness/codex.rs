@@ -35,6 +35,7 @@ use super::options::{HarnessOptions, PermissionMode};
 use super::Harness;
 use crate::error::{anyhow, Result};
 use crate::local::chat::{prepare_env, TurnCtx, WirePart, WireToolState};
+use crate::local::codex::{CodexClient, TurnEvent};
 use crate::local::opencode::ensure_playbook;
 
 // The 5.6 variants (Sol = frontier, Terra = balanced, Luna = fast) plus 5.5;
@@ -59,6 +60,14 @@ pub struct Codex;
 /// find its `codex-code-mode-host` helper next to the real binary).
 pub fn find_codex() -> Option<PathBuf> {
     find_on_path("codex").map(resolve_symlinks)
+}
+
+/// `find_codex` with the install hint baked in (the `find_opencode` precedent)
+/// — shared by both transports' spawn paths.
+pub(crate) fn find_codex_required() -> Result<PathBuf> {
+    find_codex().ok_or_else(|| {
+        anyhow!("codex not found on PATH — install Codex and run `codex login` first")
+    })
 }
 
 #[async_trait]
@@ -116,7 +125,7 @@ impl Harness for Codex {
                 .is_some_and(|v| v < MIN_APP_SERVER_VERSION);
             if too_old {
                 info.agent_note = Some(
-                    "Update Codex to 0.144+ for permission prompts; older versions use the legacy exec path.".to_string(),
+                    "This Codex version chats via the legacy exec path — update to 0.144+ for the app-server integration.".to_string(),
                 );
             }
         } else {
@@ -129,27 +138,28 @@ impl Harness for Codex {
     async fn run_turn(&self, ctx: &mut TurnCtx) -> Result<()> {
         // app-server for codex ≥ 0.144 (the validated protocol version);
         // legacy exec for older CLIs, for one release. ORX_CODEX_EXEC=1 is the
-        // escape hatch if app-server misbehaves.
-        if std::env::var_os("ORX_CODEX_EXEC").is_some() || !app_server_supported().await {
+        // escape hatch if app-server misbehaves ("0"/empty don't count).
+        let force_exec = std::env::var("ORX_CODEX_EXEC").is_ok_and(|v| !v.is_empty() && v != "0");
+        if force_exec || !app_server_supported().await {
             return run_turn_exec(ctx).await;
         }
         run_turn_app_server(ctx).await
     }
 
     fn options(&self) -> HarnessOptions {
-        // `codex exec` is non-interactive — no approval channel to prompt over
-        // (verified: on-request emits no approval event; the sandbox just allows
-        // or denies), so permission modes map onto the *sandbox policy*. We offer
-        // only Auto + Bypass, matching Claude. A `Plan`→`read-only` sandbox was
-        // considered but dropped for the same reason plan mode was dropped for
-        // Claude: read-only blocks the `orx` inspection the agent needs *and* the
-        // launches that are the point. (Codex has a real first-class Plan mode,
-        // but only over `app-server`/the TUI — `codex exec` doesn't honor it;
-        // verified `-c collaboration_mode="plan"` is accepted but ignored.)
+        // Approvals are `never` on both transports this release, so permission
+        // modes map onto the *sandbox policy*; we offer only Auto + Bypass,
+        // matching Claude. On app-server that's a deliberate hold — the pure
+        // transport swap (see `codex_policies`); the follow-up flips Auto to
+        // `on-request` and can then revisit Codex's first-class Plan mode,
+        // which app-server does support. On the legacy exec fallback there is
+        // no approval channel at all, and a `Plan`→`read-only` sandbox was
+        // dropped for the same reason as Claude's: read-only blocks the `orx`
+        // inspection the agent needs *and* the launches that are the point.
         //   * Auto  — workspace-write, plus network, the orx data dir, and
-        //     the hub clone's `.git` (see `run_turn`), since exec can't
-        //     approve its way past any of those denials the way the TUI can.
-        //   * Bypass— full access (`--dangerously-bypass-approvals-and-sandbox`).
+        //     the hub clone's `.git` (see `sandbox_policy_json`, and
+        //     `run_turn_exec` for the legacy `-c` form).
+        //   * Bypass— full access.
         HarnessOptions::none()
             .with_permission_modes(
                 &[PermissionMode::Auto, PermissionMode::Bypass],
@@ -231,9 +241,10 @@ fn codex_policies(mode: Option<PermissionMode>) -> (&'static str, &'static str) 
 /// The per-turn `sandboxPolicy` object. workspace-write carries the same
 /// grants the exec path passed via `-c`: the orx data dir + the hub clone's
 /// `.git` as writable roots (see `ensure_orx_data_dir` / `shared_git_dir`),
-/// and network on (the agent's job is driving the orx API and git). Unlike
-/// the exec `-c` override this is a first-class param and does not clobber
-/// the user's config.toml roots.
+/// and network on (the agent's job is driving the orx API and git). Like the
+/// exec `-c` override, this is a full policy replacement for the turn — a
+/// user's own config.toml `writableRoots` don't survive it (no append form
+/// exists on either transport).
 async fn sandbox_policy_json(mode: Option<PermissionMode>, workspace: &Path) -> Value {
     match mode.unwrap_or(PermissionMode::Auto) {
         PermissionMode::Bypass => serde_json::json!({ "type": "dangerFullAccess" }),
@@ -284,6 +295,17 @@ fn apply_notification(ctx: &mut TurnCtx, method: &str, params: &Value) -> Option
             ) else {
                 return None;
             };
+            // Deltas can beat `item/started`; a placeholder part (command
+            // unknown yet) is corrected by the later item events.
+            if !part_exists(ctx, item_id) {
+                ctx.upsert_part(tool_part(
+                    item_id.to_string(),
+                    "bash",
+                    "running",
+                    Some(serde_json::json!({ "command": "" })),
+                    None,
+                ));
+            }
             if let Some(part) = ctx.assistant.parts.iter_mut().find(|p| p.id == item_id) {
                 if let Some(state) = part.state.as_mut() {
                     let output = state.output.get_or_insert_with(String::new);
@@ -308,6 +330,12 @@ fn apply_notification(ctx: &mut TurnCtx, method: &str, params: &Value) -> Option
             if status == "failed" {
                 return Some(TurnEnd::Failed(error_message(turn.get("error"))));
             }
+            // Defensive: the pins say turn/completed carries a final status,
+            // but a non-final one must not truncate the turn if codex ever
+            // regresses.
+            if status == "inProgress" {
+                return None;
+            }
             return Some(TurnEnd::Done); // completed | interrupted
         }
         _ => {}
@@ -330,6 +358,46 @@ fn append_delta(ctx: &mut TurnCtx, params: &Value, make: impl FnOnce(String) -> 
     ctx.append_part_text(item_id, delta);
 }
 
+/// Whether the assistant message already carries a part with this id.
+fn part_exists(ctx: &TurnCtx, id: &str) -> bool {
+    ctx.assistant.parts.iter().any(|p| p.id == id)
+}
+
+/// A tool-flavored WirePart (bash / edit) in one of the three statuses.
+fn tool_part(
+    id: String,
+    tool: &str,
+    status: &str,
+    input: Option<Value>,
+    output: Option<String>,
+) -> WirePart {
+    WirePart {
+        id,
+        kind: "tool".into(),
+        text: None,
+        tool: Some(tool.into()),
+        state: Some(WireToolState {
+            status: status.into(),
+            input,
+            output,
+            error: None,
+            title: None,
+        }),
+        prompt: None,
+    }
+}
+
+/// running / error / completed for a (possibly still-open) tool item.
+fn tool_status(completed: bool, failed: bool) -> &'static str {
+    if !completed {
+        "running"
+    } else if failed {
+        "error"
+    } else {
+        "completed"
+    }
+}
+
 /// A ThreadItem (from `item/started` / `item/completed`) → WirePart.
 fn apply_item(ctx: &mut TurnCtx, item: &Value, completed: bool) {
     let Some(id) = item.get("id").and_then(Value::as_str).map(str::to_string) else {
@@ -340,13 +408,13 @@ fn apply_item(ctx: &mut TurnCtx, item: &Value, completed: bool) {
             let text = item.get("text").and_then(Value::as_str).unwrap_or("");
             // The completed item is authoritative — but never wipe streamed
             // deltas with an empty final text.
-            if !completed || !text.is_empty() || ctx.assistant.parts.iter().all(|p| p.id != id) {
+            if !completed || !text.is_empty() || !part_exists(ctx, &id) {
                 ctx.upsert_part(WirePart::text(id, text));
             }
         }
         Some("reasoning") => {
             let text = reasoning_text(item);
-            if !completed || !text.is_empty() || ctx.assistant.parts.iter().all(|p| p.id != id) {
+            if !completed || !text.is_empty() || !part_exists(ctx, &id) {
                 ctx.upsert_part(WirePart::reasoning(id, &text));
             }
         }
@@ -373,29 +441,16 @@ fn apply_item(ctx: &mut TurnCtx, item: &Value, completed: bool) {
                         .and_then(|p| p.state.as_ref())
                         .and_then(|s| s.output.clone())
                 });
-            ctx.upsert_part(WirePart {
-                id,
-                kind: "tool".into(),
-                text: None,
-                tool: Some("bash".into()),
-                state: Some(WireToolState {
-                    status: if !completed {
-                        "running"
-                    } else if failed {
-                        "error"
-                    } else {
-                        "completed"
-                    }
-                    .into(),
-                    input: Some(serde_json::json!({
-                        "command": item.get("command").map(command_string).unwrap_or_default(),
-                    })),
-                    output,
-                    error: None,
-                    title: None,
-                }),
-                prompt: None,
+            let input = serde_json::json!({
+                "command": item.get("command").map(command_string).unwrap_or_default(),
             });
+            ctx.upsert_part(tool_part(
+                id,
+                "bash",
+                tool_status(completed, failed),
+                Some(input),
+                output,
+            ));
         }
         Some("fileChange") => {
             let failed = completed
@@ -403,30 +458,17 @@ fn apply_item(ctx: &mut TurnCtx, item: &Value, completed: bool) {
                     item.get("status").and_then(Value::as_str),
                     Some("completed")
                 );
-            ctx.upsert_part(WirePart {
+            let input = item
+                .get("changes")
+                .cloned()
+                .map(|c| serde_json::json!({ "changes": c }));
+            ctx.upsert_part(tool_part(
                 id,
-                kind: "tool".into(),
-                text: None,
-                tool: Some("edit".into()),
-                state: Some(WireToolState {
-                    status: if !completed {
-                        "running"
-                    } else if failed {
-                        "error"
-                    } else {
-                        "completed"
-                    }
-                    .into(),
-                    input: item
-                        .get("changes")
-                        .cloned()
-                        .map(|c| serde_json::json!({ "changes": c })),
-                    output: None,
-                    error: None,
-                    title: None,
-                }),
-                prompt: None,
-            });
+                "edit",
+                tool_status(completed, failed),
+                input,
+                None,
+            ));
         }
         // userMessage (our own echo), mcpToolCall, webSearch, plan, …: not
         // rendered (parity with the exec path); unknown types tolerated.
@@ -500,18 +542,20 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
         Some(id) => {
             let mut params = thread_setup.clone();
             params["threadId"] = Value::String(id.clone());
-            match client.request("thread/resume", params).await {
+            match client.try_request("thread/resume", params).await? {
                 Ok(_) => {
                     client.set_resumed_thread(&id);
                     id
                 }
-                // Unresumable id (e.g. minted by the old exec path): start a
-                // fresh thread. Prior context is lost, matching what codex
-                // itself does when a rollout is gone.
-                Err(_) => start_thread(ctx, &client, thread_setup.clone()).await?,
+                // Codex *rejected* the id (e.g. minted by the old exec path,
+                // or the rollout is gone): start a fresh thread; prior context
+                // is lost either way. A transport failure, by contrast,
+                // propagates as the turn's error (the `?` above) — a resumable
+                // thread must never be discarded over a timeout/hiccup.
+                Err(_) => start_thread(ctx, &client, thread_setup).await?,
             }
         }
-        None => start_thread(ctx, &client, thread_setup.clone()).await?,
+        None => start_thread(ctx, &client, thread_setup).await?,
     };
 
     // Route events to this turn before starting it — nothing is missed.
@@ -532,11 +576,23 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
     if let Some(effort) = codex_reasoning(ctx.reasoning_level.as_deref()) {
         turn_params["effort"] = Value::String(effort.to_string());
     }
-    client.request("turn/start", turn_params).await?;
+    let started = client.request("turn/start", turn_params).await?;
+    // Everything below is filtered to this turn: an earlier turn of the same
+    // session that was orx-side aborted (its native interrupt raced or never
+    // fired) can still be streaming into the shared channel, and its tail —
+    // fatally, its `turn/completed` — must not leak into this transcript.
+    let turn_id = started
+        .get("turn")
+        .and_then(|t| t.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
 
     while let Some(event) = rx.recv().await {
         match event {
-            crate::local::codex::TurnEvent::Notification { method, params } => {
+            TurnEvent::Notification { method, params } => {
+                if event_turn_mismatch(turn_id.as_deref(), &params) {
+                    continue;
+                }
                 if method == "turn/started" {
                     if let Some(turn_id) = params
                         .get("turn")
@@ -552,7 +608,11 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
                         return Ok(());
                     }
                     Some(TurnEnd::Failed(message)) => {
-                        ctx.push_error(message);
+                        // A terminal `error` notification may have already
+                        // pushed this exact message — don't render it twice.
+                        if !has_error_part(ctx, &message) {
+                            ctx.push_error(message);
+                        }
                         let _ = ctx.flush();
                         // The turn *finished* (with an error the transcript
                         // already shows); an Err here would double-report.
@@ -561,16 +621,14 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
                     None => {}
                 }
             }
-            crate::local::codex::TurnEvent::Request { id, .. } => {
+            TurnEvent::Request { id, .. } => {
                 // approvalPolicy is `never` on every mode, so no approval
                 // should arrive; decline defensively rather than leave the
                 // server blocked on an unanswered request. The follow-up
                 // surfaces these as permission cards.
-                let _ = client
-                    .respond(&id, serde_json::json!({ "decision": "decline" }))
-                    .await;
+                let _ = client.respond_decline(&id).await;
             }
-            crate::local::codex::TurnEvent::Closed => {
+            TurnEvent::Closed => {
                 return Err(anyhow!(
                     "codex app-server exited mid-turn; see {}",
                     crate::store::data_dir().join("agent-codex.log").display()
@@ -582,12 +640,32 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
     Err(anyhow!("codex app-server event stream ended mid-turn"))
 }
 
+/// True when the notification names a turn that is not ours. Notifications
+/// without a turn id (warnings, thread-level events) pass through.
+fn event_turn_mismatch(expected: Option<&str>, params: &Value) -> bool {
+    let Some(expected) = expected else {
+        return false;
+    };
+    let event_turn = params.get("turnId").and_then(Value::as_str).or_else(|| {
+        params
+            .get("turn")
+            .and_then(|t| t.get("id"))
+            .and_then(Value::as_str)
+    });
+    event_turn.is_some_and(|t| t != expected)
+}
+
+/// Whether the transcript already shows an error part with this message.
+fn has_error_part(ctx: &TurnCtx, message: &str) -> bool {
+    ctx.assistant.parts.iter().any(|p| {
+        p.state
+            .as_ref()
+            .is_some_and(|s| s.status == "error" && s.error.as_deref() == Some(message))
+    })
+}
+
 /// `thread/start` and record the new thread id as the session's native id.
-async fn start_thread(
-    ctx: &mut TurnCtx,
-    client: &std::sync::Arc<crate::local::codex::CodexClient>,
-    params: Value,
-) -> Result<String> {
+async fn start_thread(ctx: &mut TurnCtx, client: &CodexClient, params: Value) -> Result<String> {
     let result = client.request("thread/start", params).await?;
     let thread_id = result
         .get("thread")
@@ -721,9 +799,7 @@ fn command_string(v: &Value) -> String {
 }
 
 async fn run_turn_exec(ctx: &mut TurnCtx) -> Result<()> {
-    let bin = find_codex().ok_or_else(|| {
-        anyhow!("codex not found on PATH — install Codex and run `codex login` first")
-    })?;
+    let bin = find_codex_required()?;
     let project = ctx.project.clone();
     let session_id = ctx.session_id.clone();
     let (repo, playbook) =
@@ -1082,6 +1158,11 @@ mod tests {
         for line in transcript {
             match crate::local::codex::classify_line(line) {
                 crate::local::codex::Line::Notification { method, params } => {
+                    assert!(
+                        !event_turn_mismatch(Some("turn1"), &params)
+                            || params.get("turnId").is_none(),
+                        "fixture events all belong to turn1"
+                    );
                     if let Some(end) = apply_notification(&mut ctx, &method, &params) {
                         ended = Some(end);
                         break;
@@ -1113,19 +1194,32 @@ mod tests {
         );
     }
 
-    /// The live approval request from the spike classifies as a server→client
-    /// request (id + method) — the shape the run loop must answer by id.
+    /// Foreign-turn tails (an aborted predecessor still streaming) are
+    /// filtered; turn-less notifications (warnings) pass through.
     #[test]
-    fn approval_request_classifies_as_request() {
-        let line = r#"{"method":"item/commandExecution/requestApproval","id":0,"params":{"threadId":"t1","turnId":"turn1","itemId":"call_1","startedAtMs":1,"reason":"Allow writing the requested probe file outside the workspace?","command":"/bin/zsh -lc 'touch /outside/probe.txt'","cwd":"/ws"}}"#;
-        match crate::local::codex::classify_line(line) {
-            crate::local::codex::Line::Request { id, method, params } => {
-                assert_eq!(id, serde_json::json!(0));
-                assert_eq!(method, "item/commandExecution/requestApproval");
-                assert_eq!(params["itemId"], "call_1");
-            }
-            other => panic!("expected Request, got {other:?}"),
-        }
+    fn turn_filter_skips_foreign_turns_only() {
+        let expected = Some("turn2");
+        assert!(event_turn_mismatch(
+            expected,
+            &serde_json::json!({"turnId": "turn1", "delta": "stale"})
+        ));
+        assert!(event_turn_mismatch(
+            expected,
+            &serde_json::json!({"turn": {"id": "turn1", "status": "completed"}})
+        ));
+        assert!(!event_turn_mismatch(
+            expected,
+            &serde_json::json!({"turnId": "turn2"})
+        ));
+        assert!(!event_turn_mismatch(
+            expected,
+            &serde_json::json!({"message": "no turn id here"})
+        ));
+        // Before turn/start answers, nothing is filtered.
+        assert!(!event_turn_mismatch(
+            None,
+            &serde_json::json!({"turnId": "turn1"})
+        ));
     }
 
     #[test]
@@ -1192,7 +1286,7 @@ mod tests {
         );
         match end {
             Some(TurnEnd::Failed(msg)) => assert_eq!(msg, "boom"),
-            other => panic!("expected Failed, got {:?}", other.is_some()),
+            _ => panic!("expected Failed"),
         }
         // Interrupted is a clean end, not a failure.
         let end = apply_notification(

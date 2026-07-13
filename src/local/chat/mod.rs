@@ -928,7 +928,7 @@ impl TurnCtx {
                 Arc::new(crate::local::codex::CodexHost::new()),
             )),
             session_id: "test-session".into(),
-            harness: "codex".into(),
+            harness: "test".into(),
             native_session_id: None,
             model: None,
             permission_mode: None,
