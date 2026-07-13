@@ -200,6 +200,34 @@ fn absolute_git_dir(workspace: &Path, dir: &Path) -> Option<PathBuf> {
     workspace.join(dir).canonicalize().ok()
 }
 
+/// The orx data dir as a sandbox writable root. The `orx` CLI the agent
+/// drives opens the SQLite store read-write (plus journal/WAL sidecars)
+/// directly at `store::data_dir()`, which sits under `~/.local/share` —
+/// outside every workspace — so `workspace-write` denies the open and every
+/// store-touching command dies with "unable to open database file". Created
+/// here (host side, unsandboxed) so canonicalize can't fail before first use;
+/// canonicalized for the same reason as `shared_git_dir`.
+fn orx_data_dir() -> Option<PathBuf> {
+    let dir = crate::store::data_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+    dir.canonicalize().ok()
+}
+
+/// The `-c` value granting `roots` as sandbox writable roots, e.g.
+/// `sandbox_workspace_write.writable_roots=["/a", "/b"]`. `None` when there
+/// are no roots (omit the flag: `-c ...=[]` would still *replace* the user's
+/// configured roots with nothing).
+fn writable_roots_override(roots: &[PathBuf]) -> Option<String> {
+    if roots.is_empty() {
+        return None;
+    }
+    let list: Vec<String> = roots.iter().map(|p| toml_string(p)).collect();
+    Some(format!(
+        "sandbox_workspace_write.writable_roots=[{}]",
+        list.join(", ")
+    ))
+}
+
 /// A path as a TOML basic-string literal, for `-c key="value"` overrides.
 /// serde_json's escaping emits only sequences TOML also accepts (`\"`, `\\`,
 /// control chars as `\uXXXX`) and leaves `/` literal — except DEL (0x7F),
@@ -276,13 +304,17 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                 "approval_policy=\"never\"",
             ]);
             // workspace-write out of the box is too tight for the orx
-            // workflow in two ways (both verified via `codex sandbox` against
-            // codex-cli 0.144; in the TUI both denials escalate to approval
+            // workflow in three ways (all verified via `codex sandbox` against
+            // codex-cli 0.144; in the TUI these denials escalate to approval
             // prompts, which `codex exec` doesn't have):
             //   * Network is blocked by default — DNS doesn't even resolve, so
             //     `git fetch`/`push`, package installs, and the `orx` CLI's
             //     localhost API calls all die. The agent's job is launching
             //     experiments over that API; Auto must keep the network open.
+            //   * The orx store isn't writable — the SQLite DB lives in the
+            //     data dir under `~/.local/share`, outside the workspace, so
+            //     every `orx` command that touches it fails with "unable to
+            //     open database file"; grant the data dir (see `orx_data_dir`).
             //   * Git metadata isn't writable — codex protects `.git` inside
             //     the workspace, and a worktree's real metadata (the hub
             //     clone's `.git`) sits outside it — so `git fetch`/`commit`
@@ -292,14 +324,11 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
             //     --add-dir` is unverified on the resume path).
             if policy == "workspace-write" {
                 cmd.args(["-c", "sandbox_workspace_write.network_access=true"]);
-                if let Some(git_dir) = shared_git_dir(&repo).await {
-                    cmd.args([
-                        "-c",
-                        &format!(
-                            "sandbox_workspace_write.writable_roots=[{}]",
-                            toml_string(&git_dir)
-                        ),
-                    ]);
+                let mut roots = Vec::new();
+                roots.extend(orx_data_dir());
+                roots.extend(shared_git_dir(&repo).await);
+                if let Some(override_arg) = writable_roots_override(&roots) {
+                    cmd.args(["-c", &override_arg]);
                 }
             }
         }
@@ -570,6 +599,17 @@ mod tests {
         assert_eq!(toml_string(Path::new(r#"/a/"q""#)), r#""/a/\"q\"""#);
         // DEL is the one char serde_json leaves raw that TOML rejects.
         assert_eq!(toml_string(Path::new("/a/\u{7f}b")), r#""/a/\u007Fb""#);
+    }
+
+    #[test]
+    fn writable_roots_override_joins_and_omits_empty() {
+        assert_eq!(
+            writable_roots_override(&[PathBuf::from("/data dir"), PathBuf::from("/hub/.git")]),
+            Some(r#"sandbox_workspace_write.writable_roots=["/data dir", "/hub/.git"]"#.into())
+        );
+        // No roots → no flag at all; `=[]` would clobber the user's own
+        // config.toml roots for the turn.
+        assert_eq!(writable_roots_override(&[]), None);
     }
 
     #[test]
