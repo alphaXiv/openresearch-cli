@@ -18,7 +18,7 @@
 //! skill installer all pick it up with no further edits.
 
 mod claude;
-mod codex;
+pub(crate) mod codex;
 mod cursor;
 mod detect;
 mod opencode;

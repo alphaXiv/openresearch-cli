@@ -256,6 +256,8 @@ fn stored_to_wire(m: &StoredChatMessage) -> WireMessage {
 pub struct ChatHost {
     /// Lazy opencode serve manager (only the opencode adapter spawns it).
     pub opencode: Arc<AgentHost>,
+    /// Lazy codex app-server manager (only the codex adapter spawns it).
+    pub codex: Arc<crate::local::codex::CodexHost>,
     http: reqwest::Client,
     events: broadcast::Sender<(&'static str, Value)>,
     /// Sessions with a turn in flight. A key present means busy; the value is
@@ -338,10 +340,11 @@ impl Drop for TurnGuard {
 }
 
 impl ChatHost {
-    pub fn new(opencode: Arc<AgentHost>) -> Self {
+    pub fn new(opencode: Arc<AgentHost>, codex: Arc<crate::local::codex::CodexHost>) -> Self {
         let (events, _) = broadcast::channel(256);
         Self {
             opencode,
+            codex,
             http: reqwest::Client::new(),
             events,
             turns: Mutex::new(HashMap::new()),
@@ -588,6 +591,11 @@ impl ChatHost {
                         let url = format!("http://127.0.0.1:{port}/session/{nid}/abort");
                         let _ = self.http.post(url).body("{}").send().await;
                     }
+                } else if session.harness == "codex" {
+                    // Native turn/interrupt so the app-server stops generating
+                    // (and settles the turn as "interrupted" in its rollout)
+                    // instead of only losing its orx-side listener.
+                    self.codex.interrupt_session(session_id).await;
                 }
             }
         }
@@ -718,6 +726,7 @@ impl ChatHost {
         // A live opencode serve child would keep running in (and lock) the
         // session's worktree.
         self.opencode.kill_session(session_id).await;
+        self.codex.kill_session(session_id).await;
         // Drop the session's respond lock so the map doesn't retain an entry for
         // a session that no longer exists.
         self.respond_locks.lock().await.remove(session_id);
@@ -906,6 +915,46 @@ pub struct TurnCtx {
 impl TurnCtx {
     pub fn http(&self) -> &reqwest::Client {
         &self.host.http
+    }
+
+    /// Bare in-memory ctx for harness unit tests: parts accumulate on
+    /// `assistant`, nothing is flushed or persisted (don't call `flush` /
+    /// `set_native_session_id` on it — those touch the store).
+    #[cfg(test)]
+    pub fn test_stub() -> Self {
+        Self {
+            host: Arc::new(ChatHost::new(
+                Arc::new(AgentHost::new(None)),
+                Arc::new(crate::local::codex::CodexHost::new()),
+            )),
+            session_id: "test-session".into(),
+            harness: "test".into(),
+            native_session_id: None,
+            model: None,
+            permission_mode: None,
+            reasoning_level: None,
+            project: crate::local::model::LocalProject {
+                id: "test-project".into(),
+                name: "Test".into(),
+                slug: "test".into(),
+                github_owner: "owner".into(),
+                github_repo: "repo".into(),
+                baseline_branch: "main".into(),
+                repo_path: "/tmp/test-repo".into(),
+                run_command: None,
+                paper_id: None,
+                created_at: 0,
+                updated_at: 0,
+            },
+            text: String::new(),
+            assistant: WireMessage {
+                id: "test-msg".into(),
+                role: "assistant".into(),
+                parts: Vec::new(),
+                created_at: 0,
+            },
+            last_flush: Instant::now(),
+        }
     }
 
     /// Record the harness's own session id (CLIs mint/rotate them per turn).

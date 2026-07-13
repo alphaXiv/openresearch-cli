@@ -7,6 +7,7 @@
 //! require credentials on the server path.
 
 pub mod chat;
+pub mod codex;
 pub mod experiments;
 pub mod files;
 pub mod git;
