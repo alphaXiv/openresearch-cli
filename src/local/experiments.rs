@@ -47,9 +47,28 @@ pub fn project_root(store: &Store, project_id: &str) -> Result<Option<LocalExper
         .find(|e| e.parent_experiment_id.is_none()))
 }
 
-/// Create a local experiment. With a parent: branch `orx/<slug>` off the
-/// parent's tip and push it to origin. Without: a baseline/root row that rides
-/// the project's baseline branch (no new branch).
+/// Warning for pre-orx/<slug>-baseline rows: roots created before baselines
+/// got their own branch ride the project's base branch, so that branch is an
+/// immutable experiment node. `None` for experiments created since.
+pub fn legacy_root_warning(project: &LocalProject, experiment: &LocalExperiment) -> Option<String> {
+    (experiment.parent_experiment_id.is_none() && experiment.branch_name == project.baseline_branch)
+        .then(|| {
+            format!(
+                "warning: root experiment {} rides the project's base branch '{}' \
+                 (created before baselines got their own orx/* branch). Treat '{}' \
+                 as frozen — publish READMEs/notebooks elsewhere, or recreate the \
+                 tree with `orx create-experiment --baseline`.",
+                experiment.id, project.baseline_branch, project.baseline_branch
+            )
+        })
+}
+
+/// Create a local experiment. Every node gets its own `orx/<slug>` branch,
+/// pushed to origin: a child forks off its parent's tip, a baseline/root off
+/// the project's base branch. The base branch itself is never an experiment
+/// node — it stays mutable (README, notebooks, publication surface) while
+/// `orx/*` branches hold the frozen experiment code. Matches the server path,
+/// which also branches baselines to `orx/<slug>`.
 pub fn create_experiment(
     store: &Store,
     project: &LocalProject,
@@ -73,21 +92,16 @@ pub fn create_experiment(
     };
     let slug = unique_slug(store, &project.id, &base)?;
 
-    // Git only on the parented path: a baseline row needs no branch — it rides
-    // the project's baseline branch, which was validated at clone time.
-    let branch_name = match parent {
-        Some(p) => {
-            let repo = git::ensure_clone(
-                &project.github_owner,
-                &project.github_repo,
-                &project.baseline_branch,
-            )?;
-            let branch = format!("orx/{slug}");
-            git::create_experiment_branch(Path::new(&repo), &p.branch_name, &branch)?;
-            branch
-        }
-        None => project.baseline_branch.clone(),
-    };
+    let repo = git::ensure_clone(
+        &project.github_owner,
+        &project.github_repo,
+        &project.baseline_branch,
+    )?;
+    let fork_point = parent
+        .map(|p| p.branch_name.as_str())
+        .unwrap_or(&project.baseline_branch);
+    let branch_name = format!("orx/{slug}");
+    git::create_experiment_branch(Path::new(&repo), fork_point, &branch_name)?;
 
     // Inherit: explicit > parent's command > project default > "".
     let run_command = run_command
@@ -116,4 +130,53 @@ pub fn create_experiment(
     };
     store.create_local_experiment(&experiment)?;
     Ok(experiment)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project(base: &str) -> LocalProject {
+        LocalProject {
+            id: "p1".into(),
+            name: "Demo".into(),
+            slug: "demo".into(),
+            github_owner: "o".into(),
+            github_repo: "r".into(),
+            baseline_branch: base.into(),
+            repo_path: "/tmp/r".into(),
+            run_command: None,
+            paper_id: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    fn experiment(parent: Option<&str>, branch: &str) -> LocalExperiment {
+        LocalExperiment {
+            id: "e1".into(),
+            project_id: "p1".into(),
+            parent_experiment_id: parent.map(String::from),
+            slug: "baseline".into(),
+            branch_name: branch.into(),
+            title: None,
+            description: None,
+            run_command: String::new(),
+            agent_status: "idle".into(),
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn warns_only_for_legacy_roots_on_the_base_branch() {
+        let p = project("main");
+        // Legacy root riding main: warn.
+        let w = legacy_root_warning(&p, &experiment(None, "main")).unwrap();
+        assert!(w.contains("rides the project's base branch 'main'"));
+        // Current-scheme root on its own branch: silent.
+        assert!(legacy_root_warning(&p, &experiment(None, "orx/baseline")).is_none());
+        // Child, even on the base branch name (not a root): silent.
+        assert!(legacy_root_warning(&p, &experiment(Some("root"), "main")).is_none());
+    }
 }

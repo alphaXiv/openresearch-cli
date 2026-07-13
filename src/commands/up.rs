@@ -6,8 +6,10 @@
 //!   /api/events  SSE: 500ms store + log-file diff loop (serve.rs idiom)
 //!   /opencode/*  streaming reverse proxy to the locally spawned `opencode serve`
 //!
-//! Fully local: no client.rs / OpenResearch api anywhere on these paths. No
-//! auth — the bind is loopback-only.
+//! Fully local: no OpenResearch api anywhere on these paths (the /api/papers
+//! routes proxy alphaXiv's public, token-free endpoints — needed because the
+//! browser can't call api.alphaxiv.org cross-origin). No auth — the bind is
+//! loopback-only.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -99,6 +101,8 @@ fn router(state: AppState) -> Router {
             get(list_experiments).post(create_experiment),
         )
         .route("/api/projects/{id}/runs", get(list_project_runs))
+        .route("/api/papers/search", get(search_papers_api))
+        .route("/api/papers/resolve", get(resolve_paper_api))
         .route("/api/instances", get(list_instances))
         .route("/api/experiments/{id}/run", post(run_experiment))
         .route("/api/runs/{id}/cancel", post(cancel_run))
@@ -264,6 +268,40 @@ async fn list_projects() -> ApiResult {
     Ok(Json(json!({ "projects": projects })))
 }
 
+// --- papers (new-project "from a paper" flow; proxies alphaXiv) ------------
+
+#[derive(Deserialize)]
+struct PaperSearchQ {
+    q: String,
+}
+
+async fn search_papers_api(Query(q): Query<PaperSearchQ>) -> ApiResult {
+    let query = q.q.trim();
+    if query.is_empty() {
+        return Ok(Json(json!({ "papers": [] })));
+    }
+    let papers = crate::client::search_papers_fast(query)
+        .await
+        .map_err(bad_request)?;
+    Ok(Json(json!({ "papers": papers })))
+}
+
+#[derive(Deserialize)]
+struct PaperResolveQ {
+    id: String,
+}
+
+async fn resolve_paper_api(Query(q): Query<PaperResolveQ>) -> ApiResult {
+    let id = super::paper::parse_paper_id(&q.id);
+    if id.is_empty() {
+        return Err(bad_request("paper id is required"));
+    }
+    let paper = crate::client::resolve_paper(&id)
+        .await
+        .map_err(bad_request)?;
+    Ok(Json(json!({ "paper": paper })))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateProjectReq {
@@ -272,6 +310,8 @@ struct CreateProjectReq {
     github_repo: Option<String>,
     baseline_branch: Option<String>,
     run_command: Option<String>,
+    /// arXiv id of the paper this project starts from (versionless).
+    paper_id: Option<String>,
     /// Create a blank private repo named after the project on the user's
     /// GitHub account instead of pointing at an existing one.
     #[serde(default)]
@@ -321,9 +361,18 @@ async fn create_project(Json(req): Json<CreateProjectReq>) -> ApiResult {
     };
     // The clone shells out to git (network); keep it off the async workers.
     let run_command = req.run_command;
+    let paper_id = req.paper_id.filter(|p| !p.trim().is_empty());
     let clone = move || {
         let store = Store::open()?;
-        local::projects::create_project(&store, &name, &owner, &repo, baseline_branch, run_command)
+        local::projects::create_project(
+            &store,
+            &name,
+            &owner,
+            &repo,
+            baseline_branch,
+            run_command,
+            paper_id,
+        )
     };
     let mut result = tokio::task::spawn_blocking(clone.clone())
         .await

@@ -60,6 +60,9 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
     let project = store
         .get_local_project(&exp.project_id)?
         .ok_or_else(|| anyhow!("Local project {} not found.", exp.project_id))?;
+    if let Some(w) = crate::local::experiments::legacy_root_warning(&project, &exp) {
+        eprintln!("{w}");
+    }
     // Experiment command, else the project default.
     let run_command = Some(exp.run_command.clone())
         .filter(|c| !c.trim().is_empty())

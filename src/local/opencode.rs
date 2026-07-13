@@ -111,6 +111,12 @@ fn playbook_md(project: &LocalProject) -> String {
     let files = super::files::files_dir(project)
         .to_string_lossy()
         .into_owned();
+    let paper_line = project.paper_id.as_deref().map_or(String::new(), |p| {
+        format!(
+            "- Paper: arXiv {p} (https://arxiv.org/abs/{p}) — the paper this project starts \
+             from; `orx paper {p}` fetches its report\n"
+        )
+    });
     format!(
         r#"# OpenResearch local agent — {name}
 
@@ -123,7 +129,7 @@ same clone, sharing its branches and remotes.
 - Project id: `{id}`
 - GitHub repo: `{repo}`
 - Baseline branch: `{baseline}`
-- Compute: external backends — `hf`, `modal`, `k8s`, or `ssh` — chosen by the
+{paper_line}- Compute: external backends — `hf`, `modal`, `k8s`, or `ssh` — chosen by the
   user per run; **there is no default backend** (see "Compute backends")
 - Files dir: `{files}` — every file in it shows up in the dashboard's
   Files tab (reports, figures, CSVs), grouped by experiment
@@ -190,7 +196,7 @@ preferences.
 | Command | What it does |
 |---|---|
 | `orx projects` | List projects; local ones are tagged `(local)`. |
-| `orx create-experiment {id} --title "<t>" [--description "<d>"] [--parent <expId> \| --baseline] [--run-command "<cmd>"]` | New node, branched `orx/<slug>` off the parent's tip and pushed to GitHub. Omit `--parent`: attaches under the oldest project root — or, on an empty project, becomes the baseline root itself. `--baseline` forces another root (multiple baselines are allowed). |
+| `orx create-experiment {id} --title "<t>" [--description "<d>"] [--parent <expId> \| --baseline] [--run-command "<cmd>"]` | New node on its own `orx/<slug>` branch, pushed to GitHub — forked off the parent's tip, or off `{baseline}` for a root (the base branch itself is never an experiment node). Omit `--parent`: attaches under the oldest project root — or, on an empty project, becomes the baseline root itself. `--baseline` forces another root (multiple baselines are allowed). |
 | `orx project view {id}` / `orx project edit {id} --run-command "<cmd>"` | Inspect the project / set its default run command. |
 | `orx exp status <expId>` | Node's branch, command, and latest run. |
 | `orx exp desc <expId> [--set "<text>" \| --stdin]` | Read/overwrite the node's notes. Record findings here. |

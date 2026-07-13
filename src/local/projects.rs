@@ -42,6 +42,7 @@ pub fn create_project(
     github_repo: &str,
     baseline_branch: Option<String>,
     run_command: Option<String>,
+    paper_id: Option<String>,
 ) -> Result<LocalProject> {
     let baseline_branch = baseline_branch
         .filter(|b| !b.trim().is_empty())
@@ -59,6 +60,7 @@ pub fn create_project(
         baseline_branch,
         repo_path: repo_path.to_string_lossy().to_string(),
         run_command: run_command.filter(|c| !c.trim().is_empty()),
+        paper_id: paper_id.filter(|p| !p.trim().is_empty()),
         created_at: now,
         updated_at: now,
     };
