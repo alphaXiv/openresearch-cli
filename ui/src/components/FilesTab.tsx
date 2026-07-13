@@ -10,12 +10,15 @@ import {
   type Project,
   type ProjectFiles,
 } from "../api";
+import { mdCodeComponents } from "./Md";
 
 /** Top-level folder reserved for project-wide reports (mirrors the backend). */
 const PROJECT_NAMESPACE = "project";
 
+/** Any href with a URI scheme (https:, mailto:, data:, …) or a
+ * protocol-relative // — i.e. not a report-relative path to resolve. */
 function isExternalSrc(src: string): boolean {
-  return /^(https?:)?\/\//i.test(src) || src.startsWith("data:");
+  return /^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith("//");
 }
 
 /** Drop a leading YAML frontmatter block so it doesn't render as markdown. */
@@ -63,16 +66,20 @@ function ReportMd({
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          a: ({ href, children, ...rest }) => (
-            <a
-              {...rest}
-              href={href && !href.startsWith("#") ? resolve(href) : href}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              {children}
-            </a>
-          ),
+          // In-page anchors (headings, GFM footnotes) keep their hash href
+          // and stay in the page; everything else resolves + opens a tab.
+          a: ({ href, children, ...rest }) => {
+            const isHash = !href || href.startsWith("#");
+            return (
+              <a
+                {...rest}
+                href={isHash ? href : resolve(href)}
+                {...(isHash ? {} : { target: "_blank", rel: "noopener noreferrer" })}
+              >
+                {children}
+              </a>
+            );
+          },
           img: ({ src, alt }) => {
             if (!src || typeof src !== "string") return null;
             const url = resolve(src);
@@ -83,6 +90,7 @@ function ReportMd({
               </a>
             );
           },
+          ...mdCodeComponents,
         }}
       >
         {stripFrontmatter(markdown)}
@@ -207,16 +215,21 @@ function TreeRows({
           const isReport = e.reportTitle !== undefined;
           const open = expanded.has(e.path);
           // Top-level rows always show the on-disk name; an experiment
-          // folder's title surfaces as a hover tooltip. Nested report
-          // folders show the report's own title.
+          // folder's title (and branch) surfaces as a hover tooltip. Nested
+          // report folders show the report's own title.
           const exp = depth === 0 ? e.experiment : undefined;
           const showTitle = isReport && depth > 0;
+          const tooltip = exp
+            ? [exp.title, exp.branchName].filter(Boolean).join(" — ")
+            : isReport && !showTitle
+              ? e.reportTitle
+              : undefined;
           return (
             <div key={e.path}>
               <div
                 className="ftree-row clickable"
                 style={indent}
-                title={exp?.title ?? (isReport ? e.reportTitle : undefined)}
+                title={tooltip}
                 onClick={() => (isReport ? onOpenReport(e.path) : onToggle(e.path))}
               >
                 <button
@@ -236,16 +249,14 @@ function TreeRows({
                 )}
                 {isReport && <span className="ftree-tag">report</span>}
                 {exp?.latestRunStatus && (
-                  <span className="ftree-status" title={exp.branchName}>
-                    {exp.latestRunStatus}
-                  </span>
+                  <span className="ftree-status">{exp.latestRunStatus}</span>
                 )}
                 {del}
                 <span className="ftree-date">
                   {new Date(e.modifiedAt).toLocaleDateString()}
                 </span>
               </div>
-              {open && (
+              {open && (e.children?.length ?? 0) > 0 && (
                 <div className="ftree-children">
                   <TreeRows
                     projectId={projectId}
@@ -364,9 +375,11 @@ export function FilesTab({
 
   if (!files) {
     return (
-      <div className="artifacts">
-        <div className="settings-loading">
-          <span className="spinner" /> Loading files…
+      <div className="files-tab">
+        <div className="files-col">
+          <div className="settings-loading">
+            <span className="spinner" /> Loading files…
+          </div>
         </div>
       </div>
     );
@@ -386,8 +399,8 @@ export function FilesTab({
   );
   const repoUrl = `https://github.com/${project.githubOwner}/${project.githubRepo}`;
   return (
-    <div className="artifacts">
-      <div className="artifacts-col">
+    <div className="files-tab">
+      <div className="files-col">
         <div className="files-meta">
           <a className="files-pill" href={repoUrl} target="_blank" rel="noopener noreferrer">
             <code>
@@ -397,7 +410,7 @@ export function FilesTab({
           </a>
           <DirPath dir={files.dir} />
         </div>
-        <p className="artifacts-hint">
+        <p className="files-hint">
           An explorer over this folder — the agent writes each experiment's reports and figures
           into the folder named for its slug (project-wide reports under <code>project/</code>),
           and you can drop in your own files.

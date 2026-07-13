@@ -136,6 +136,29 @@ function isFileHref(href: string): boolean {
   return true;
 }
 
+/** Shared `code`/`pre` renderers: fenced blocks (language-*) become
+ * highlighted CodeBlocks with a copy button; inline code stays a plain
+ * <code> chip. The <pre> wrapper is handled inside CodeBlock, so
+ * react-markdown's is unwrapped. Reused by the Files tab's report renderer. */
+export const mdCodeComponents: Record<string, (props: any) => ReactNode> = {
+  code: ({ node: _node, className, children, ...rest }: any) => {
+    const cls: string = className ?? "";
+    const match = /language-(\w+)/.exec(cls);
+    const raw = String(children ?? "").replace(/\n$/, "");
+    const isBlock = match != null || raw.includes("\n");
+    if (!isBlock) {
+      return (
+        <code className={cls} {...rest}>
+          {children}
+        </code>
+      );
+    }
+    const lang = match ? resolveSyntaxLanguage(match[1]) : null;
+    return <CodeBlock code={raw} lang={lang} />;
+  },
+  pre: ({ children }: any) => <>{children}</>,
+};
+
 export function Md({ text, onOpenFile }: { text: string; onOpenFile?: (path: string) => void }) {
   const components: Record<string, (props: any) => ReactNode> = {
     "file-mention": (props) => (
@@ -153,25 +176,7 @@ export function Md({ text, onOpenFile }: { text: string; onOpenFile?: (path: str
         </a>
       );
     },
-    // Fenced blocks (language-*) become highlighted CodeBlocks; inline code
-    // (no language / single line) stays a plain <code> chip.
-    code: ({ node: _node, className, children, ...rest }: any) => {
-      const cls: string = className ?? "";
-      const match = /language-(\w+)/.exec(cls);
-      const raw = String(children ?? "").replace(/\n$/, "");
-      const isBlock = match != null || raw.includes("\n");
-      if (!isBlock) {
-        return (
-          <code className={cls} {...rest}>
-            {children}
-          </code>
-        );
-      }
-      const lang = match ? resolveSyntaxLanguage(match[1]) : null;
-      return <CodeBlock code={raw} lang={lang} />;
-    },
-    // The <pre> wrapper is handled inside CodeBlock; unwrap react-markdown's.
-    pre: ({ children }: any) => <>{children}</>,
+    ...mdCodeComponents,
   };
 
   return (

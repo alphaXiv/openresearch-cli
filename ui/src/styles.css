@@ -2186,6 +2186,7 @@ textarea::placeholder {
   margin-top: 6px;
 }
 .form .error,
+.report-view .error,
 .settings-card > .error {
   color: var(--accent-red);
   font-size: 12.5px;
@@ -2296,13 +2297,13 @@ textarea::placeholder {
 
 /* ---- files tab ---- */
 
-.artifacts {
+.files-tab {
   height: 100%;
   overflow-y: auto;
   padding: 20px 24px 48px;
 }
-.artifacts-col {
-  max-width: 680px;
+.files-col {
+  max-width: var(--readable-col);
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -2332,7 +2333,8 @@ textarea::placeholder {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.files-pill svg {
+/* Direct children only — the copy .icon-btn manages its own icon color. */
+.files-pill > svg {
   flex-shrink: 0;
   color: var(--muted);
 }
@@ -2352,13 +2354,13 @@ a.files-pill:hover {
   height: 22px;
   margin: -4px -6px -4px 0;
 }
-.artifacts-hint {
+.files-hint {
   margin: 0;
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--muted);
 }
-.artifacts-hint code {
+.files-hint code {
   font-family: var(--mono);
   font-size: 10.5px;
 }
@@ -2377,7 +2379,6 @@ a.files-pill:hover {
   align-items: center;
   gap: 8px;
   padding: 8px 14px;
-  font-size: 13px;
 }
 .ftree-row.clickable {
   cursor: pointer;
@@ -2420,6 +2421,7 @@ a.files-pill:hover {
 .ftree-title {
   flex: 1;
   min-width: 0;
+  font-size: 13px;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2477,20 +2479,19 @@ a.files-pill:hover {
 .ftree-date,
 .ftree-size {
   flex-shrink: 0;
-  font-size: 11px;
-  color: var(--muted);
-  white-space: nowrap;
 }
 .ftree-size {
   font-family: var(--mono);
   font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
 }
 .ftree-divider {
   padding: 10px 14px 4px;
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   color: var(--muted);
 }
 .files-empty {
@@ -2513,7 +2514,8 @@ a.files-pill:hover {
   font-size: 11px;
   color: var(--muted);
 }
-.report-date {
+.report-date,
+.ftree-date {
   font-size: 11px;
   color: var(--muted);
   white-space: nowrap;
@@ -2534,6 +2536,13 @@ a.files-pill:hover {
   margin-bottom: 16px;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--border-variant);
+}
+/* Wide GFM tables scroll in place instead of widening the report pane. */
+.report-md table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
 }
 .report-md .report-img {
   display: block;
