@@ -503,18 +503,12 @@ function Message({
 
 type SessionFilter = "active" | "archived" | "all";
 
-const SESSION_FILTERS: { id: SessionFilter; label: string }[] = [
-  { id: "active", label: "Active" },
-  { id: "archived", label: "Archived" },
-  { id: "all", label: "All" },
+/** Menu label + rail section heading per filter — "Recents" for the default view. */
+const SESSION_FILTERS: { id: SessionFilter; label: string; railLabel: string }[] = [
+  { id: "active", label: "Active", railLabel: "Recents" },
+  { id: "archived", label: "Archived", railLabel: "Archived" },
+  { id: "all", label: "All", railLabel: "All sessions" },
 ];
-
-/** Rail section heading per filter — "Recents" for the default view. */
-const RAIL_LABELS: Record<SessionFilter, string> = {
-  active: "Recents",
-  archived: "Archived",
-  all: "All sessions",
-};
 
 /** Filter control beside the "Recents" label: Active (default) / Archived / All. */
 function SessionFilterMenu({
@@ -595,7 +589,10 @@ function SessionRow({
         if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          onOpen();
+          // Mirror the click branch: dismiss an open menu instead of
+          // navigating underneath it.
+          if (open) setOpen(false);
+          else onOpen();
         }
       }}
     >
@@ -695,6 +692,10 @@ export function ChatPanel({
   // global preference that seeds *new* sessions.
   const [sessionOverride, setSessionOverride] = useState<Partial<ModelSelection>>({});
   const loadedSessions = useRef(new Set<string>());
+  // Tombstones: a turn finishing in the same instant as a delete can emit its
+  // final chat.session upsert *after* chat.session.deleted; ignoring upserts
+  // for known-deleted ids keeps the ghost row from coming back.
+  const deletedIds = useRef(new Set<string>());
   const threadRef = useRef<HTMLDivElement>(null);
   const threadInnerRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -824,6 +825,7 @@ export function ChatPanel({
       switch (ev.type) {
         case "session":
           if (ev.session.projectId !== projectId) return;
+          if (deletedIds.current.has(ev.session.id)) return;
           setSessions((cur) => {
             const i = cur.findIndex((s) => s.id === ev.session.id);
             if (i < 0) return [ev.session, ...cur];
@@ -904,9 +906,6 @@ export function ChatPanel({
         loadedSessions.current.add(session.id);
         setSessions((cur) => [session, ...cur]);
         setActiveId(session.id);
-        // A new session is never archived — leave the Archived-only view so
-        // the rail can actually show the thread being started.
-        if (sessionFilter === "archived") setSessionFilter("active");
         sid = session.id;
       }
       dispatch({
@@ -917,6 +916,10 @@ export function ChatPanel({
       });
       dispatch({ type: "busy", sessionId: sid, busy: true });
       stickToBottom.current = true;
+      // The session being sent to is never archived after this turn (new ones
+      // start active; existing ones are unarchived server-side by activity) —
+      // leave the Archived-only view so its row stays visible.
+      if (sessionFilter === "archived") setSessionFilter("active");
       // `effective.harness` is always the target session's harness (locked once
       // it exists), so these overrides are always valid — the backend persists
       // them as the session's sticky settings. Clear the unsent tweak now.
@@ -945,6 +948,7 @@ export function ChatPanel({
   /** Drop every trace of a session — the local row, the open-thread selection,
    * and the cached transcript. Used on delete (ours or another dashboard's). */
   function forgetSession(sessionId: string) {
+    deletedIds.current.add(sessionId);
     setSessions((cur) => cur.filter((s) => s.id !== sessionId));
     setActiveId((cur) => (cur === sessionId ? null : cur));
     loadedSessions.current.delete(sessionId);
@@ -968,9 +972,11 @@ export function ChatPanel({
     const title = session.title?.trim() || "Untitled";
     if (!window.confirm(`Delete "${title}"?\n\nIts transcript is permanently removed.`)) return;
     try {
-      if (!(await deleteChatSession(session.id))) throw new Error("delete failed");
+      await deleteChatSession(session.id);
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : String(err));
+      window.alert(
+        `Failed to delete "${title}": ${err instanceof Error ? err.message : String(err)}`,
+      );
       return;
     }
     forgetSession(session.id);
@@ -1024,7 +1030,9 @@ export function ChatPanel({
       </nav>
       <div className="rail-body">
         <div className="rail-section-head">
-          <div className="rail-section-label">{RAIL_LABELS[sessionFilter]}</div>
+          <div className="rail-section-label">
+            {SESSION_FILTERS.find((f) => f.id === sessionFilter)?.railLabel ?? "Recents"}
+          </div>
           <SessionFilterMenu value={sessionFilter} onChange={setSessionFilter} />
         </div>
         {visibleSessions.map((s) => (

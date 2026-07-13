@@ -521,12 +521,12 @@ textarea::placeholder {
   display: inline-flex;
   margin-right: 2px;
 }
+/* A non-default filter keeps the button lit via the shared .icon-btn.active. */
 .rail-filter-btn {
   width: 24px;
   height: 24px;
   border-radius: 6px;
 }
-/* A non-default filter keeps the button lit via the shared .icon-btn.active. */
 .rail-empty {
   padding: 6px 10px;
   font-size: 12px;

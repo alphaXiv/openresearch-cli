@@ -596,7 +596,9 @@ export const createChatSession = (
   );
 
 export const deleteChatSession = (sessionId: string) =>
-  fetch(`/api/chat/sessions/${sessionId}`, { method: "DELETE" }).then((r) => r.ok);
+  fetch(`/api/chat/sessions/${sessionId}`, { method: "DELETE" }).then((r) =>
+    json<{ ok: boolean }>(r),
+  );
 
 /** Archive/unarchive a session (archived chats stay resumable). */
 export const setChatSessionArchived = (sessionId: string, archived: boolean) =>
