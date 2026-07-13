@@ -97,6 +97,17 @@ pub fn classify_line(line: &str) -> Line {
     }
 }
 
+/// Whether a server→client request answers with a `{"decision": ...}` reply
+/// (the two approval shapes). Everything else (e.g. item/tool/requestUserInput,
+/// item/permissions/requestApproval) has a different reply schema — answer
+/// with a JSON-RPC error, never a decision it can't parse.
+pub fn is_approval_request(method: &str) -> bool {
+    matches!(
+        method,
+        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
+    )
+}
+
 /// One event delivered to the session's in-flight turn.
 #[derive(Debug)]
 pub enum TurnEvent {
@@ -191,6 +202,34 @@ impl CodexClient {
         self.respond(id, json!({ "decision": "decline" })).await
     }
 
+    /// Reject a server→client request whose reply schema we don't speak (e.g.
+    /// `item/tool/requestUserInput`) with a JSON-RPC error — codex fails that
+    /// call instead of blocking on an answer that will never come.
+    pub async fn respond_method_unsupported(&self, id: &Value) -> Result<()> {
+        if !self.unanswered.lock().unwrap().remove(&id.to_string()) {
+            return Err(anyhow!("this request is no longer pending"));
+        }
+        self.write_line(&json!({
+            "id": id,
+            "error": { "code": -32601, "message": "orx does not handle this request type" },
+        }))
+        .await
+    }
+
+    /// Settle every outstanding server request with `cancel` (deny + interrupt
+    /// that turn). Used on interrupt paths so codex never stays blocked on an
+    /// approval orx is about to abandon.
+    pub async fn cancel_pending_approvals(&self) {
+        let ids: Vec<String> = self.unanswered.lock().unwrap().drain().collect();
+        for id in ids {
+            if let Ok(id) = serde_json::from_str::<Value>(&id) {
+                let _ = self
+                    .write_line(&json!({ "id": id, "result": { "decision": "cancel" } }))
+                    .await;
+            }
+        }
+    }
+
     async fn write_line(&self, msg: &Value) -> Result<()> {
         let mut stdin = self.stdin.lock().await;
         stdin
@@ -231,6 +270,10 @@ impl CodexClient {
     /// on the user-facing interrupt/delete paths, and a wedged child (stdin
     /// full, not answering) must not hold them for the full request timeout.
     pub async fn interrupt_active_turn(&self) {
+        // Settle outstanding approvals first: `cancel` both denies and
+        // interrupts server-side, so codex is never left waiting on a card
+        // whose turn orx is abandoning.
+        self.cancel_pending_approvals().await;
         let thread_id = self.resumed_thread();
         let turn_id = self.active_turn.lock().unwrap().clone();
         if let (Some(thread_id), Some(turn_id)) = (thread_id, turn_id) {
@@ -280,6 +323,7 @@ async fn read_loop(client: Arc<CodexClient>, stdout: tokio::process::ChildStdout
             }
             Line::Request { id, method, params } => {
                 client.unanswered.lock().unwrap().insert(id.to_string());
+                let approval = is_approval_request(&method);
                 let routed = {
                     let turn = client.turn.lock().unwrap();
                     turn.as_ref().is_some_and(|tx| {
@@ -293,11 +337,28 @@ async fn read_loop(client: Arc<CodexClient>, stdout: tokio::process::ChildStdout
                 };
                 if !routed {
                     // No turn is listening (raced an abort). Never leave the
-                    // server hanging on a request nobody will answer.
-                    let _ = client.respond_decline(&id).await;
+                    // server hanging on a request nobody will answer — but
+                    // only decision-shaped requests can take a decline.
+                    if approval {
+                        let _ = client.respond_decline(&id).await;
+                    } else {
+                        let _ = client.respond_method_unsupported(&id).await;
+                    }
                 }
             }
             Line::Notification { method, params } => {
+                // Codex settled a request itself (approval deadline, answer
+                // raced): the id is no longer answerable — drop it from the
+                // pending set so the stale-answer guard stays truthful.
+                if method == "serverRequest/resolved" {
+                    if let Some(request_id) = params.get("requestId") {
+                        client
+                            .unanswered
+                            .lock()
+                            .unwrap()
+                            .remove(&request_id.to_string());
+                    }
+                }
                 let turn = client.turn.lock().unwrap();
                 if let Some(tx) = turn.as_ref() {
                     let _ = tx.send(TurnEvent::Notification { method, params });
