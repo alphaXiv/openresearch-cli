@@ -200,6 +200,7 @@ textarea::placeholder {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  scrollbar-gutter: stable both-edges;
   background: var(--canvas);
 }
 .home-inner {
@@ -720,6 +721,17 @@ textarea::placeholder {
   max-width: var(--readable-col);
   margin: 0 auto;
 }
+/* Rail hidden: the header spans the full pane (Claude-desktop style) so the
+   reopen toggle lands in the window's top-left corner with the title beside
+   it; the tighter padding puts the icon on the screen-edge gutter. */
+.chat-header.rail-hidden {
+  max-width: none;
+  padding: 0 2px;
+}
+/* Breathing room between the corner toggle and the title. */
+.chat-header.rail-hidden > .icon-btn:first-child {
+  margin-right: 12px;
+}
 .chat-header::after {
   content: "";
   position: absolute;
@@ -796,6 +808,8 @@ textarea::placeholder {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* stable: no shift when the bar appears; both-edges: keeps the column centered */
+  scrollbar-gutter: stable both-edges;
 }
 .chat-thread-inner {
   max-width: var(--readable-col);
@@ -1812,6 +1826,27 @@ textarea::placeholder {
   align-items: center;
   justify-content: center;
   gap: 10px;
+  padding: 24px;
+  text-align: center;
+  color: var(--subtext);
+}
+.empty-state p {
+  max-width: 46ch;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  text-wrap: balance;
+}
+.empty-state-cta {
+  gap: 6px;
+}
+.empty-state p.empty-state-title {
+  font-size: 18px;
+  font-weight: 400;
+  color: var(--text);
+}
+.empty-state p.empty-state-hint {
+  font-size: 15px;
   color: var(--subtext);
 }
 
@@ -2704,6 +2739,7 @@ textarea::placeholder {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  scrollbar-gutter: stable both-edges;
 }
 .settings-view {
   max-width: var(--readable-col);
@@ -3049,6 +3085,19 @@ textarea::placeholder {
   padding: 4px 8px 8px;
   font-size: 11px;
   color: var(--muted);
+}
+/* Mid-session footer: the harness is fixed, so only its models are offered. */
+.model-locked-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  font-size: 11px;
+  color: var(--muted);
+  border-top: 1px solid var(--border-variant);
+}
+.model-locked-note svg {
+  flex-shrink: 0;
 }
 
 /* ---- composer slash-skill menu ---- */

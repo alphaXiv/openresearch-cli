@@ -12,7 +12,7 @@
 //! Detection: `~/.codex/auth.json` holds either an `OPENAI_API_KEY` or an OAuth
 //! `id_token` JWT we decode (unverified) for the account email and plan.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use async_trait::async_trait;
@@ -21,7 +21,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 use super::detect::{
-    bin_version, find_on_path, jwt_payload, nonempty_str, read_json, title_case, HarnessInfo,
+    bin_version, find_on_path, jwt_payload, nonempty_str, read_json, resolve_symlinks, title_case,
+    HarnessInfo,
 };
 use super::options::{HarnessOptions, PermissionMode};
 use super::Harness;
@@ -47,8 +48,10 @@ const CODEX_REASONING_LEVELS: [(&str, &str); 4] = [
 
 pub struct Codex;
 
+/// `codex` on PATH, symlinks resolved (see `resolve_symlinks` — codex needs to
+/// find its `codex-code-mode-host` helper next to the real binary).
 pub fn find_codex() -> Option<PathBuf> {
-    find_on_path("codex")
+    find_on_path("codex").map(resolve_symlinks)
 }
 
 #[async_trait]
@@ -118,7 +121,9 @@ impl Harness for Codex {
         // launches that are the point. (Codex has a real first-class Plan mode,
         // but only over `app-server`/the TUI — `codex exec` doesn't honor it;
         // verified `-c collaboration_mode="plan"` is accepted but ignored.)
-        //   * Auto  — workspace-write (the balanced default).
+        //   * Auto  — workspace-write, plus network and the hub clone's
+        //     `.git` (see `run_turn`), since exec can't approve its way past
+        //     either denial the way the TUI can.
         //   * Bypass— full access (`--dangerously-bypass-approvals-and-sandbox`).
         HarnessOptions::none()
             .with_permission_modes(
@@ -157,6 +162,52 @@ fn codex_sandbox(mode: Option<PermissionMode>) -> Option<&'static str> {
         }
         PermissionMode::Bypass => None,
     }
+}
+
+/// The workspace's git dir (`git rev-parse --git-common-dir`), canonicalized.
+/// Codex's `workspace-write` sandbox denies every git metadata write: it marks
+/// each writable root's `.git` read-only, and a *worktree's* real metadata
+/// (refs, objects, `FETCH_HEAD` under `.git/worktrees/<id>/`) lives in the
+/// parent clone, outside the workspace entirely — orx session repos are always
+/// worktrees of the hub clone. Interactively both denials escalate to approval
+/// prompts; `codex exec` has none, so `git fetch`/`commit` just dies with
+/// "Operation not permitted". Declaring the common dir as an explicit writable
+/// root fixes both shapes — an explicit root beats the built-in `.git`
+/// protection (verified against codex-cli 0.144 via `codex sandbox`, plain
+/// clone and worktree). Canonicalized because codex requires absolute roots
+/// and seatbelt matches real paths (`/var` vs `/private/var`).
+async fn shared_git_dir(workspace: &Path) -> Option<PathBuf> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(workspace)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if line.is_empty() {
+        return None;
+    }
+    absolute_git_dir(workspace, Path::new(&line))
+}
+
+/// `dir` as an absolute, symlink-free path; `git rev-parse` answers relative
+/// to the workspace for a regular clone (`.git`) and absolute for a worktree.
+fn absolute_git_dir(workspace: &Path, dir: &Path) -> Option<PathBuf> {
+    workspace.join(dir).canonicalize().ok()
+}
+
+/// A path as a TOML basic-string literal, for `-c key="value"` overrides.
+/// serde_json's escaping emits only sequences TOML also accepts (`\"`, `\\`,
+/// control chars as `\uXXXX`) and leaves `/` literal — except DEL (0x7F),
+/// which serde_json passes through and TOML forbids unescaped.
+fn toml_string(path: &Path) -> String {
+    serde_json::to_string(&path.to_string_lossy())
+        .unwrap_or_else(|_| String::from("\"\""))
+        .replace('\u{7f}', "\\u007F")
 }
 
 /// Session reasoning id → Codex `model_reasoning_effort` value. The composer only
@@ -224,6 +275,33 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                 "-c",
                 "approval_policy=\"never\"",
             ]);
+            // workspace-write out of the box is too tight for the orx
+            // workflow in two ways (both verified via `codex sandbox` against
+            // codex-cli 0.144; in the TUI both denials escalate to approval
+            // prompts, which `codex exec` doesn't have):
+            //   * Network is blocked by default — DNS doesn't even resolve, so
+            //     `git fetch`/`push`, package installs, and the `orx` CLI's
+            //     localhost API calls all die. The agent's job is launching
+            //     experiments over that API; Auto must keep the network open.
+            //   * Git metadata isn't writable — codex protects `.git` inside
+            //     the workspace, and a worktree's real metadata (the hub
+            //     clone's `.git`) sits outside it — so `git fetch`/`commit`
+            //     fail outright; grant the common dir (see `shared_git_dir`).
+            //     Note `-c` *replaces* any `writable_roots` from the user's
+            //     config.toml for the turn (there is no append form; `exec
+            //     --add-dir` is unverified on the resume path).
+            if policy == "workspace-write" {
+                cmd.args(["-c", "sandbox_workspace_write.network_access=true"]);
+                if let Some(git_dir) = shared_git_dir(&repo).await {
+                    cmd.args([
+                        "-c",
+                        &format!(
+                            "sandbox_workspace_write.writable_roots=[{}]",
+                            toml_string(&git_dir)
+                        ),
+                    ]);
+                }
+            }
         }
         None => {
             cmd.arg("--dangerously-bypass-approvals-and-sandbox");
@@ -247,6 +325,13 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     };
     cmd.arg(prompt);
     prepare_env(&mut cmd);
+    // The sandbox blocks the keyring `gh` keeps its token in ("stored token is
+    // invalid" from inside the workspace), so resolve it out here and pass it
+    // down; both `gh` and its git credential helper prefer these env vars.
+    if let Some(token) = crate::local::git::resolve_github_token() {
+        cmd.env("GH_TOKEN", &token);
+        cmd.env("GITHUB_TOKEN", token);
+    }
 
     let mut child = cmd
         .spawn()
@@ -450,6 +535,41 @@ mod tests {
         assert_eq!(codex_sandbox(Some(PermissionMode::Bypass)), None);
         // No mode set → the balanced default, never an accidental full-access.
         assert_eq!(codex_sandbox(None), Some("workspace-write"));
+    }
+
+    #[test]
+    fn git_dir_resolves_relative_and_absolute_rev_parse_answers() {
+        let base = std::env::temp_dir().join(format!("orx-codex-test-{}", std::process::id()));
+        let workspace = base.join("worktree");
+        let hub_git = base.join("hub").join(".git");
+        std::fs::create_dir_all(workspace.join(".git")).unwrap();
+        std::fs::create_dir_all(&hub_git).unwrap();
+
+        // Worktree: rev-parse answers with the hub clone's absolute path.
+        assert_eq!(
+            absolute_git_dir(&workspace, &hub_git),
+            Some(hub_git.canonicalize().unwrap())
+        );
+        // Regular clone: rev-parse answers `.git`, relative to the workspace.
+        assert_eq!(
+            absolute_git_dir(&workspace, Path::new(".git")),
+            Some(workspace.join(".git").canonicalize().unwrap())
+        );
+        // No git dir at all → no writable root (flag omitted, fail-safe).
+        assert_eq!(absolute_git_dir(&workspace, Path::new("missing")), None);
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn toml_string_quotes_and_escapes_paths() {
+        assert_eq!(
+            toml_string(Path::new("/a/with space")),
+            r#""/a/with space""#
+        );
+        assert_eq!(toml_string(Path::new(r#"/a/"q""#)), r#""/a/\"q\"""#);
+        // DEL is the one char serde_json leaves raw that TOML rejects.
+        assert_eq!(toml_string(Path::new("/a/\u{7f}b")), r#""/a/\u007Fb""#);
     }
 
     #[test]

@@ -85,6 +85,17 @@ pub(super) fn find_on_path(bin: &str) -> Option<PathBuf> {
         .find(|c| c.is_file())
 }
 
+/// Dereference symlinks to the real installed binary. Installers commonly drop
+/// a lone symlink into `~/.local/bin`, but some CLIs locate sibling helper
+/// executables relative to the path they were *invoked as*, without resolving
+/// symlinks — codex >= 0.144 launches `codex-code-mode-host` this way and every
+/// command fails with "No such file or directory" when codex is spawned via the
+/// symlink. Spawning the resolved path keeps helpers real siblings. Best-effort:
+/// a path that can't be resolved is returned unchanged.
+pub(super) fn resolve_symlinks(path: PathBuf) -> PathBuf {
+    path.canonicalize().unwrap_or(path)
+}
+
 /// `<bin> --version`, first line, with a timeout (node CLIs can be slow).
 pub(super) async fn bin_version(bin: &PathBuf) -> Option<String> {
     let fut = tokio::process::Command::new(bin)
@@ -135,5 +146,34 @@ pub(super) fn title_case(word: &str) -> String {
     match chars.next() {
         Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_symlinks_dereferences_to_real_binary() {
+        let dir = std::env::temp_dir().join(format!("orx-detect-test-{}", std::process::id()));
+        let install = dir.join("install");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        let real = install.join("codex");
+        std::fs::write(&real, "").unwrap();
+        let link = bin.join("codex");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert_eq!(resolve_symlinks(link), real.canonicalize().unwrap());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_symlinks_keeps_unresolvable_path() {
+        let missing = PathBuf::from("/nonexistent/orx-detect-test/codex");
+        assert_eq!(resolve_symlinks(missing.clone()), missing);
     }
 }

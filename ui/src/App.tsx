@@ -6,6 +6,7 @@ import {
   listExperiments,
   listProjects,
   listRuns,
+  openProject,
   type Experiment,
   type ProjectFiles,
   type Project,
@@ -135,6 +136,9 @@ export default function App() {
   // Per-project data. Harness agents spawn lazily on the first chat message.
   useEffect(() => {
     if (!projectId) return;
+    // Record the visit; the resulting project.updated SSE event refreshes the
+    // list's recency order.
+    openProject(projectId).catch(() => {});
     setExperiments([]);
     setRuns([]);
     setFiles(null);

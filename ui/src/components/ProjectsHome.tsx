@@ -50,7 +50,7 @@ export function ProjectsHome({
           {projects.length === 0 ? (
             <div className="changes-note">No projects yet — create one to get started.</div>
           ) : (
-            projects.map((p) => (
+            [...projects].sort((a, b) => b.updatedAt - a.updatedAt).map((p) => (
               <div
                 key={p.id}
                 className="project-card"
