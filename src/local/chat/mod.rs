@@ -230,6 +230,7 @@ pub fn session_json(s: &StoredChatSession, busy: bool) -> Value {
         "model": s.model,
         "permissionMode": s.permission_mode,
         "reasoningLevel": s.reasoning_level,
+        "archived": s.archived,
         "createdAt": s.created_at,
         "updatedAt": s.updated_at,
         "busy": busy,
@@ -677,6 +678,27 @@ impl ChatHost {
                 Ok(())
             }
         }
+    }
+
+    /// Archive/unarchive a session and broadcast the updated row so every open
+    /// dashboard's Recents list re-filters. Returns None for an unknown id.
+    pub async fn set_archived(
+        &self,
+        session_id: &str,
+        archived: bool,
+    ) -> Result<Option<StoredChatSession>> {
+        let store = Store::open()?;
+        let Some(mut session) = store.get_chat_session(session_id)? else {
+            return Ok(None);
+        };
+        store.set_chat_session_archived(session_id, archived)?;
+        session.archived = archived;
+        let busy = self.is_busy(session_id).await;
+        self.emit(
+            "chat.session",
+            json!({ "session": session_json(&session, busy) }),
+        );
+        Ok(Some(session))
     }
 
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {

@@ -36,8 +36,9 @@ export function defaultSelection(harnesses: Harness[]): ModelSelection | null {
   };
 }
 
-/** Close-on-outside-click + open state shared by the composer dropdowns. */
-function usePopover() {
+/** Close-on-outside-click + open state shared by the composer dropdowns (and
+ * the session-rail menus). */
+export function usePopover() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {

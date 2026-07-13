@@ -567,6 +567,8 @@ export interface ChatSession {
   model: string | null;
   permissionMode: string | null;
   reasoningLevel: string | null;
+  /** Hidden from the default Recents list, but fully intact and resumable. */
+  archived: boolean;
   createdAt: number;
   updatedAt: number;
   busy: boolean;
@@ -595,6 +597,12 @@ export const createChatSession = (
 
 export const deleteChatSession = (sessionId: string) =>
   fetch(`/api/chat/sessions/${sessionId}`, { method: "DELETE" }).then((r) => r.ok);
+
+/** Archive/unarchive a session (archived chats stay resumable). */
+export const setChatSessionArchived = (sessionId: string, archived: boolean) =>
+  patch<{ session: ChatSession }>(`/api/chat/sessions/${sessionId}`, { archived }).then(
+    (r) => r.session,
+  );
 
 export const getChatMessages = (sessionId: string) =>
   get<{ messages: ChatMessage[] }>(`/api/chat/sessions/${sessionId}/messages`).then(

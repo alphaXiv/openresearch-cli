@@ -510,6 +510,31 @@ textarea::placeholder {
   font-weight: 500;
   color: var(--muted);
 }
+/* "Recents" label + the session filter button on one line. */
+.rail-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.rail-filter {
+  position: relative;
+  display: inline-flex;
+  margin-right: 2px;
+}
+.rail-filter-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+}
+/* A non-default filter keeps the button visibly lit. */
+.rail-filter-btn.active {
+  color: var(--text);
+}
+.rail-empty {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
 .session-rail .rail-body {
   flex: 1;
   min-height: 0;
@@ -756,6 +781,7 @@ textarea::placeholder {
 }
 
 .session-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -765,6 +791,8 @@ textarea::placeholder {
   border-radius: 8px;
   font-size: 12.5px;
   color: var(--subtext);
+  cursor: pointer;
+  user-select: none;
 }
 .session-row:hover {
   background: var(--surface);
@@ -795,6 +823,32 @@ textarea::placeholder {
   font-family: var(--mono);
   color: var(--muted);
   flex-shrink: 0;
+}
+/* Hover (or an open menu) swaps the timestamp for the three-dot menu button. */
+.session-row .session-menu-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin: -2px 0;
+  border-radius: 5px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.session-row .session-menu-btn:hover {
+  color: var(--text);
+  background: var(--panel);
+}
+.session-row:hover .session-menu-btn,
+.session-row:focus-visible .session-menu-btn,
+.session-row.menu-open .session-menu-btn {
+  display: inline-flex;
+}
+.session-row:hover .session-time,
+.session-row:focus-visible .session-time,
+.session-row.menu-open .session-time {
+  display: none;
 }
 .session-row .busy-dot {
   width: 7px;
@@ -3023,6 +3077,22 @@ textarea::placeholder {
 .option-menu.align-right {
   left: auto;
   right: 0;
+}
+/* Rail menus open downward (composer menus open upward, above the box). */
+.option-menu.drop-down {
+  bottom: auto;
+  top: calc(100% + 4px);
+}
+/* Session kebab menu: anchored to the row, hugging its right edge. */
+.option-menu.session-menu {
+  left: auto;
+  right: 6px;
+  top: calc(100% - 2px);
+  min-width: 140px;
+}
+.model-item.danger,
+.model-item.danger:hover {
+  color: var(--danger, #d33);
 }
 /* "· Default" note on the pinned default row. */
 .option-default {
