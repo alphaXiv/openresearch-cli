@@ -330,6 +330,18 @@ async fn read_loop(client: Arc<CodexClient>, stdout: tokio::process::ChildStdout
                 }
             }
             Line::Notification { method, params } => {
+                // Codex settled a request itself (approval deadline, answer
+                // raced): the id is no longer answerable — drop it from the
+                // pending set so the stale-answer guard stays truthful.
+                if method == "serverRequest/resolved" {
+                    if let Some(request_id) = params.get("requestId") {
+                        client
+                            .unanswered
+                            .lock()
+                            .unwrap()
+                            .remove(&request_id.to_string());
+                    }
+                }
                 let turn = client.turn.lock().unwrap();
                 if let Some(tx) = turn.as_ref() {
                     let _ = tx.send(TurnEvent::Notification { method, params });

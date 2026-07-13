@@ -180,13 +180,18 @@ impl Harness for Codex {
     /// answer is the JSON-RPC reply, delivered over the live app-server child.
     /// Inline (the opencode pattern): the still-running turn loop keeps
     /// streaming once codex unblocks, so this returns
-    /// [`ResumeAction::Handled`] — never the new-message path.
+    /// [`ResumeAction::Handled`] — never the new-message path. Only
+    /// `answer.approve` is consulted (accept/decline; codex has no
+    /// question-style answers here).
     async fn resume_from_prompt(
         &self,
         ctx: &ResumeCtx,
         prompt: &WirePrompt,
         answer: &PromptAnswer,
     ) -> Result<ResumeAction> {
+        if prompt.kind != "permission" {
+            return Err(anyhow!("codex cannot reply to a `{}` prompt", prompt.kind));
+        }
         // A reply only lands if the turn is still paused on it — after an
         // interrupt/error the request was already cancelled and a late reply
         // would be a stale answer into the void.
@@ -236,10 +241,12 @@ impl Harness for Codex {
 /// live spike). Older CLIs take the exec fallback below.
 const MIN_APP_SERVER_VERSION: (u64, u64, u64) = (0, 144, 0);
 
-/// A turn with NO events for this long is wedged — big models and long
-/// commands still stream *something*; genuine silence means the child hung
-/// without dying. Interrupted rather than held busy forever.
-const TURN_WATCHDOG: Duration = Duration::from_secs(600);
+/// A turn with NO events for this long is treated as wedged and interrupted
+/// rather than held busy forever. Known false positive: a command that is
+/// legitimately silent this long (a quiet build, a training step with
+/// buffered output) is indistinguishable from a hang — hence the generous
+/// bound; the interruption is a clear, recoverable error either way.
+const TURN_WATCHDOG: Duration = Duration::from_secs(30 * 60);
 
 /// `codex --version` output → (major, minor, patch). The first token that
 /// parses wins, so "codex-cli 0.144.0", bare "0.144.0", and a future
@@ -569,6 +576,12 @@ fn error_message(error: Option<&Value>) -> String {
 }
 
 async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
+    // Entry sweep: any card still unresolved from an earlier turn is a zombie
+    // — its JSON-RPC request died with its turn (or child), and worse, codex
+    // request ids restart per child, so a click on a stale card could be
+    // delivered to a live request minted later. Resolve them all before this
+    // turn can surface anything.
+    ctx.host.resolve_stale_prompts(&ctx.session_id).await?;
     let project = ctx.project.clone();
     let session_id = ctx.session_id.clone();
     let (repo, playbook) =
@@ -659,15 +672,19 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
     // Invariant: no unresolved codex card outlives its turn — every exit path
     // below sweeps them (resolve + settle with codex), so a dead turn can't
     // leave a live-looking card. (A task *abort* skips the sweep, but
-    // `ChatHost::interrupt` cancels pending approvals natively first, and a
-    // later click hits `resume_from_prompt`'s busy/pending guards.)
+    // `ChatHost::interrupt` cancels pending approvals natively first, and the
+    // next turn's entry sweep in this function resolves whatever survived.)
     let mut open_approvals: HashMap<String, Value> = HashMap::new();
 
     loop {
-        // Watchdog: a turn producing NO events for this long is wedged —
-        // interrupt it rather than hold the session busy forever. Suspended
-        // while a card is pending (user think-time is unbounded by design;
-        // codex's own ~5-minute approval deadline still applies server-side).
+        // Watchdog: a turn producing NO events for this long is interrupted
+        // rather than held busy forever. Known false positive: a command
+        // that is legitimately silent this long (a quiet build, a long
+        // training step with buffered output) is indistinguishable from a
+        // hang and gets interrupted too — accepted trade-off, hence the
+        // generous bound. Suspended while a card is pending (user think-time
+        // is unbounded by design; codex's own ~5-minute approval deadline
+        // still applies server-side).
         let event = if open_approvals.is_empty() {
             match tokio::time::timeout(TURN_WATCHDOG, rx.recv()).await {
                 Ok(event) => event,
@@ -694,16 +711,11 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
                 }
                 // Codex settled a request itself (its approval deadline hit,
                 // or our reply raced this notification): the card must not
-                // stay live.
+                // stay live. Part ids are a pure function of the request id.
                 if method == "serverRequest/resolved" {
                     if let Some(request_id) = params.get("requestId") {
-                        let settled: Vec<String> = open_approvals
-                            .iter()
-                            .filter(|(_, id)| *id == request_id)
-                            .map(|(part_id, _)| part_id.clone())
-                            .collect();
-                        for part_id in settled {
-                            open_approvals.remove(&part_id);
+                        let part_id = approval_part_id(turn_id.as_deref(), request_id);
+                        if open_approvals.remove(&part_id).is_some() {
                             resolve_card(ctx, &part_id);
                         }
                     }
@@ -734,29 +746,36 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
                     // A stale turn's request (aborted predecessor still
                     // streaming) is declined, never surfaced.
                     let _ = client.respond_decline(&id).await;
-                } else if matches!(ctx.permission_mode, Some(PermissionMode::Bypass)) {
-                    // Bypass runs sandbox-less with approvals off; if codex
-                    // asks anyway, the user's chosen mode answers for them.
-                    let _ = client
-                        .respond(&id, serde_json::json!({ "decision": "accept" }))
-                        .await;
-                } else if let Some((part_id, part)) = approval_card(&method, &id, &params) {
-                    // Surface the card and keep consuming events — codex holds
-                    // the command; the reply arrives via `resume_from_prompt`
-                    // on the user's click.
-                    open_approvals.insert(part_id, id);
-                    ctx.upsert_part(part);
-                    let _ = ctx.flush();
+                } else if let Some((part_id, part)) =
+                    approval_card(turn_id.as_deref(), &method, &id, &params)
+                {
+                    if matches!(ctx.permission_mode, Some(PermissionMode::Bypass)) {
+                        // Bypass runs sandbox-less with approvals off; if codex
+                        // asks anyway, the user's chosen mode answers for them.
+                        let _ = client
+                            .respond(
+                                &id,
+                                serde_json::json!({ "decision": approval_decision(true) }),
+                            )
+                            .await;
+                    } else {
+                        // Surface the card and keep consuming events — codex
+                        // holds the command; the reply arrives via
+                        // `resume_from_prompt` on the user's click.
+                        open_approvals.insert(part_id, id);
+                        ctx.upsert_part(part);
+                        let _ = ctx.flush();
+                    }
                 } else {
-                    // Unknown request type (different reply schema, e.g.
-                    // item/tool/requestUserInput): fail the call rather than
-                    // block codex on an answer we can't express.
+                    // Non-approval request type (different reply schema, e.g.
+                    // item/tool/requestUserInput) — in every mode: fail the
+                    // call rather than answer in a shape codex can't parse.
                     let _ = client.respond_method_unsupported(&id).await;
                 }
             }
             TurnEvent::Closed => {
                 // Child gone: nothing to settle with codex; just close cards.
-                for part_id in open_approvals.keys().cloned().collect::<Vec<_>>() {
+                for part_id in std::mem::take(&mut open_approvals).into_keys() {
                     resolve_card(ctx, &part_id);
                 }
                 return Err(anyhow!(
@@ -770,17 +789,17 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
 }
 
 /// Turn-exit sweep half of the no-card-outlives-its-turn invariant: cards the
-/// user never answered are resolved in the transcript and declined with codex
-/// (no-op if codex already settled them).
+/// user never answered are resolved in the transcript and declined with codex.
+/// The decline is unconditional — `CodexClient::respond`'s pending-set guard
+/// is the single arbiter, so an already-answered/settled id no-ops there.
 async fn sweep_open_approvals(
     ctx: &mut TurnCtx,
     client: &CodexClient,
     open: &mut HashMap<String, Value>,
 ) {
     for (part_id, rpc_id) in open.drain() {
-        if resolve_card(ctx, &part_id) {
-            let _ = client.respond_decline(&rpc_id).await;
-        }
+        resolve_card(ctx, &part_id);
+        let _ = client.respond_decline(&rpc_id).await;
     }
 }
 
@@ -810,11 +829,31 @@ fn approval_decision(approve: bool) -> &'static str {
     }
 }
 
+/// The WirePart id of an approval card, a pure function of (turn, request id)
+/// — shared by `approval_card` and the `serverRequest/resolved` reconciliation
+/// so neither needs a reverse lookup. Turn-scoped because codex request ids
+/// restart at 0 per child process: without the scope, a stale card from a
+/// previous child generation would collide with a live one. (The turn-entry
+/// `resolve_stale_prompts` sweep is the primary defense; this makes ids
+/// honest too.)
+fn approval_part_id(turn: Option<&str>, id: &Value) -> String {
+    format!("appr-{}-{id}", turn.unwrap_or("t"))
+}
+
 /// A server→client approval request → a permission card. Returns the WirePart
 /// id and the part; `native_id` carries the JSON-RPC request id's raw text —
 /// the reply target for `resume_from_prompt`. `None` for request methods we
-/// don't card (they get a JSON-RPC error reply instead).
-fn approval_card(method: &str, id: &Value, params: &Value) -> Option<(String, WirePart)> {
+/// don't card (they get a JSON-RPC error reply instead — including
+/// `item/permissions/requestApproval`, whose reply is a permission-profile
+/// object, not a `{decision}`). The key list spans both carded schemas:
+/// command/cwd exist only on commandExecution; fileChange carries just
+/// reason/grantRoot, so its card leans on `reason`.
+fn approval_card(
+    turn: Option<&str>,
+    method: &str,
+    id: &Value,
+    params: &Value,
+) -> Option<(String, WirePart)> {
     let tool = match method {
         "item/commandExecution/requestApproval" => "bash",
         "item/fileChange/requestApproval" => "edit",
@@ -826,7 +865,7 @@ fn approval_card(method: &str, id: &Value, params: &Value) -> Option<(String, Wi
             input.insert(key.to_string(), v.clone());
         }
     }
-    let part_id = format!("appr-{id}");
+    let part_id = approval_part_id(turn, id);
     let prompt = WirePrompt {
         kind: "permission".into(),
         tool: Some(tool.into()),
@@ -837,20 +876,16 @@ fn approval_card(method: &str, id: &Value, params: &Value) -> Option<(String, Wi
     Some((part_id.clone(), WirePart::prompt(part_id, prompt)))
 }
 
-/// Mark a surfaced card resolved in the in-memory transcript. Returns whether
-/// it was still unresolved (false = the user already answered it, or it's
-/// gone). A card resolved by the user goes through `ChatHost::respond` →
-/// store; `adopt_resolved_prompts` keeps the two views consistent on flush.
-fn resolve_card(ctx: &mut TurnCtx, part_id: &str) -> bool {
+/// Mark a surfaced card resolved in the in-memory transcript (no-op when the
+/// user already answered it). A card resolved by the user goes through
+/// `ChatHost::respond` → store; `adopt_resolved_prompts` keeps the two views
+/// consistent on flush.
+fn resolve_card(ctx: &mut TurnCtx, part_id: &str) {
     if let Some(part) = ctx.assistant.parts.iter_mut().find(|p| p.id == part_id) {
         if let Some(prompt) = part.prompt.as_mut() {
-            if !prompt.resolved {
-                prompt.resolved = true;
-                return true;
-            }
+            prompt.resolved = true;
         }
     }
-    false
 }
 
 /// Whether the transcript already shows an error part with this message.
@@ -1469,9 +1504,14 @@ mod tests {
             "reason": "Allow writing the requested probe file outside the workspace?",
             "grantRoot": null,
         });
-        let (part_id, part) =
-            approval_card("item/commandExecution/requestApproval", &id, &params).unwrap();
-        assert_eq!(part_id, "appr-0");
+        let (part_id, part) = approval_card(
+            Some("turn1"),
+            "item/commandExecution/requestApproval",
+            &id,
+            &params,
+        )
+        .unwrap();
+        assert_eq!(part_id, "appr-turn1-0");
         assert_eq!(part.kind, "prompt");
         let prompt = part.prompt.as_ref().unwrap();
         assert_eq!(prompt.kind, "permission");
@@ -1484,33 +1524,71 @@ mod tests {
         assert_eq!(input["cwd"], "/ws");
         assert!(input.get("grantRoot").is_none(), "nulls are dropped");
 
-        // fileChange → edit card; unknown methods → no card (error reply).
-        let (_, part) = approval_card("item/fileChange/requestApproval", &id, &params).unwrap();
-        assert_eq!(part.prompt.unwrap().tool.as_deref(), Some("edit"));
-        assert!(approval_card("item/tool/requestUserInput", &id, &params).is_none());
+        // fileChange requests carry only reason/grantRoot (no command/cwd) —
+        // the edit card leans on `reason`.
+        let fc_params = serde_json::json!({
+            "threadId": "t1", "turnId": "turn1", "itemId": "fc_1",
+            "reason": "Allow writing outside the workspace?",
+            "grantRoot": "/outside",
+        });
+        let (_, part) = approval_card(
+            Some("turn1"),
+            "item/fileChange/requestApproval",
+            &id,
+            &fc_params,
+        )
+        .unwrap();
+        let prompt = part.prompt.unwrap();
+        assert_eq!(prompt.tool.as_deref(), Some("edit"));
+        let input = prompt.tool_input.as_ref().unwrap();
+        assert!(input.get("command").is_none());
+        assert_eq!(input["reason"], "Allow writing outside the workspace?");
+        assert_eq!(input["grantRoot"], "/outside");
+
+        // Non-approval request types → no card (JSON-RPC error reply instead).
+        assert!(approval_card(Some("turn1"), "item/tool/requestUserInput", &id, &params).is_none());
+        assert!(approval_card(
+            Some("turn1"),
+            "item/permissions/requestApproval",
+            &id,
+            &params
+        )
+        .is_none());
 
         assert_eq!(approval_decision(true), "accept");
         assert_eq!(approval_decision(false), "decline");
     }
 
-    /// resolve_card flips an unresolved card exactly once — the sweep uses the
-    /// return value to decide whether codex still needs a decline.
+    /// Part ids are turn-scoped: codex request ids restart at 0 per child
+    /// process, so the same rpc id in two turns must yield distinct cards.
     #[test]
-    fn resolve_card_flips_unresolved_once() {
+    fn approval_part_ids_are_turn_scoped() {
+        let id = serde_json::json!(0);
+        assert_eq!(approval_part_id(Some("turn1"), &id), "appr-turn1-0");
+        assert_ne!(
+            approval_part_id(Some("turn1"), &id),
+            approval_part_id(Some("turn2"), &id)
+        );
+        // No turn id (filter disabled): still deterministic.
+        assert_eq!(approval_part_id(None, &id), "appr-t-0");
+    }
+
+    #[test]
+    fn resolve_card_marks_prompts_and_ignores_unknown_parts() {
         let mut ctx = TurnCtx::test_stub();
         let (part_id, part) = approval_card(
+            Some("turn1"),
             "item/commandExecution/requestApproval",
             &serde_json::json!(7),
             &serde_json::json!({"command": "x"}),
         )
         .unwrap();
         ctx.upsert_part(part);
-        assert!(resolve_card(&mut ctx, &part_id), "first resolve wins");
-        assert!(!resolve_card(&mut ctx, &part_id), "already resolved");
-        assert!(
-            !resolve_card(&mut ctx, "missing"),
-            "unknown part is a no-op"
-        );
+        resolve_card(&mut ctx, &part_id);
+        assert!(ctx.assistant.parts[0].prompt.as_ref().unwrap().resolved);
+        resolve_card(&mut ctx, &part_id); // idempotent
+        resolve_card(&mut ctx, "missing"); // no-op, no panic
+        assert_eq!(ctx.assistant.parts.len(), 1);
     }
 
     /// The Failed-dedup guard matches exactly how `push_error` stores errors
