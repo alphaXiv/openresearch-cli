@@ -430,8 +430,12 @@ impl ChatHost {
         }
         let saved_images = save_images(&images)?;
         if session.title.is_none() {
-            let title: String = text.lines().next().unwrap_or("").chars().take(64).collect();
-            let mut title = title.trim().to_string();
+            let first_line = text.lines().next().unwrap_or("").trim();
+            let mut title: String = first_line.chars().take(64).collect();
+            if first_line.chars().count() > 64 {
+                title = title.trim_end().to_string();
+                title.push('…');
+            }
             if title.is_empty() && !saved_images.is_empty() {
                 title = "Image".into();
             }
