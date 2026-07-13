@@ -121,9 +121,9 @@ impl Harness for Codex {
         // launches that are the point. (Codex has a real first-class Plan mode,
         // but only over `app-server`/the TUI — `codex exec` doesn't honor it;
         // verified `-c collaboration_mode="plan"` is accepted but ignored.)
-        //   * Auto  — workspace-write, plus network and the hub clone's
-        //     `.git` (see `run_turn`), since exec can't approve its way past
-        //     either denial the way the TUI can.
+        //   * Auto  — workspace-write, plus network, the orx data dir, and
+        //     the hub clone's `.git` (see `run_turn`), since exec can't
+        //     approve its way past any of those denials the way the TUI can.
         //   * Bypass— full access (`--dangerously-bypass-approvals-and-sandbox`).
         HarnessOptions::none()
             .with_permission_modes(
@@ -294,13 +294,15 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     // Permission mode → sandbox policy. `codex exec` can't prompt, so the
     // sandbox is the approval boundary: non-bypass modes run sandboxed with
     // approvals disabled (nothing to escalate to), `Bypass` drops both.
-    let mut data_dir_pin: Option<PathBuf> = None;
     //
     // Set the policy via `-c sandbox_mode=` rather than `-s`: the `exec resume`
     // subcommand rejects `-s` ("unexpected argument"), but accepts `-c` on both
     // the fresh and resume paths (verified against codex-cli 0.143), so one form
     // works for the whole session lifecycle.
-    match codex_sandbox(ctx.permission_mode) {
+    //
+    // Yields the data dir granted as a writable root (if any), so the child's
+    // store can be pinned to it below, after `prepare_env`.
+    let data_dir_pin = match codex_sandbox(ctx.permission_mode) {
         Some(policy) => {
             cmd.args([
                 "-c",
@@ -330,19 +332,24 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
             // --add-dir` is unverified on the resume path).
             if policy == "workspace-write" {
                 cmd.args(["-c", "sandbox_workspace_write.network_access=true"]);
-                data_dir_pin = ensure_orx_data_dir();
-                let mut roots = Vec::new();
-                roots.extend(data_dir_pin.clone());
-                roots.extend(shared_git_dir(&repo).await);
+                let data_dir = ensure_orx_data_dir();
+                let roots: Vec<PathBuf> = [data_dir.clone(), shared_git_dir(&repo).await]
+                    .into_iter()
+                    .flatten()
+                    .collect();
                 if let Some(override_arg) = writable_roots_override(&roots) {
                     cmd.args(["-c", &override_arg]);
                 }
+                data_dir
+            } else {
+                None
             }
         }
         None => {
             cmd.arg("--dangerously-bypass-approvals-and-sandbox");
+            None
         }
-    }
+    };
     // Reasoning level → Codex's own `model_reasoning_effort` config override.
     if let Some(effort) = codex_reasoning(ctx.reasoning_level.as_deref()) {
         cmd.args(["-c", &format!("model_reasoning_effort=\"{effort}\"")]);
@@ -368,6 +375,8 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     // relative `ORX_DATA_DIR` resolves against the child's cwd, not ours.
     // Must come after `prepare_env`: later `cmd.env` calls win, and the
     // synced-env injection guards on the *process* env, not the cmd's map.
+    // (Unsandboxed Bypass has no grant to stay coherent with, so no pin — a
+    // synced `ORX_DATA_DIR` still wins there.)
     if let Some(dir) = &data_dir_pin {
         cmd.env("ORX_DATA_DIR", dir);
     }
