@@ -1,5 +1,5 @@
 import { ChevronRight, CornerDownLeft, FlaskConical, FolderOpen, PanelLeft, Plus, X } from "lucide-react";
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import {
   chatAttachmentUrl,
   createChatSession,
@@ -526,6 +526,7 @@ export function ChatPanel({
   const [sessionOverride, setSessionOverride] = useState<Partial<ModelSelection>>({});
   const loadedSessions = useRef(new Set<string>());
   const threadRef = useRef<HTMLDivElement>(null);
+  const threadInnerRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
@@ -678,11 +679,35 @@ export function ChatPanel({
   // from one session's pickers onto another's.
   useEffect(() => setSessionOverride({}), [activeId]);
 
-  // Autoscroll while pinned to the bottom.
-  useEffect(() => {
+  // Opening a session — or remounting the thread (leaving a settings view,
+  // history seeding in) — always starts pinned at the latest messages.
+  const threadMounted = mainView === "chat" && (messages.length > 0 || busy);
+  useLayoutEffect(() => {
+    stickToBottom.current = true;
+    const el = threadRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [activeId, threadMounted]);
+
+  // Autoscroll while pinned. Layout effect, so history seeds and streamed
+  // messages land already scrolled (no flash of the top of the thread).
+  useLayoutEffect(() => {
     const el = threadRef.current;
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
   }, [messages, busy]);
+
+  // Re-pin when the thread resizes without a message change — images loading,
+  // tool rows expanding, the pane resizing.
+  useEffect(() => {
+    const el = threadRef.current;
+    const inner = threadInnerRef.current;
+    if (!el || !inner) return;
+    const ro = new ResizeObserver(() => {
+      if (stickToBottom.current) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(inner);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [threadMounted]);
 
   async function send() {
     const text = draft.trim();
@@ -861,7 +886,7 @@ export function ChatPanel({
         </button>
       </div>
 
-      {messages.length === 0 && !busy ? (
+      {!threadMounted ? (
         <div className="chat-empty">
           <h2>
             Open<span>Research</span>
@@ -884,7 +909,7 @@ export function ChatPanel({
             stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
           }}
         >
-          <div className="chat-thread-inner">
+          <div className="chat-thread-inner" ref={threadInnerRef}>
             {messages.map((m) => (
               <Message key={m.id} message={m} onOpenFile={onOpenFile} onRespond={respond} />
             ))}

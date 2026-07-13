@@ -200,6 +200,7 @@ textarea::placeholder {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  scrollbar-gutter: stable both-edges;
   background: var(--canvas);
 }
 .home-inner {
@@ -803,6 +804,8 @@ textarea::placeholder {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* stable: no shift when the bar appears; both-edges: keeps the column centered */
+  scrollbar-gutter: stable both-edges;
 }
 .chat-thread-inner {
   max-width: var(--readable-col);
@@ -2660,6 +2663,7 @@ textarea::placeholder {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  scrollbar-gutter: stable both-edges;
 }
 .settings-view {
   max-width: var(--readable-col);
