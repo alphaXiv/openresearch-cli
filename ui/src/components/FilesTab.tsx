@@ -1,19 +1,7 @@
-import {
-  ArrowLeft,
-  Check,
-  ChevronRight,
-  Copy,
-  ExternalLink,
-  File,
-  FileText,
-  FlaskConical,
-  Folder,
-  FolderGit2,
-  FolderOpen,
-  Trash2,
-} from "lucide-react";
+import { ArrowLeft, Check, ChevronRight, Copy, ExternalLink, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   deleteFile,
   fileUrl,
@@ -73,6 +61,7 @@ function ReportMd({
   return (
     <div className="md report-md">
       <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
         components={{
           a: ({ href, children, ...rest }) => (
             <a
@@ -124,33 +113,35 @@ function ReportView({
 
   return (
     <div className="report-view">
-      <div className="report-view-head">
-        <button className="report-back" onClick={onBack}>
-          <ArrowLeft size={13} /> Files
-        </button>
-        <span style={{ flex: 1 }} />
-        <span className="report-date">{new Date(entry.modifiedAt).toLocaleString()}</span>
-        <button
-          className="icon-btn"
-          title="Delete report folder"
-          aria-label="Delete report folder"
-          onClick={() => {
-            if (window.confirm(`Delete the "${entry.path}" folder from the files dir?`))
-              onDelete();
-          }}
-        >
-          <Trash2 size={14} />
-        </button>
-      </div>
-      {error ? (
-        <div className="error">{error}</div>
-      ) : markdown === null ? (
-        <div className="settings-loading">
-          <span className="spinner" /> Loading report…
+      <div className="report-view-col">
+        <div className="report-view-head">
+          <button className="report-back" onClick={onBack}>
+            <ArrowLeft size={13} /> Files
+          </button>
+          <span style={{ flex: 1 }} />
+          <span className="report-date">{new Date(entry.modifiedAt).toLocaleString()}</span>
+          <button
+            className="icon-btn"
+            title="Delete report folder"
+            aria-label="Delete report folder"
+            onClick={() => {
+              if (window.confirm(`Delete the "${entry.path}" folder from the files dir?`))
+                onDelete();
+            }}
+          >
+            <Trash2 size={14} />
+          </button>
         </div>
-      ) : (
-        <ReportMd projectId={projectId} folder={entry.path} markdown={markdown} />
-      )}
+        {error ? (
+          <div className="error">{error}</div>
+        ) : markdown === null ? (
+          <div className="settings-loading">
+            <span className="spinner" /> Loading report…
+          </div>
+        ) : (
+          <ReportMd projectId={projectId} folder={entry.path} markdown={markdown} />
+        )}
+      </div>
     </div>
   );
 }
@@ -159,8 +150,7 @@ function ReportView({
 function DirPath({ dir }: { dir: string }) {
   const [copied, setCopied] = useState(false);
   return (
-    <div className="artifacts-dir">
-      <FolderOpen size={13} />
+    <div className="files-pill files-pill-dir" title={dir}>
       <code>{dir}</code>
       <button
         className="icon-btn"
@@ -198,10 +188,10 @@ function TreeRows({
   return (
     <>
       {entries.map((e) => {
-        const indent = { paddingLeft: 12 + depth * 18 };
+        const indent = { paddingLeft: 14 + depth * 22 };
         const del = (
           <button
-            className="icon-btn artifact-tree-del"
+            className="icon-btn ftree-del"
             title={`Delete ${e.path}`}
             aria-label={`Delete ${e.path}`}
             onClick={(ev) => {
@@ -216,18 +206,21 @@ function TreeRows({
         if (e.isDir) {
           const isReport = e.reportTitle !== undefined;
           const open = expanded.has(e.path);
-          // Top-level folder named for an experiment: show the experiment's
-          // title (falling back to the slug) plus its branch/status.
+          // Top-level rows always show the on-disk name; an experiment
+          // folder's title surfaces as a hover tooltip. Nested report
+          // folders show the report's own title.
           const exp = depth === 0 ? e.experiment : undefined;
+          const showTitle = isReport && depth > 0;
           return (
             <div key={e.path}>
               <div
-                className="artifact-tree-row clickable"
+                className="ftree-row clickable"
                 style={indent}
+                title={exp?.title ?? (isReport ? e.reportTitle : undefined)}
                 onClick={() => (isReport ? onOpenReport(e.path) : onToggle(e.path))}
               >
                 <button
-                  className={`artifact-tree-chevron ${open ? "open" : ""}`}
+                  className={`ftree-chevron ${open ? "open" : ""}`}
                   aria-label={open ? `Collapse ${e.name}` : `Expand ${e.name}`}
                   onClick={(ev) => {
                     ev.stopPropagation();
@@ -236,66 +229,61 @@ function TreeRows({
                 >
                   <ChevronRight size={13} />
                 </button>
-                {exp ? (
-                  <FlaskConical size={14} />
-                ) : isReport ? (
-                  <FileText size={14} />
+                {showTitle ? (
+                  <span className="ftree-title">{e.reportTitle}</span>
                 ) : (
-                  <Folder size={14} />
+                  <span className="ftree-dirname">{e.name}/</span>
                 )}
-                <span className={`artifact-tree-name ${isReport ? "report" : ""}`}>
-                  {e.reportTitle || exp?.title || e.name}
-                </span>
-                {exp && (
-                  <span className="artifact-exp-chip" title={exp.branchName}>
-                    {exp.slug}
-                    {exp.latestRunStatus ? ` · ${exp.latestRunStatus}` : ""}
+                {isReport && <span className="ftree-tag">report</span>}
+                {exp?.latestRunStatus && (
+                  <span className="ftree-status" title={exp.branchName}>
+                    {exp.latestRunStatus}
                   </span>
                 )}
                 {del}
-                <span className="report-date">
+                <span className="ftree-date">
                   {new Date(e.modifiedAt).toLocaleDateString()}
                 </span>
               </div>
               {open && (
-                <TreeRows
-                  projectId={projectId}
-                  entries={e.children ?? []}
-                  depth={depth + 1}
-                  expanded={expanded}
-                  onToggle={onToggle}
-                  onOpenReport={onOpenReport}
-                  onDelete={onDelete}
-                />
+                <div className="ftree-children">
+                  <TreeRows
+                    projectId={projectId}
+                    entries={e.children ?? []}
+                    depth={depth + 1}
+                    expanded={expanded}
+                    onToggle={onToggle}
+                    onOpenReport={onOpenReport}
+                    onDelete={onDelete}
+                  />
+                </div>
               )}
             </div>
           );
         }
 
         return (
-          <div key={e.path} className="artifact-tree-row" style={indent}>
-            <span className="artifact-tree-chevron spacer" />
+          <div key={e.path} className="ftree-row" style={indent}>
+            <span className="ftree-chevron spacer" />
             <a
-              className="artifact-file-link"
+              className="ftree-link"
               href={fileUrl(projectId, e.path)}
               target="_blank"
               rel="noopener noreferrer"
               title={e.path}
             >
-              {IMAGE_RE.test(e.name) ? (
+              {IMAGE_RE.test(e.name) && (
                 <img
-                  className="artifact-thumb"
+                  className="ftree-thumb"
                   src={fileUrl(projectId, e.path)}
                   alt=""
                   loading="lazy"
                 />
-              ) : (
-                <File size={14} />
               )}
-              <span className="artifact-tree-name">{e.name}</span>
+              <span className="ftree-name">{e.name}</span>
             </a>
             {del}
-            <span className="report-date">{fmtBytes(e.size)}</span>
+            <span className="ftree-size">{fmtBytes(e.size)}</span>
           </div>
         );
       })}
@@ -399,47 +387,40 @@ export function FilesTab({
   const repoUrl = `https://github.com/${project.githubOwner}/${project.githubRepo}`;
   return (
     <div className="artifacts">
-      <section>
-        <h3 className="artifacts-heading">
-          <FolderGit2 size={13} /> Repository
-        </h3>
-        <a className="artifacts-repo" href={repoUrl} target="_blank" rel="noopener noreferrer">
-          {project.githubOwner}/{project.githubRepo}
-          <ExternalLink size={12} />
-        </a>
-      </section>
-
-      <section>
-        <h3 className="artifacts-heading">
-          <FolderOpen size={13} /> Files
-        </h3>
-        <DirPath dir={files.dir} />
+      <div className="artifacts-col">
+        <div className="files-meta">
+          <a className="files-pill" href={repoUrl} target="_blank" rel="noopener noreferrer">
+            <code>
+              {project.githubOwner}/{project.githubRepo}
+            </code>
+            <ExternalLink size={12} />
+          </a>
+          <DirPath dir={files.dir} />
+        </div>
         <p className="artifacts-hint">
           An explorer over this folder — the agent writes each experiment's reports and figures
           into the folder named for its slug (project-wide reports under <code>project/</code>),
           and you can drop in your own files.
         </p>
         {files.entries.length === 0 ? (
-          <p className="artifacts-empty">
+          <p className="files-empty">
             Nothing here yet. Ask the agent for a write-up of its findings — it saves each
             experiment's report folder (<code>report.md</code> + images) into the folder above.
           </p>
         ) : (
-          <div className="artifact-tree">
+          <div className="files-card">
             {tree(projectNs)}
             {tree(experiments)}
             {other.length > 0 && (experiments.length > 0 || projectNs.length > 0) && (
-              <div className="artifact-tree-divider">Not linked to an experiment</div>
+              <div className="ftree-divider">Not linked to an experiment</div>
             )}
             {tree(other)}
             {files.truncated && (
-              <p className="artifacts-hint" style={{ padding: "6px 12px" }}>
-                Listing truncated — the folder has more files.
-              </p>
+              <p className="files-truncated">Listing truncated — the folder has more files.</p>
             )}
           </div>
         )}
-      </section>
+      </div>
     </div>
   );
 }
