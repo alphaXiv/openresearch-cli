@@ -95,6 +95,10 @@ export const createProject = (body: NewProject) =>
 export const updateProject = (projectId: string, body: { runCommand?: string; name?: string }) =>
   patch<{ project: Project }>(`/api/projects/${projectId}`, body).then((r) => r.project);
 
+/** Record a visit: bumps the project's updatedAt, which drives the recency sort. */
+export const openProject = (projectId: string) =>
+  post<{ project: Project }>(`/api/projects/${projectId}/open`).then((r) => r.project);
+
 export const deleteProject = (projectId: string) =>
   fetch(`/api/projects/${projectId}`, { method: "DELETE" }).then(async (r) => {
     if (!r.ok) {

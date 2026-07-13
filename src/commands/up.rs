@@ -94,6 +94,7 @@ fn router(state: AppState) -> Router {
                 .patch(update_project)
                 .delete(delete_project),
         )
+        .route("/api/projects/{id}/open", post(open_project))
         .route(
             "/api/projects/{id}/experiments",
             get(list_experiments).post(create_experiment),
@@ -341,6 +342,17 @@ async fn create_project(Json(req): Json<CreateProjectReq>) -> ApiResult {
 
 async fn get_project(Path(id): Path<String>) -> ApiResult {
     let project = Store::open()?
+        .get_local_project(&id)?
+        .ok_or_else(|| not_found("project"))?;
+    Ok(Json(json!({ "project": project })))
+}
+
+/// Mark a project visited: bumps updated_at, which drives the recency sort
+/// and the SSE project.updated diff.
+async fn open_project(Path(id): Path<String>) -> ApiResult {
+    let store = Store::open()?;
+    store.touch_local_project(&id)?;
+    let project = store
         .get_local_project(&id)?
         .ok_or_else(|| not_found("project"))?;
     Ok(Json(json!({ "project": project })))
