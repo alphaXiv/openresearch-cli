@@ -895,7 +895,7 @@ fn mark_prompt_resolved(
 ///
 /// Same `msg_write` contract as `mark_prompt_resolved`. Returns the updated
 /// messages so the caller can broadcast them.
-pub(crate) fn resolve_stale_prompts(
+fn resolve_stale_prompts(
     msg_write: &std::sync::Mutex<()>,
     session_id: &str,
 ) -> Result<Vec<WireMessage>> {
@@ -939,10 +939,7 @@ impl ChatHost {
     /// [`resolve_stale_prompts`] + broadcast, for harness turn-entry use.
     pub async fn resolve_stale_prompts(&self, session_id: &str) -> Result<()> {
         for msg in resolve_stale_prompts(&self.msg_write, session_id)? {
-            self.emit(
-                "chat.message",
-                json!({ "sessionId": session_id, "message": msg }),
-            );
+            self.emit("chat.message", message_json(&msg, session_id));
         }
         Ok(())
     }

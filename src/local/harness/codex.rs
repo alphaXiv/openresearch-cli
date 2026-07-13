@@ -677,14 +677,10 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
     let mut open_approvals: HashMap<String, Value> = HashMap::new();
 
     loop {
-        // Watchdog: a turn producing NO events for this long is interrupted
-        // rather than held busy forever. Known false positive: a command
-        // that is legitimately silent this long (a quiet build, a long
-        // training step with buffered output) is indistinguishable from a
-        // hang and gets interrupted too — accepted trade-off, hence the
-        // generous bound. Suspended while a card is pending (user think-time
-        // is unbounded by design; codex's own ~5-minute approval deadline
-        // still applies server-side).
+        // Watchdog (see TURN_WATCHDOG for the false-positive trade-off).
+        // Suspended while a card is pending — user think-time is unbounded by
+        // design; codex's own ~5-minute approval deadline still applies
+        // server-side.
         let event = if open_approvals.is_empty() {
             match tokio::time::timeout(TURN_WATCHDOG, rx.recv()).await {
                 Ok(event) => event,
@@ -711,12 +707,14 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
                 }
                 // Codex settled a request itself (its approval deadline hit,
                 // or our reply raced this notification): the card must not
-                // stay live. Part ids are a pure function of the request id.
+                // stay live. Part ids are a pure function of the request id;
+                // flushed immediately so the card goes read-only right away.
                 if method == "serverRequest/resolved" {
                     if let Some(request_id) = params.get("requestId") {
                         let part_id = approval_part_id(turn_id.as_deref(), request_id);
                         if open_approvals.remove(&part_id).is_some() {
                             resolve_card(ctx, &part_id);
+                            let _ = ctx.flush();
                         }
                     }
                 }
@@ -744,8 +742,13 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
             TurnEvent::Request { id, method, params } => {
                 if event_turn_mismatch(turn_id.as_deref(), &params) {
                     // A stale turn's request (aborted predecessor still
-                    // streaming) is declined, never surfaced.
-                    let _ = client.respond_decline(&id).await;
+                    // streaming) is declined, never surfaced — with the reply
+                    // shape its method can actually parse.
+                    if crate::local::codex::is_approval_request(&method) {
+                        let _ = client.respond_decline(&id).await;
+                    } else {
+                        let _ = client.respond_method_unsupported(&id).await;
+                    }
                 } else if let Some((part_id, part)) =
                     approval_card(turn_id.as_deref(), &method, &id, &params)
                 {

@@ -97,6 +97,17 @@ pub fn classify_line(line: &str) -> Line {
     }
 }
 
+/// Whether a server→client request answers with a `{"decision": ...}` reply
+/// (the two approval shapes). Everything else (e.g. item/tool/requestUserInput,
+/// item/permissions/requestApproval) has a different reply schema — answer
+/// with a JSON-RPC error, never a decision it can't parse.
+pub fn is_approval_request(method: &str) -> bool {
+    matches!(
+        method,
+        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
+    )
+}
+
 /// One event delivered to the session's in-flight turn.
 #[derive(Debug)]
 pub enum TurnEvent {
@@ -312,6 +323,7 @@ async fn read_loop(client: Arc<CodexClient>, stdout: tokio::process::ChildStdout
             }
             Line::Request { id, method, params } => {
                 client.unanswered.lock().unwrap().insert(id.to_string());
+                let approval = is_approval_request(&method);
                 let routed = {
                     let turn = client.turn.lock().unwrap();
                     turn.as_ref().is_some_and(|tx| {
@@ -325,8 +337,13 @@ async fn read_loop(client: Arc<CodexClient>, stdout: tokio::process::ChildStdout
                 };
                 if !routed {
                     // No turn is listening (raced an abort). Never leave the
-                    // server hanging on a request nobody will answer.
-                    let _ = client.respond_decline(&id).await;
+                    // server hanging on a request nobody will answer — but
+                    // only decision-shaped requests can take a decline.
+                    if approval {
+                        let _ = client.respond_decline(&id).await;
+                    } else {
+                        let _ = client.respond_method_unsupported(&id).await;
+                    }
                 }
             }
             Line::Notification { method, params } => {

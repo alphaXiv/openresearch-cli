@@ -58,7 +58,8 @@ pub enum ResumeAction {
         mode: Option<PermissionMode>,
     },
     /// The harness already delivered the answer to its live process (OpenCode
-    /// inline reply). Nothing left for `ChatHost` but to clear `busy`.
+    /// inline reply). `ChatHost` leaves the still-running turn alone — the
+    /// paused process resumes and finishes its own turn.
     Handled,
     /// No resume — e.g. a denied permission that just closes the card.
     Nothing,
