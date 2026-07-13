@@ -191,6 +191,34 @@ impl CodexClient {
         self.respond(id, json!({ "decision": "decline" })).await
     }
 
+    /// Reject a server→client request whose reply schema we don't speak (e.g.
+    /// `item/tool/requestUserInput`) with a JSON-RPC error — codex fails that
+    /// call instead of blocking on an answer that will never come.
+    pub async fn respond_method_unsupported(&self, id: &Value) -> Result<()> {
+        if !self.unanswered.lock().unwrap().remove(&id.to_string()) {
+            return Err(anyhow!("this request is no longer pending"));
+        }
+        self.write_line(&json!({
+            "id": id,
+            "error": { "code": -32601, "message": "orx does not handle this request type" },
+        }))
+        .await
+    }
+
+    /// Settle every outstanding server request with `cancel` (deny + interrupt
+    /// that turn). Used on interrupt paths so codex never stays blocked on an
+    /// approval orx is about to abandon.
+    pub async fn cancel_pending_approvals(&self) {
+        let ids: Vec<String> = self.unanswered.lock().unwrap().drain().collect();
+        for id in ids {
+            if let Ok(id) = serde_json::from_str::<Value>(&id) {
+                let _ = self
+                    .write_line(&json!({ "id": id, "result": { "decision": "cancel" } }))
+                    .await;
+            }
+        }
+    }
+
     async fn write_line(&self, msg: &Value) -> Result<()> {
         let mut stdin = self.stdin.lock().await;
         stdin
@@ -231,6 +259,10 @@ impl CodexClient {
     /// on the user-facing interrupt/delete paths, and a wedged child (stdin
     /// full, not answering) must not hold them for the full request timeout.
     pub async fn interrupt_active_turn(&self) {
+        // Settle outstanding approvals first: `cancel` both denies and
+        // interrupts server-side, so codex is never left waiting on a card
+        // whose turn orx is abandoning.
+        self.cancel_pending_approvals().await;
         let thread_id = self.resumed_thread();
         let turn_id = self.active_turn.lock().unwrap().clone();
         if let (Some(thread_id), Some(turn_id)) = (thread_id, turn_id) {
