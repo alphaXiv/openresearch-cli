@@ -206,8 +206,12 @@ fn absolute_git_dir(workspace: &Path, dir: &Path) -> Option<PathBuf> {
 /// outside every workspace — so `workspace-write` denies the open and every
 /// store-touching command dies with "unable to open database file". Created
 /// here (host side, unsandboxed) so canonicalize can't fail before first use;
-/// canonicalized for the same reason as `shared_git_dir`.
-fn orx_data_dir() -> Option<PathBuf> {
+/// canonicalized for the same reason as `shared_git_dir`. Note the grant is
+/// the whole data dir — every project's store rows plus `run-logs/` and the
+/// `agent-*.log` files — not scoped to the session; that's inherent to the
+/// CLI opening the shared DB directly, and still strictly narrower than
+/// Bypass.
+fn ensure_orx_data_dir() -> Option<PathBuf> {
     let dir = crate::store::data_dir();
     std::fs::create_dir_all(&dir).ok()?;
     dir.canonicalize().ok()
@@ -290,6 +294,7 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     // Permission mode → sandbox policy. `codex exec` can't prompt, so the
     // sandbox is the approval boundary: non-bypass modes run sandboxed with
     // approvals disabled (nothing to escalate to), `Bypass` drops both.
+    let mut data_dir_pin: Option<PathBuf> = None;
     //
     // Set the policy via `-c sandbox_mode=` rather than `-s`: the `exec resume`
     // subcommand rejects `-s` ("unexpected argument"), but accepts `-c` on both
@@ -314,18 +319,20 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
             //   * The orx store isn't writable — the SQLite DB lives in the
             //     data dir under `~/.local/share`, outside the workspace, so
             //     every `orx` command that touches it fails with "unable to
-            //     open database file"; grant the data dir (see `orx_data_dir`).
+            //     open database file"; grant the data dir (see
+            //     `ensure_orx_data_dir`).
             //   * Git metadata isn't writable — codex protects `.git` inside
             //     the workspace, and a worktree's real metadata (the hub
             //     clone's `.git`) sits outside it — so `git fetch`/`commit`
             //     fail outright; grant the common dir (see `shared_git_dir`).
-            //     Note `-c` *replaces* any `writable_roots` from the user's
-            //     config.toml for the turn (there is no append form; `exec
-            //     --add-dir` is unverified on the resume path).
+            // Note `-c` *replaces* any `writable_roots` from the user's
+            // config.toml for the turn (there is no append form; `exec
+            // --add-dir` is unverified on the resume path).
             if policy == "workspace-write" {
                 cmd.args(["-c", "sandbox_workspace_write.network_access=true"]);
+                data_dir_pin = ensure_orx_data_dir();
                 let mut roots = Vec::new();
-                roots.extend(orx_data_dir());
+                roots.extend(data_dir_pin.clone());
                 roots.extend(shared_git_dir(&repo).await);
                 if let Some(override_arg) = writable_roots_override(&roots) {
                     cmd.args(["-c", &override_arg]);
@@ -354,6 +361,16 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     };
     cmd.arg(prompt);
     prepare_env(&mut cmd);
+    // Pin the sandboxed turn's store to the exact path granted above. The
+    // grant was resolved from the host's env, but the child could resolve a
+    // different data dir — `prepare_env` injects dashboard-synced vars (a
+    // synced `ORX_DATA_DIR`/`XDG_DATA_HOME` absent from the host env), and a
+    // relative `ORX_DATA_DIR` resolves against the child's cwd, not ours.
+    // Must come after `prepare_env`: later `cmd.env` calls win, and the
+    // synced-env injection guards on the *process* env, not the cmd's map.
+    if let Some(dir) = &data_dir_pin {
+        cmd.env("ORX_DATA_DIR", dir);
+    }
     // The sandbox blocks the keyring `gh` keeps its token in ("stored token is
     // invalid" from inside the workspace), so resolve it out here and pass it
     // down; both `gh` and its git credential helper prefer these env vars.
