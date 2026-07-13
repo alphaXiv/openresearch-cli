@@ -558,7 +558,7 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
                 // propagates as the turn's error (the `?` above) — a resumable
                 // thread must never be discarded over a timeout/hiccup.
                 Err(err) => {
-                    eprintln!("codex thread/resume rejected ({err}); starting a fresh thread");
+                    eprintln!("orx up: codex thread/resume rejected ({err}); starting a fresh thread");
                     start_thread(ctx, &client, thread_setup).await?
                 }
             }

@@ -430,13 +430,16 @@ impl CodexHost {
     /// child is alive; a dead child is replaced (its thread is re-resumed by
     /// the caller — `resumed_thread` starts empty on the replacement).
     ///
-    /// The spawn + handshake + registration run in a *detached* task: the
+    /// The spawn + registration + handshake run in a *detached* task: the
     /// calling turn task is abortable (interrupt / delete), and an aborted
     /// future would drop its `Arc` while the reader task keeps the child alive
     /// — an unregistered client would be unreachable by every kill path and
     /// leak the process for the rest of `orx up`'s life. Detached, the
     /// bring-up always runs to completion: the client ends up registered
     /// (killable via kill_session/shutdown) or killed on handshake failure.
+    /// One consequence of registering before the handshake: a reuse hit may
+    /// briefly hand out a still-mid-handshake client; its requests fail
+    /// cleanly (server "not initialized" / closed) and the next turn recovers.
     pub async fn ensure(self: &Arc<Self>, session_id: &str) -> Result<Arc<CodexClient>> {
         let _spawning = self.spawn_lock.lock().await;
         {
