@@ -363,7 +363,7 @@ impl Store {
 
     pub fn list_local_projects(&self) -> Result<Vec<LocalProject>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT {PROJECT_COLS} FROM local_projects ORDER BY created_at ASC"
+            "SELECT {PROJECT_COLS} FROM local_projects ORDER BY updated_at DESC"
         ))?;
         let rows = stmt.query_map([], LocalProject::from_row)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -391,6 +391,16 @@ impl Store {
         self.conn
             .execute("DELETE FROM local_projects WHERE id = ?1", params![id])?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Bump updated_at only — records a visit for the recency sort and fires
+    /// the SSE project.updated diff.
+    pub fn touch_local_project(&self, id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE local_projects SET updated_at = ?2 WHERE id = ?1",
+            params![id, now_ms()],
+        )?;
         Ok(())
     }
 
