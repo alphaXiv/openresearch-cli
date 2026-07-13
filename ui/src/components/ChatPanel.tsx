@@ -68,7 +68,8 @@ type Action =
   | { type: "upsertMessage"; sessionId: string; message: ChatMessage }
   | { type: "optimisticUser"; sessionId: string; text: string; imageUrls: string[] }
   | { type: "busy"; sessionId: string; busy: boolean }
-  | { type: "seedBusy"; sessions: string[] };
+  | { type: "seedBusy"; sessions: string[] }
+  | { type: "forget"; sessionId: string };
 
 const LOCAL_PREFIX = "local-";
 
@@ -132,6 +133,15 @@ function reducer(state: ChatState, action: Action): ChatState {
     }
     case "seedBusy":
       return { ...state, busySessions: new Set(action.sessions) };
+    case "forget": {
+      // Deleted session: drop its transcript and busy flag so a same-id event
+      // arriving late can't render stale state.
+      const messagesBySession = { ...state.messagesBySession };
+      delete messagesBySession[action.sessionId];
+      const busySessions = new Set(state.busySessions);
+      busySessions.delete(action.sessionId);
+      return { messagesBySession, busySessions };
+    }
   }
 }
 
@@ -499,6 +509,13 @@ const SESSION_FILTERS: { id: SessionFilter; label: string }[] = [
   { id: "all", label: "All" },
 ];
 
+/** Rail section heading per filter — "Recents" for the default view. */
+const RAIL_LABELS: Record<SessionFilter, string> = {
+  active: "Recents",
+  archived: "Archived",
+  all: "All sessions",
+};
+
 /** Filter control beside the "Recents" label: Active (default) / Archived / All. */
 function SessionFilterMenu({
   value,
@@ -566,8 +583,16 @@ function SessionRow({
       tabIndex={0}
       className={`session-row ${active ? "active" : ""} ${open ? "menu-open" : ""}`}
       title={`${HARNESS_LABELS[session.harness]}${session.model ? ` · ${session.model}` : ""}`}
-      onClick={onOpen}
+      onClick={() => {
+        // With the menu open, a body click just dismisses it — switching
+        // sessions underneath an open menu would leave it orphaned.
+        if (open) setOpen(false);
+        else onOpen();
+      }}
       onKeyDown={(e) => {
+        // Only keys aimed at the row itself: the kebab and menu items are
+        // descendants, and preventDefault here would cancel their activation.
+        if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onOpen();
@@ -807,6 +832,9 @@ export function ChatPanel({
             return next;
           });
           break;
+        case "sessionDeleted":
+          forgetSession(ev.sessionId);
+          break;
         case "message":
           dispatch({ type: "upsertMessage", sessionId: ev.sessionId, message: ev.message });
           break;
@@ -876,6 +904,9 @@ export function ChatPanel({
         loadedSessions.current.add(session.id);
         setSessions((cur) => [session, ...cur]);
         setActiveId(session.id);
+        // A new session is never archived — leave the Archived-only view so
+        // the rail can actually show the thread being started.
+        if (sessionFilter === "archived") setSessionFilter("active");
         sid = session.id;
       }
       dispatch({
@@ -911,22 +942,38 @@ export function ChatPanel({
     if (activeId) void interruptChat(activeId);
   }
 
+  /** Drop every trace of a session — the local row, the open-thread selection,
+   * and the cached transcript. Used on delete (ours or another dashboard's). */
+  function forgetSession(sessionId: string) {
+    setSessions((cur) => cur.filter((s) => s.id !== sessionId));
+    setActiveId((cur) => (cur === sessionId ? null : cur));
+    loadedSessions.current.delete(sessionId);
+    dispatch({ type: "forget", sessionId });
+  }
+
   function setArchived(session: ChatSession, archived: boolean) {
-    // Optimistic; the server also broadcasts the row over chat.session.
+    // Optimistic; the server also broadcasts the row over chat.session. On
+    // failure restore the pre-request snapshot (not the request's negation,
+    // which could undo a concurrent authoritative update).
+    const prev = session.archived;
     setSessions((cur) => cur.map((s) => (s.id === session.id ? { ...s, archived } : s)));
     void setChatSessionArchived(session.id, archived).catch(() => {
       setSessions((cur) =>
-        cur.map((s) => (s.id === session.id ? { ...s, archived: !archived } : s)),
+        cur.map((s) => (s.id === session.id ? { ...s, archived: prev } : s)),
       );
     });
   }
 
   async function removeSession(session: ChatSession) {
     const title = session.title?.trim() || "Untitled";
-    if (!window.confirm(`Delete “${title}”? The transcript is gone for good.`)) return;
-    if (!(await deleteChatSession(session.id).catch(() => false))) return;
-    setSessions((cur) => cur.filter((s) => s.id !== session.id));
-    if (activeId === session.id) setActiveId(null);
+    if (!window.confirm(`Delete "${title}"?\n\nIts transcript is permanently removed.`)) return;
+    try {
+      if (!(await deleteChatSession(session.id))) throw new Error("delete failed");
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    forgetSession(session.id);
   }
 
   function respond(answer: PromptAnswer) {
@@ -977,9 +1024,7 @@ export function ChatPanel({
       </nav>
       <div className="rail-body">
         <div className="rail-section-head">
-          <div className="rail-section-label">
-            {sessionFilter === "active" ? "Recents" : SESSION_FILTERS.find((f) => f.id === sessionFilter)!.label}
-          </div>
+          <div className="rail-section-label">{RAIL_LABELS[sessionFilter]}</div>
           <SessionFilterMenu value={sessionFilter} onChange={setSessionFilter} />
         </div>
         {visibleSessions.map((s) => (
@@ -998,7 +1043,11 @@ export function ChatPanel({
         ))}
         {visibleSessions.length === 0 && (
           <div className="rail-empty">
-            {sessionFilter === "archived" ? "No archived sessions" : "No sessions yet"}
+            {sessionFilter === "archived"
+              ? "No archived sessions"
+              : sessions.length > 0
+                ? "No active sessions"
+                : "No sessions yet"}
           </div>
         )}
       </div>

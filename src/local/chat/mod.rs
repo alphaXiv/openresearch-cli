@@ -422,6 +422,12 @@ impl ChatHost {
                 session.reasoning_level = Some(level);
             }
         }
+        // Activity unarchives (Claude-desktop behavior): a session being talked
+        // to shouldn't stay hidden from the default Recents view.
+        if session.archived {
+            store.set_chat_session_archived(&session.id, false)?;
+            session.archived = false;
+        }
         let saved_images = save_images(&images)?;
         if session.title.is_none() {
             let title: String = text.lines().next().unwrap_or("").chars().take(64).collect();
@@ -688,11 +694,13 @@ impl ChatHost {
         archived: bool,
     ) -> Result<Option<StoredChatSession>> {
         let store = Store::open()?;
-        let Some(mut session) = store.get_chat_session(session_id)? else {
+        store.set_chat_session_archived(session_id, archived)?;
+        // Re-read after the write (finish_turn's pattern): the broadcast must
+        // not clobber a concurrent title/updated_at change with a stale
+        // snapshot, and a session deleted mid-flight must not be resurrected.
+        let Some(session) = store.get_chat_session(session_id)? else {
             return Ok(None);
         };
-        store.set_chat_session_archived(session_id, archived)?;
-        session.archived = archived;
         let busy = self.is_busy(session_id).await;
         self.emit(
             "chat.session",
@@ -713,6 +721,11 @@ impl ChatHost {
         // Read before the row disappears: worktree cleanup needs the repo.
         let session = store.get_chat_session(session_id)?;
         store.delete_chat_session(session_id)?;
+        // Broadcast after the row is gone. The interrupt above may have emitted
+        // a final chat.session upsert; this event orders after it, so every
+        // dashboard (including the deleting one) converges on removal instead
+        // of resurrecting a ghost row.
+        self.emit("chat.session.deleted", json!({ "sessionId": session_id }));
         if let Some(session) = session {
             if let Ok(Some(project)) = store.get_local_project(&session.project_id) {
                 cleanup_session_worktree(&project, session_id);

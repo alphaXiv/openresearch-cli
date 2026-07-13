@@ -526,10 +526,7 @@ textarea::placeholder {
   height: 24px;
   border-radius: 6px;
 }
-/* A non-default filter keeps the button visibly lit. */
-.rail-filter-btn.active {
-  color: var(--text);
-}
+/* A non-default filter keeps the button lit via the shared .icon-btn.active. */
 .rail-empty {
   padding: 6px 10px;
   font-size: 12px;
@@ -840,13 +837,16 @@ textarea::placeholder {
   color: var(--text);
   background: var(--panel);
 }
+/* :focus-within (not :focus-visible): it holds while the kebab itself is
+   focused — a row-only match would display:none the button mid-Tab and dump
+   focus to <body>, making the menu keyboard-unreachable. */
 .session-row:hover .session-menu-btn,
-.session-row:focus-visible .session-menu-btn,
+.session-row:focus-within .session-menu-btn,
 .session-row.menu-open .session-menu-btn {
   display: inline-flex;
 }
 .session-row:hover .session-time,
-.session-row:focus-visible .session-time,
+.session-row:focus-within .session-time,
 .session-row.menu-open .session-time {
   display: none;
 }
@@ -3083,7 +3083,10 @@ textarea::placeholder {
   bottom: auto;
   top: calc(100% + 4px);
 }
-/* Session kebab menu: anchored to the row, hugging its right edge. */
+/* Session kebab menu: anchored to the row, hugging its right edge. Absolute
+   inside the scrolling rail, so near the list's bottom it extends the scroll
+   area instead of overlaying — acceptable while lists stay short; a portal or
+   upward flip is the fix if that changes. */
 .option-menu.session-menu {
   left: auto;
   right: 6px;
@@ -3092,7 +3095,7 @@ textarea::placeholder {
 }
 .model-item.danger,
 .model-item.danger:hover {
-  color: var(--danger, #d33);
+  color: var(--accent-red);
 }
 /* "· Default" note on the pinned default row. */
 .option-default {
