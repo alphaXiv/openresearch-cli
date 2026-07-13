@@ -121,9 +121,9 @@ impl Harness for Codex {
         // launches that are the point. (Codex has a real first-class Plan mode,
         // but only over `app-server`/the TUI — `codex exec` doesn't honor it;
         // verified `-c collaboration_mode="plan"` is accepted but ignored.)
-        //   * Auto  — workspace-write, plus network and the hub clone's
-        //     `.git` (see `run_turn`), since exec can't approve its way past
-        //     either denial the way the TUI can.
+        //   * Auto  — workspace-write, plus network, the orx data dir, and
+        //     the hub clone's `.git` (see `run_turn`), since exec can't
+        //     approve its way past any of those denials the way the TUI can.
         //   * Bypass— full access (`--dangerously-bypass-approvals-and-sandbox`).
         HarnessOptions::none()
             .with_permission_modes(
@@ -200,6 +200,38 @@ fn absolute_git_dir(workspace: &Path, dir: &Path) -> Option<PathBuf> {
     workspace.join(dir).canonicalize().ok()
 }
 
+/// The orx data dir as a sandbox writable root. The `orx` CLI the agent
+/// drives opens the SQLite store read-write (plus journal/WAL sidecars)
+/// directly at `store::data_dir()`, which sits under `~/.local/share` —
+/// outside every workspace — so `workspace-write` denies the open and every
+/// store-touching command dies with "unable to open database file". Created
+/// here (host side, unsandboxed) so canonicalize can't fail before first use;
+/// canonicalized for the same reason as `shared_git_dir`. Note the grant is
+/// the whole data dir — every project's store rows plus `run-logs/` and the
+/// `agent-*.log` files — not scoped to the session; that's inherent to the
+/// CLI opening the shared DB directly, and still strictly narrower than
+/// Bypass.
+fn ensure_orx_data_dir() -> Option<PathBuf> {
+    let dir = crate::store::data_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+    dir.canonicalize().ok()
+}
+
+/// The `-c` value granting `roots` as sandbox writable roots, e.g.
+/// `sandbox_workspace_write.writable_roots=["/a", "/b"]`. `None` when there
+/// are no roots (omit the flag: `-c ...=[]` would still *replace* the user's
+/// configured roots with nothing).
+fn writable_roots_override(roots: &[PathBuf]) -> Option<String> {
+    if roots.is_empty() {
+        return None;
+    }
+    let list: Vec<String> = roots.iter().map(|p| toml_string(p)).collect();
+    Some(format!(
+        "sandbox_workspace_write.writable_roots=[{}]",
+        list.join(", ")
+    ))
+}
+
 /// A path as a TOML basic-string literal, for `-c key="value"` overrides.
 /// serde_json's escaping emits only sequences TOML also accepts (`\"`, `\\`,
 /// control chars as `\uXXXX`) and leaves `/` literal — except DEL (0x7F),
@@ -267,7 +299,10 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     // subcommand rejects `-s` ("unexpected argument"), but accepts `-c` on both
     // the fresh and resume paths (verified against codex-cli 0.143), so one form
     // works for the whole session lifecycle.
-    match codex_sandbox(ctx.permission_mode) {
+    //
+    // Yields the data dir granted as a writable root (if any), so the child's
+    // store can be pinned to it below, after `prepare_env`.
+    let data_dir_pin = match codex_sandbox(ctx.permission_mode) {
         Some(policy) => {
             cmd.args([
                 "-c",
@@ -276,37 +311,45 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                 "approval_policy=\"never\"",
             ]);
             // workspace-write out of the box is too tight for the orx
-            // workflow in two ways (both verified via `codex sandbox` against
-            // codex-cli 0.144; in the TUI both denials escalate to approval
+            // workflow in three ways (all verified via `codex sandbox` against
+            // codex-cli 0.144; in the TUI these denials escalate to approval
             // prompts, which `codex exec` doesn't have):
             //   * Network is blocked by default — DNS doesn't even resolve, so
             //     `git fetch`/`push`, package installs, and the `orx` CLI's
             //     localhost API calls all die. The agent's job is launching
             //     experiments over that API; Auto must keep the network open.
+            //   * The orx store isn't writable — the SQLite DB lives in the
+            //     data dir under `~/.local/share`, outside the workspace, so
+            //     every `orx` command that touches it fails with "unable to
+            //     open database file"; grant the data dir (see
+            //     `ensure_orx_data_dir`).
             //   * Git metadata isn't writable — codex protects `.git` inside
             //     the workspace, and a worktree's real metadata (the hub
             //     clone's `.git`) sits outside it — so `git fetch`/`commit`
             //     fail outright; grant the common dir (see `shared_git_dir`).
-            //     Note `-c` *replaces* any `writable_roots` from the user's
-            //     config.toml for the turn (there is no append form; `exec
-            //     --add-dir` is unverified on the resume path).
+            // Note `-c` *replaces* any `writable_roots` from the user's
+            // config.toml for the turn (there is no append form; `exec
+            // --add-dir` is unverified on the resume path).
             if policy == "workspace-write" {
                 cmd.args(["-c", "sandbox_workspace_write.network_access=true"]);
-                if let Some(git_dir) = shared_git_dir(&repo).await {
-                    cmd.args([
-                        "-c",
-                        &format!(
-                            "sandbox_workspace_write.writable_roots=[{}]",
-                            toml_string(&git_dir)
-                        ),
-                    ]);
+                let data_dir = ensure_orx_data_dir();
+                let roots: Vec<PathBuf> = [data_dir.clone(), shared_git_dir(&repo).await]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                if let Some(override_arg) = writable_roots_override(&roots) {
+                    cmd.args(["-c", &override_arg]);
                 }
+                data_dir
+            } else {
+                None
             }
         }
         None => {
             cmd.arg("--dangerously-bypass-approvals-and-sandbox");
+            None
         }
-    }
+    };
     // Reasoning level → Codex's own `model_reasoning_effort` config override.
     if let Some(effort) = codex_reasoning(ctx.reasoning_level.as_deref()) {
         cmd.args(["-c", &format!("model_reasoning_effort=\"{effort}\"")]);
@@ -325,6 +368,18 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     };
     cmd.arg(prompt);
     prepare_env(&mut cmd);
+    // Pin the sandboxed turn's store to the exact path granted above. The
+    // grant was resolved from the host's env, but the child could resolve a
+    // different data dir — `prepare_env` injects dashboard-synced vars (a
+    // synced `ORX_DATA_DIR`/`XDG_DATA_HOME` absent from the host env), and a
+    // relative `ORX_DATA_DIR` resolves against the child's cwd, not ours.
+    // Must come after `prepare_env`: later `cmd.env` calls win, and the
+    // synced-env injection guards on the *process* env, not the cmd's map.
+    // (Unsandboxed Bypass has no grant to stay coherent with, so no pin — a
+    // synced `ORX_DATA_DIR` still wins there.)
+    if let Some(dir) = &data_dir_pin {
+        cmd.env("ORX_DATA_DIR", dir);
+    }
     // The sandbox blocks the keyring `gh` keeps its token in ("stored token is
     // invalid" from inside the workspace), so resolve it out here and pass it
     // down; both `gh` and its git credential helper prefer these env vars.
@@ -570,6 +625,17 @@ mod tests {
         assert_eq!(toml_string(Path::new(r#"/a/"q""#)), r#""/a/\"q\"""#);
         // DEL is the one char serde_json leaves raw that TOML rejects.
         assert_eq!(toml_string(Path::new("/a/\u{7f}b")), r#""/a/\u007Fb""#);
+    }
+
+    #[test]
+    fn writable_roots_override_joins_and_omits_empty() {
+        assert_eq!(
+            writable_roots_override(&[PathBuf::from("/data dir"), PathBuf::from("/hub/.git")]),
+            Some(r#"sandbox_workspace_write.writable_roots=["/data dir", "/hub/.git"]"#.into())
+        );
+        // No roots → no flag at all; `=[]` would clobber the user's own
+        // config.toml roots for the turn.
+        assert_eq!(writable_roots_override(&[]), None);
     }
 
     #[test]
