@@ -1,14 +1,27 @@
-import { ChevronRight, CornerDownLeft, FlaskConical, FolderOpen, PanelLeft, Plus, X } from "lucide-react";
+import {
+  Check,
+  ChevronRight,
+  CornerDownLeft,
+  FlaskConical,
+  FolderOpen,
+  MoreHorizontal,
+  PanelLeft,
+  Plus,
+  SlidersHorizontal,
+  X,
+} from "lucide-react";
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import {
   chatAttachmentUrl,
   createChatSession,
+  deleteChatSession,
   getChatMessages,
   getSkills,
   interruptChat,
   listChatSessions,
   respondChat,
   sendChatMessage,
+  setChatSessionArchived,
   type ChatImageAttachment,
   type ChatMessage,
   type ChatPart,
@@ -27,6 +40,7 @@ import {
   HARNESS_LABELS,
   ModelPicker,
   OptionPicker,
+  usePopover,
   type ModelSelection,
 } from "./ModelPicker";
 
@@ -54,7 +68,8 @@ type Action =
   | { type: "upsertMessage"; sessionId: string; message: ChatMessage }
   | { type: "optimisticUser"; sessionId: string; text: string; imageUrls: string[] }
   | { type: "busy"; sessionId: string; busy: boolean }
-  | { type: "seedBusy"; sessions: string[] };
+  | { type: "seedBusy"; sessions: string[] }
+  | { type: "forget"; sessionId: string };
 
 const LOCAL_PREFIX = "local-";
 
@@ -118,6 +133,15 @@ function reducer(state: ChatState, action: Action): ChatState {
     }
     case "seedBusy":
       return { ...state, busySessions: new Set(action.sessions) };
+    case "forget": {
+      // Deleted session: drop its transcript and busy flag so a same-id event
+      // arriving late can't render stale state.
+      const messagesBySession = { ...state.messagesBySession };
+      delete messagesBySession[action.sessionId];
+      const busySessions = new Set(state.busySessions);
+      busySessions.delete(action.sessionId);
+      return { messagesBySession, busySessions };
+    }
   }
 }
 
@@ -475,6 +499,145 @@ function Message({
   return <div className="msg-assistant">{rendered}</div>;
 }
 
+// --- session rail ------------------------------------------------------------
+
+type SessionFilter = "active" | "archived" | "all";
+
+/** Menu label + rail section heading per filter — "Recents" for the default view. */
+const SESSION_FILTERS: { id: SessionFilter; label: string; railLabel: string }[] = [
+  { id: "active", label: "Active", railLabel: "Recents" },
+  { id: "archived", label: "Archived", railLabel: "Archived" },
+  { id: "all", label: "All", railLabel: "All sessions" },
+];
+
+/** Filter control beside the "Recents" label: Active (default) / Archived / All. */
+function SessionFilterMenu({
+  value,
+  onChange,
+}: {
+  value: SessionFilter;
+  onChange: (next: SessionFilter) => void;
+}) {
+  const { open, setOpen, ref } = usePopover();
+  return (
+    <div className="rail-filter" ref={ref}>
+      <button
+        className={`icon-btn rail-filter-btn ${value !== "active" ? "active" : ""}`}
+        title="Filter sessions"
+        aria-label="Filter sessions"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <SlidersHorizontal size={13} />
+      </button>
+      {open && (
+        <div className="option-menu drop-down align-right">
+          {SESSION_FILTERS.map((f) => (
+            <button
+              key={f.id}
+              className="model-item"
+              onClick={() => {
+                onChange(f.id);
+                setOpen(false);
+              }}
+            >
+              <span>{f.label}</span>
+              {value === f.id && <Check size={13} />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One Recents row. Hover swaps the timestamp for a three-dot menu with
+ * Archive/Unarchive and Delete (Claude-desktop style). */
+function SessionRow({
+  session,
+  active,
+  busy,
+  onOpen,
+  onSetArchived,
+  onDelete,
+}: {
+  session: ChatSession;
+  active: boolean;
+  busy: boolean;
+  onOpen: () => void;
+  onSetArchived: (archived: boolean) => void;
+  onDelete: () => void;
+}) {
+  const { open, setOpen, ref } = usePopover();
+  const title = session.title?.trim() || "Untitled";
+  // Not a <button>: the kebab is a real button and can't nest inside one.
+  return (
+    <div
+      ref={ref}
+      role="button"
+      tabIndex={0}
+      className={`session-row ${active ? "active" : ""} ${open ? "menu-open" : ""}`}
+      title={`${HARNESS_LABELS[session.harness]}${session.model ? ` · ${session.model}` : ""}`}
+      onClick={() => {
+        // With the menu open, a body click just dismisses it — switching
+        // sessions underneath an open menu would leave it orphaned.
+        if (open) setOpen(false);
+        else onOpen();
+      }}
+      onKeyDown={(e) => {
+        // Only keys aimed at the row itself: the kebab and menu items are
+        // descendants, and preventDefault here would cancel their activation.
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          // Mirror the click branch: dismiss an open menu instead of
+          // navigating underneath it.
+          if (open) setOpen(false);
+          else onOpen();
+        }
+      }}
+    >
+      <span className="session-dot">{busy && <span className="busy-dot" />}</span>
+      <span className="session-title">{title}</span>
+      <span className="session-time">{relTime(session.updatedAt)}</span>
+      <button
+        className="session-menu-btn"
+        title="Session options"
+        aria-label="Session options"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        <MoreHorizontal size={14} />
+      </button>
+      {open && (
+        <div className="option-menu drop-down session-menu">
+          <button
+            className="model-item"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+              onSetArchived(!session.archived);
+            }}
+          >
+            <span>{session.archived ? "Unarchive" : "Archive"}</span>
+          </button>
+          <button
+            className="model-item danger"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+              onDelete();
+            }}
+          >
+            <span>Delete</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // --- panel -------------------------------------------------------------------
 
 export function ChatPanel({
@@ -514,6 +677,7 @@ export function ChatPanel({
 }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [sessionFilter, setSessionFilter] = useState<SessionFilter>("active");
   const [draft, setDraft] = useState("");
   // Pasted/dropped images waiting in the composer, as data URLs.
   const [attachments, setAttachments] = useState<{ dataUrl: string; mediaType: string }[]>([]);
@@ -530,6 +694,10 @@ export function ChatPanel({
   // global preference that seeds *new* sessions.
   const [sessionOverride, setSessionOverride] = useState<Partial<ModelSelection>>({});
   const loadedSessions = useRef(new Set<string>());
+  // Tombstones: a turn finishing in the same instant as a delete can emit its
+  // final chat.session upsert *after* chat.session.deleted; ignoring upserts
+  // for known-deleted ids keeps the ghost row from coming back.
+  const deletedIds = useRef(new Set<string>());
   const threadRef = useRef<HTMLDivElement>(null);
   const threadInnerRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -634,7 +802,8 @@ export function ChatPanel({
     listChatSessions(projectId)
       .then((list) => {
         setSessions(list);
-        setActiveId((cur) => cur ?? list[0]?.id ?? null);
+        // Prefer the newest non-archived session; archived ones stay hidden.
+        setActiveId((cur) => cur ?? list.find((s) => !s.archived)?.id ?? null);
         dispatch({
           type: "seedBusy",
           sessions: list.filter((s) => s.busy).map((s) => s.id),
@@ -658,6 +827,7 @@ export function ChatPanel({
       switch (ev.type) {
         case "session":
           if (ev.session.projectId !== projectId) return;
+          if (deletedIds.current.has(ev.session.id)) return;
           setSessions((cur) => {
             const i = cur.findIndex((s) => s.id === ev.session.id);
             if (i < 0) return [ev.session, ...cur];
@@ -665,6 +835,9 @@ export function ChatPanel({
             next[i] = ev.session;
             return next;
           });
+          break;
+        case "sessionDeleted":
+          forgetSession(ev.sessionId);
           break;
         case "message":
           dispatch({ type: "upsertMessage", sessionId: ev.sessionId, message: ev.message });
@@ -745,6 +918,10 @@ export function ChatPanel({
       });
       dispatch({ type: "busy", sessionId: sid, busy: true });
       stickToBottom.current = true;
+      // The session being sent to is never archived after this turn (new ones
+      // start active; existing ones are unarchived server-side by activity) —
+      // leave the Archived-only view so its row stays visible.
+      if (sessionFilter === "archived") setSessionFilter("active");
       // `effective.harness` is always the target session's harness (locked once
       // it exists), so these overrides are always valid — the backend persists
       // them as the session's sticky settings. Clear the unsent tweak now.
@@ -770,6 +947,43 @@ export function ChatPanel({
     if (activeId) void interruptChat(activeId);
   }
 
+  /** Drop every trace of a session — the local row, the open-thread selection,
+   * and the cached transcript. Used on delete (ours or another dashboard's). */
+  function forgetSession(sessionId: string) {
+    deletedIds.current.add(sessionId);
+    setSessions((cur) => cur.filter((s) => s.id !== sessionId));
+    setActiveId((cur) => (cur === sessionId ? null : cur));
+    loadedSessions.current.delete(sessionId);
+    dispatch({ type: "forget", sessionId });
+  }
+
+  function setArchived(session: ChatSession, archived: boolean) {
+    // Optimistic; the server also broadcasts the row over chat.session. On
+    // failure restore the pre-request snapshot (not the request's negation,
+    // which could undo a concurrent authoritative update).
+    const prev = session.archived;
+    setSessions((cur) => cur.map((s) => (s.id === session.id ? { ...s, archived } : s)));
+    void setChatSessionArchived(session.id, archived).catch(() => {
+      setSessions((cur) =>
+        cur.map((s) => (s.id === session.id ? { ...s, archived: prev } : s)),
+      );
+    });
+  }
+
+  async function removeSession(session: ChatSession) {
+    const title = session.title?.trim() || "Untitled";
+    if (!window.confirm(`Delete "${title}"?\n\nIts transcript is permanently removed.`)) return;
+    try {
+      await deleteChatSession(session.id);
+    } catch (err) {
+      window.alert(
+        `Failed to delete "${title}": ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+    forgetSession(session.id);
+  }
+
   function respond(answer: PromptAnswer) {
     if (!activeId) return;
     // The resumed turn streams over SSE; optimistically mark busy.
@@ -778,6 +992,10 @@ export function ChatPanel({
       if (activeId) dispatch({ type: "busy", sessionId: activeId, busy: false });
     });
   }
+
+  const visibleSessions = sessions.filter((s) =>
+    sessionFilter === "all" ? true : sessionFilter === "archived" ? s.archived : !s.archived,
+  );
 
   const rail = (
     <aside className="session-rail floating-panel">
@@ -813,24 +1031,35 @@ export function ChatPanel({
         ))}
       </nav>
       <div className="rail-body">
-        <div className="rail-section-label">Recents</div>
-        {sessions.map((s) => (
-          <button
+        <div className="rail-section-head">
+          <div className="rail-section-label">
+            {SESSION_FILTERS.find((f) => f.id === sessionFilter)?.railLabel ?? "Recents"}
+          </div>
+          <SessionFilterMenu value={sessionFilter} onChange={setSessionFilter} />
+        </div>
+        {visibleSessions.map((s) => (
+          <SessionRow
             key={s.id}
-            className={`session-row ${s.id === activeId && mainView === "chat" ? "active" : ""}`}
-            title={`${HARNESS_LABELS[s.harness]}${s.model ? ` · ${s.model}` : ""}`}
-            onClick={() => {
+            session={s}
+            active={s.id === activeId && mainView === "chat"}
+            busy={state.busySessions.has(s.id)}
+            onOpen={() => {
               setActiveId(s.id);
               onSelectMainView("chat");
             }}
-          >
-            <span className="session-dot">
-              {state.busySessions.has(s.id) && <span className="busy-dot" />}
-            </span>
-            <span className="session-title">{s.title?.trim() || "Untitled"}</span>
-            <span className="session-time">{relTime(s.updatedAt)}</span>
-          </button>
+            onSetArchived={(archived) => setArchived(s, archived)}
+            onDelete={() => void removeSession(s)}
+          />
         ))}
+        {visibleSessions.length === 0 && (
+          <div className="rail-empty">
+            {sessionFilter === "archived"
+              ? "No archived sessions"
+              : sessions.length > 0
+                ? "No active sessions"
+                : "No sessions yet"}
+          </div>
+        )}
       </div>
     </aside>
   );

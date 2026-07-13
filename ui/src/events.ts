@@ -34,6 +34,7 @@ function emitRunLog(ev: RunLogEvent) {
 // Chat events fan out the same way so ChatPanel shares the one EventSource.
 export type ChatEvent =
   | { type: "session"; session: ChatSession }
+  | { type: "sessionDeleted"; sessionId: string }
   | { type: "message"; sessionId: string; message: ChatMessage }
   | { type: "busy"; sessionId: string; busy: boolean };
 
@@ -95,6 +96,10 @@ export function useOrxEvents(handlers: OrxEventHandlers) {
     es.addEventListener("chat.session", (e) => {
       const d = parse<{ session: ChatSession }>(e as MessageEvent);
       if (d?.session) emitChat({ type: "session", session: d.session });
+    });
+    es.addEventListener("chat.session.deleted", (e) => {
+      const d = parse<{ sessionId: string }>(e as MessageEvent);
+      if (d?.sessionId) emitChat({ type: "sessionDeleted", sessionId: d.sessionId });
     });
     es.addEventListener("chat.message", (e) => {
       const d = parse<{ sessionId: string; message: ChatMessage }>(e as MessageEvent);
