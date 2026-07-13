@@ -232,11 +232,18 @@ export interface ProjectFile {
   content: string;
   truncated: boolean;
   notFound: boolean;
+  /** Which checkout answered — the session's worktree, or the hub clone
+   * (also the fallback when the session's worktree has been pruned). */
+  root: "worktree" | "clone";
 }
 
-/** One file from the project clone, capped server-side (~512 KB). */
-export const getProjectFile = (projectId: string, path: string) =>
-  get<ProjectFile>(`/api/projects/${projectId}/file?path=${encodeURIComponent(path)}`);
+/** One file from the project checkout (a chat session's worktree when
+ * `sessionId` is given, else the hub clone), capped server-side (~512 KB). */
+export const getProjectFile = (projectId: string, path: string, sessionId?: string) =>
+  get<ProjectFile>(
+    `/api/projects/${projectId}/file?path=${encodeURIComponent(path)}` +
+      (sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""),
+  );
 
 export type HfTokenSource = "env" | "openresearchEnv" | "hfCache";
 

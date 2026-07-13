@@ -1,5 +1,7 @@
-// Mirror of openresearch.sh's AgentFileView: one file from the project clone,
-// refractor-highlighted, opened as a right-pane tab from chat tool rows.
+// Mirror of openresearch.sh's AgentFileView: one file from the project
+// checkout — the chat session's worktree when the tab carries a session, else
+// the hub clone — refractor-highlighted, opened as a right-pane tab from chat
+// tool rows.
 
 import { Code, FileText, RotateCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -15,12 +17,15 @@ function highlightFile(content: string, path: string) {
 export function FileViewer({
   projectId,
   path,
+  sessionId,
   onOpenFile,
 }: {
   projectId: string;
   path: string;
+  /** Chat session whose worktree holds the file (absent → hub clone). */
+  sessionId?: string;
   /** Open a linked file as another tab (rendered-markdown links). */
-  onOpenFile?: (path: string) => void;
+  onOpenFile?: (path: string, sessionId?: string) => void;
 }) {
   const [data, setData] = useState<ProjectFile | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -33,7 +38,7 @@ export function FileViewer({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    getProjectFile(projectId, path)
+    getProjectFile(projectId, path, sessionId)
       .then((d) => {
         if (cancelled) return;
         setData(d);
@@ -48,7 +53,7 @@ export function FileViewer({
     return () => {
       cancelled = true;
     };
-  }, [projectId, path, nonce]);
+  }, [projectId, path, sessionId, nonce]);
 
   const rendered = useMemo(
     () => (data && !data.notFound ? highlightFile(data.content, path) : null),
@@ -87,12 +92,24 @@ export function FileViewer({
         ) : data === null ? (
           <div className="file-view-note">Loading…</div>
         ) : data.notFound ? (
-          <div className="file-view-note">File not found in the project clone.</div>
+          <div className="file-view-note">
+            {sessionId && data.root === "clone"
+              ? "This session's worktree isn't available, and the file isn't in the project clone."
+              : `File not found in the ${data.root === "worktree" ? "session's worktree" : "project clone"}.`}
+          </div>
         ) : (
           <>
+            {sessionId && data.root === "clone" && (
+              <div className="file-view-note">
+                This session's worktree isn't available — showing the project clone's copy.
+              </div>
+            )}
             {isMarkdown && !showSource ? (
               <div className="file-view-md">
-                <Md text={data.content} onOpenFile={onOpenFile} />
+                <Md
+                  text={data.content}
+                  onOpenFile={onOpenFile && ((p) => onOpenFile(p, sessionId))}
+                />
               </div>
             ) : (
               <pre className="file-view-code">

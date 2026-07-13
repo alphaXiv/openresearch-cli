@@ -505,8 +505,10 @@ export function ChatPanel({
   /** Whether the right panel is showing (toggled from the chat header). */
   panelOpen: boolean;
   onTogglePanel: () => void;
-  /** Open a project file in the right pane (chat tool rows are clickable). */
-  onOpenFile?: (path: string) => void;
+  /** Open a project file in the right pane (chat tool rows are clickable).
+   * `sessionId` is the chat session the click came from, so relative paths
+   * can resolve against that session's worktree. */
+  onOpenFile?: (path: string, sessionId?: string) => void;
   /** Middle-pane content when a settings section is active (the SettingsView). */
   children?: React.ReactNode;
 }) {
@@ -926,8 +928,15 @@ export function ChatPanel({
           }}
         >
           <div className="chat-thread-inner" ref={threadInnerRef}>
+            {/* Stamp the session onto file opens: the agent runs in this
+                session's worktree, so that's where its paths point. */}
             {messages.map((m) => (
-              <Message key={m.id} message={m} onOpenFile={onOpenFile} onRespond={respond} />
+              <Message
+                key={m.id}
+                message={m}
+                onOpenFile={onOpenFile && ((p) => onOpenFile(p, activeId ?? undefined))}
+                onRespond={respond}
+              />
             ))}
             {busy && (
               <div className="working">
