@@ -526,10 +526,11 @@ pub struct ExpRunArgs {
     /// External executor instead of managed compute: `hf` (Hugging Face Jobs,
     /// billed to your HF account), `modal` (a Modal Sandbox on your own Modal
     /// account, billed per second), `k8s` (a Job on your own Kubernetes
-    /// cluster), `ssh` (a detached process on one of your own boxes), or
-    /// `slurm` (a batch job on your Slurm cluster, submitted via its login
-    /// node). k8s, ssh, and slurm are local experiments only. orx submits the
-    /// job and a detached supervisor mirrors status/logs back.
+    /// cluster), `ssh` (a detached process on one of your own boxes), `slurm`
+    /// (a batch job on your Slurm cluster, submitted via its login node), or
+    /// `local` (a detached process on this machine). k8s, ssh, slurm, and
+    /// local are local experiments only. orx submits the job and a detached
+    /// supervisor mirrors status/logs back.
     #[arg(long)]
     pub backend: Option<String>,
     /// Hardware flavor. With `--backend hf`: t4-small, a10g-small, a100-large,

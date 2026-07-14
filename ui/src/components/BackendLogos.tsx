@@ -3,9 +3,10 @@
 // only portable option). Modal/HF/K8s use their official logos in brand colors
 // (self-colored, so they read in both light and dark mode); ssh is a protocol
 // with no brand mark and gets a neutral lucide glyph in `currentColor`, and
-// slurm (whose official mark is a complex raster) gets the same treatment.
+// slurm (whose official mark is a complex raster) and local (this machine)
+// get the same treatment.
 
-import { Boxes, Server } from "lucide-react";
+import { Boxes, Laptop, Server } from "lucide-react";
 import { backendDetail, backendKind, type Run } from "../api";
 
 /** Human name for a backend kind, used as the logo's alt/label. */
@@ -21,6 +22,8 @@ function backendName(kind: string): string {
       return "SSH";
     case "slurm_job":
       return "Slurm";
+    case "local_job":
+      return "This machine";
     default:
       return kind || "—";
   }
@@ -111,6 +114,8 @@ function BackendLogo({ kind, size = 16 }: { kind: string; size?: number }) {
       return <Server size={size} />;
     case "slurm_job":
       return <Boxes size={size} />;
+    case "local_job":
+      return <Laptop size={size} />;
     default:
       return <Server size={size} />;
   }

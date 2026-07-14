@@ -653,6 +653,33 @@ Rules and notes:
   process group. Everything downstream (`orx exp wait` / `runs` / `logs`) is
   identical; a detached `orx supervise` polls it over ssh — don't kill it.
 
+### Running on this machine — `--backend local`
+
+**Same rule: use `--backend local` ONLY when the user explicitly asks to run
+locally** ("run it on this machine", "just run it here"). Local projects
+(`orx up`) only. It runs the experiment as a detached background process on
+the machine running orx — no scheduler, no container, this machine's own
+environment.
+
+```sh
+orx exp run <expId> --backend local
+```
+
+Rules and notes:
+- **Nothing to pick** — no `--flavor`, `--host`, `--image`, or `--timeout`
+  (the process runs until it exits or you cancel). The hardware is whatever
+  this machine has; prefer it for small or CPU-scale runs and use a remote
+  backend for anything heavy — it shares CPU/RAM/GPU with everything else on
+  the machine.
+- Same clone contract as every backend: the run clones the experiment
+  branch's GitHub tip into its own run dir (never your checkout) and runs the
+  fixed command — commit and push first. Never run training directly in your
+  shell instead: that would be unsupervised and invisible to the dashboard.
+- The run lives under `<orx data dir>/local-runs/<runId>/` (`run.sh`, `log`,
+  `pid`, `exit_code`). Cancel from the web or `orx exp cancel` TERMs the
+  process group. Everything downstream (`orx exp wait` / `runs` / `logs`) is
+  identical; a detached `orx supervise` watches it — don't kill it.
+
 ## Spinning up a standalone instance — `orx instance create`
 
 Provision a persistent instance in an **organization**, not tied to any
