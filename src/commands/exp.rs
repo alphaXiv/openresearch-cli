@@ -461,10 +461,15 @@ async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<
                 "--backend slurm is supported for local experiments (`orx up`) only for now."
             ));
         }
+        Some("local") => {
+            return Err(anyhow!(
+                "--backend local is supported for local experiments (`orx up`) only."
+            ));
+        }
         Some(other) => {
             return Err(anyhow!(
                 "Unknown --backend '{}'. Supported: hf (Hugging Face Jobs), \
-                 modal (Modal serverless GPUs), k8s/ssh/slurm (local experiments only).",
+                 modal (Modal serverless GPUs), k8s/ssh/slurm/local (local experiments only).",
                 other
             ));
         }
@@ -933,7 +938,8 @@ async fn local_desc(
     Ok(())
 }
 
-/// Local `exp run`: external backends only — HF Jobs, Modal, k8s, ssh, or slurm.
+/// Local `exp run`: external backends only — HF Jobs, Modal, k8s, ssh, slurm,
+/// or a detached process on this machine (`local`).
 async fn local_launch(args: ExpRunArgs) -> Result<()> {
     if args.manifest.is_some() && args.backend.as_deref() != Some("k8s") {
         return Err(anyhow!("--manifest only applies with --backend k8s."));
@@ -947,20 +953,22 @@ async fn local_launch(args: ExpRunArgs) -> Result<()> {
         Some("k8s") => crate::local::k8s::launch_local_k8s(&args).await,
         Some("ssh") => crate::local::ssh::launch_local_ssh(&args).await,
         Some("slurm") => crate::local::slurm::launch_local_slurm(&args).await,
+        Some("local") => crate::local::localrun::launch_local_run(&args).await,
         Some(other) => Err(anyhow!(
             "Unknown --backend '{}'. Local experiments support: hf (Hugging Face Jobs), \
              modal (Modal serverless GPUs), k8s (your Kubernetes cluster), ssh (your own box), \
-             slurm (your Slurm cluster).",
+             slurm (your Slurm cluster), local (this machine).",
             other
         )),
         None => Err(anyhow!(
-            "Local experiments run on external compute only. \
+            "Local experiments run on compute you pick per launch. \
              Pass `--backend hf --flavor <flavor>` (e.g. --flavor a10g-small), \
              `--backend modal --flavor <flavor>` (e.g. --flavor a10g), \
              `--backend k8s` (runs the manifest committed on the branch — \
              default .orx/k8s.yaml, or --manifest <path>), \
              `--backend ssh --host <alias>` (an ~/.ssh/config alias), \
-             or `--backend slurm [--host <alias>] [--flavor h100:2]` (your Slurm cluster)."
+             `--backend slurm [--host <alias>] [--flavor h100:2]` (your Slurm cluster), \
+             or `--backend local` (a detached process on this machine)."
         )),
     }
 }

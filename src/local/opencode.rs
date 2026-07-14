@@ -129,8 +129,9 @@ same clone, sharing its branches and remotes.
 - Project id: `{id}`
 - GitHub repo: `{repo}`
 - Baseline branch: `{baseline}`
-{paper_line}- Compute: external backends — `hf`, `modal`, `k8s`, or `ssh` — chosen by the
-  user per run; **there is no default backend** (see "Compute backends")
+{paper_line}- Compute: backends — `hf`, `modal`, `k8s`, `ssh`, `slurm`, or `local` —
+  chosen by the user per run; **there is no default backend** (see "Compute
+  backends")
 - Files dir: `{files}` — every file in it shows up in the dashboard's
   Files tab (reports, figures, CSVs), grouped by experiment
 
@@ -189,7 +190,7 @@ preferences.
 4. **Grow the tree downward, not sideways.** Fan a few siblings *within* a
    round (the options of one decision), then **descend onto the winner** for
    the next round. A root with a long flat row of children is the failure mode.
-5. **Launch all compute via `orx exp run` — never `hf jobs`, `modal`, `kubectl`, or raw `ssh` directly.** Direct jobs are unsupervised and invisible to the dashboard.
+5. **Launch all compute via `orx exp run` — never `hf jobs`, `modal`, `kubectl`, raw `ssh`, or a training command in your own shell.** Direct jobs are unsupervised and invisible to the dashboard.
 
 ## Command surface (local mode)
 
@@ -203,6 +204,8 @@ preferences.
 | `orx exp run <expId> --backend <hf\|modal> --flavor <flavor> [--timeout 4h] [--image <img>]` | Launch the node's run on managed-SKU compute (see "Compute backends"). |
 | `orx exp run <expId> --backend k8s [--manifest <path>] [--timeout 4h]` | Launch on the user's cluster from the manifest committed on the branch (default `.orx/k8s.yaml`). No flavors or --image — the manifest declares the resources. |
 | `orx exp run <expId> --backend ssh --host <alias>` | Launch as a detached process on the user's own box (an `~/.ssh/config` alias). |
+| `orx exp run <expId> --backend slurm [--host <alias>] [--flavor h100:2] [--timeout 4h]` | Launch as a batch job on the user's Slurm cluster (login node from `--host` or the slurm settings default; `--flavor` is a GRES GPU request, omit for CPU-only). |
+| `orx exp run <expId> --backend local` | Launch as a detached, supervised process on **this machine** (see "Where runs execute"). No flags — the hardware is whatever this machine has. |
 | `orx exp cancel <expId>` | Cancel the in-flight run. |
 | `orx exp wait <expId> [--timeout <s>]` / `orx exp wait --project {id}` | Poll until a run reaches a terminal state (project form returns on the first completion). Exits **non-zero** after `--timeout` seconds (default 1800) with nothing changed — that means "still running", not an error. |
 | `orx runs {id} [--experiment <expId>]` | Run table, newest first. Run ids come from here. |
@@ -228,7 +231,8 @@ Carry one goal across many runs:
    change the code, commit, and `git push`. The job clones from GitHub, so
    **unpushed work never runs**.
 3. **Launch**: `orx exp run <expId> --backend <backend>` (`--flavor` for
-   hf/modal, `--host` for ssh; k8s reads the committed manifest).
+   hf/modal, `--host` for ssh/slurm; k8s reads the committed manifest; local
+   takes no flags).
 4. **Wait — hold your turn open**: call `orx exp wait <expId> --timeout 480`
    (or `--project` when several are in flight) in a loop. Exit 0 → the run is
    terminal, go analyze. Non-zero → nothing changed yet; immediately call it
@@ -279,19 +283,27 @@ the file you edited, the entrypoint you're describing, the config you changed.
 
 ## Where runs execute
 
-**Never train or evaluate on this machine.** This machine is the edit box:
-git, reading and writing code, and `orx` orchestration happen here. The run
-itself — anything that trains, evaluates, or produces results — goes to
-external compute via `orx exp run`, always. A run that needs no GPU still
-goes out on a CPU flavor; lightweight editor-side checks (`git`, `orx`, a
-quick `python -c "import x"`) are all that stay local.
+**Never train or evaluate directly in your shell or worktree.** Your worktree
+is the edit box: git, reading and writing code, and `orx` orchestration happen
+here. The run itself — anything that trains, evaluates, or produces results —
+always goes through `orx exp run`: a raw `python train.py` in your shell is
+unsupervised, invisible to the dashboard, runs whatever happens to be in your
+checkout instead of the branch tip, and blocks your turn. Lightweight
+editor-side checks (`git`, `orx`, a quick `python -c "import x"`) are all that
+belong in your shell.
+
+Running **on this machine** is fine when the user picks it — that's
+`--backend local`, which still goes through the run contract (clones the
+branch tip into its own run dir, supervised, visible in the dashboard). It
+shares CPU/RAM/GPU with the dashboard and your editing, so prefer it for
+small or CPU-scale runs and use a remote backend for anything heavy.
 
 ## Compute backends
 
 `orx exp run` requires an explicit `--backend` — **there is no default**.
 Which backend to use is the user's decision: if the task doesn't name one and
 the user hasn't already picked one in this conversation, ask before launching.
-All four share the same contract — the job clones the experiment branch's
+All of them share the same contract — the job clones the experiment branch's
 GitHub tip and runs the fixed run command, and everything downstream
 (`orx exp wait` / `orx runs` / `orx logs` / `orx exp cancel`) works
 identically. A detached `orx supervise` mirrors status and logs; don't kill it.
@@ -302,14 +314,16 @@ identically. A detached `orx supervise` mirrors status and logs; don't kill it.
 | `modal` | Modal Sandboxes — billed per second to the user's Modal account (`MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` or `~/.modal.toml`) | `--flavor`: a Modal GPU (`t4`, `l4`, `a10g`, `a100`, `a100-80gb`, `l40s`, `h100`, `h200`; append `:N` for a count, e.g. `h100:2`) or `cpu` / `cpu-large` |
 | `k8s` | the user's own Kubernetes cluster — auth from their kubeconfig; context/namespace in Settings → Compute | a **manifest you commit on the experiment branch** (default `.orx/k8s.yaml`, or `--manifest <path>`) — see below |
 | `ssh` | a detached process on the user's own box — no scheduler, no container, the host's environment as-is | `--host`: an `~/.ssh/config` host alias |
+| `slurm` | a batch job on the user's Slurm cluster, submitted via `sbatch` on the login node over ssh | `--host`: the login node's `~/.ssh/config` alias (defaults from the slurm settings); `--flavor`: a GRES GPU request (`h100:2`; omit for CPU-only) |
+| `local` | a detached process on **this machine** — no scheduler, no container, this machine's environment as-is | nothing — no flags; the hardware is whatever this machine has |
 
-- `--timeout` (default `4h`) applies to `hf`/`modal`/`k8s`; set it to cover
-  the whole run — a job killed at the timeout reads as a failed run. Doesn't
-  apply to `ssh` (the process runs until it exits or is cancelled). On k8s a
-  manifest-set `activeDeadlineSeconds` wins over the flag.
+- `--timeout` (default `4h`) applies to `hf`/`modal`/`k8s`/`slurm`; set it to
+  cover the whole run — a job killed at the timeout reads as a failed run.
+  Doesn't apply to `ssh` or `local` (the process runs until it exits or is
+  cancelled). On k8s a manifest-set `activeDeadlineSeconds` wins over the flag.
 - `--image` overrides the container on `hf`/`modal` (default: CUDA pytorch on
-  GPU flavors, `python:3.12` on CPU). Doesn't apply to `ssh` or `k8s` (the
-  manifest sets the image).
+  GPU flavors, `python:3.12` on CPU). Doesn't apply to `ssh`/`slurm`/`local`
+  (the host's own environment) or `k8s` (the manifest sets the image).
 
 ### The k8s manifest contract
 
