@@ -1214,7 +1214,7 @@ export function ChatPanel({
               // Follow `composerSelection` so the name tracks the picker for a
               // new session and the open session once one exists.
               composerSelection
-                ? `Message ${HARNESS_LABELS[composerSelection.harness]}…`
+                ? `Message ${HARNESS_LABELS[composerSelection.harness]}… ( / for skills)`
                 : "Ask the research agent… ( / for skills)"
             }
             rows={2}
