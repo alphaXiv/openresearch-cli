@@ -149,7 +149,7 @@ Interactive GPU lab requirements:
 - Detect CUDA with `torch.cuda.is_available()` and report the selected device.
 - Design specifically for molab's attached RTX PRO 6000: the lab should materially benefit from GPU acceleration, not be a scalar/vector toy that runs just as well on CPU.
 - Prefer a genuine compact-model workload—such as batched inference, activation hooks, a layer × token intervention sweep, or probe training. A bounded one-time model download is acceptable when it is central to the lesson.
-- Target roughly 5–500 seconds on the RTX PRO 6000 after cached setup and remain comfortably below two minutes. Bound samples, steps, downloads, and memory; a CPU fallback may run a reduced, clearly labeled version.
+- Target roughly 5–500 seconds on the RTX PRO 6000 after cached setup and remain comfortably below ten minutes. Bound samples, steps, downloads, and memory; a CPU fallback may run a reduced, clearly labeled version.
 - Let the reader manipulate a conceptually meaningful variable and produce a visible change in a plot or metric.
 - Label synthetic and toy experiments explicitly; never present them as reproduction evidence.
 - Do not rerun the paper's full-scale experiment merely because molab has a strong GPU.
@@ -302,7 +302,7 @@ mod tests {
         ));
         assert!(out.contains("RTX PRO 6000"));
         assert!(out.contains("materially benefit from GPU acceleration"));
-        assert!(out.contains("5–60 seconds"));
+        assert!(out.contains("5–500 seconds"));
         assert!(out.contains("blob/main/<notebook.py>"));
         assert!(out.contains("Molab opens the notebook from GitHub but does not clone"));
         assert!(out.contains("Never use molab as a test runner"));
