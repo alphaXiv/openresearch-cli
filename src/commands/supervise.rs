@@ -24,6 +24,7 @@ use crate::config::Credentials;
 use crate::error::{anyhow, require_credentials, Result};
 use crate::jobs::huggingface as hf;
 use crate::jobs::kubernetes as k8s;
+use crate::jobs::localbox;
 use crate::jobs::modal;
 use crate::jobs::slurm;
 use crate::jobs::ssh;
@@ -60,6 +61,9 @@ pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
     }
     if descriptor.kind == "slurm_job" {
         return run_slurm(store, stored, descriptor, creds, run_id).await;
+    }
+    if descriptor.kind == "local_job" {
+        return run_local(store, stored, descriptor, creds, run_id).await;
     }
     let (namespace, job_id) = descriptor.hf_ref()?;
     let namespace = namespace.to_string();
@@ -829,6 +833,140 @@ async fn cancel_ssh(host: &str, dir: &str, run_id: &str, cancel_sent: &mut bool)
     match ssh::cancel_job(host, dir).await {
         Ok(()) => *cancel_sent = true,
         Err(err) => eprintln!("supervise {run_id}: ssh cancel failed (will retry): {err}"),
+    }
+}
+
+// --- local ---------------------------------------------------------------------
+//
+// The ssh loop with the transport removed: the run dir is on this machine, so
+// inspect/log reads are plain fs calls. Same cancel semantics — TERM leaves the
+// process dead without an exit_code (ERROR), reported as `cancelled`.
+
+async fn run_local(
+    store: Store,
+    stored: crate::store::StoredRun,
+    descriptor: BackendDescriptor,
+    creds: Option<Credentials>,
+    run_id: String,
+) -> Result<()> {
+    let dir = std::path::PathBuf::from(descriptor.local_ref()?);
+
+    eprintln!("supervise {run_id}: watching local run {}", dir.display());
+
+    let path = log_path(&run_id);
+    let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+    let mut log_task = tokio::spawn(tail_logs_local(
+        dir.clone(),
+        path.clone(),
+        run_id.clone(),
+        done_rx,
+    ));
+
+    let mut last_status = stored.status.clone();
+    let mut cancel_sent = false;
+
+    loop {
+        let job = localbox::inspect_job(&dir);
+        let stage = job.stage.as_str();
+        let status = if cancel_sent && is_terminal_stage(stage) {
+            "cancelled".to_string()
+        } else {
+            stage_to_run_status(stage).to_string()
+        };
+
+        if is_terminal_stage(stage) {
+            store.update_status(&run_id, &status, Some(now_ms()), None)?;
+            if creds.is_none() && status == "failed" {
+                if let Some(msg) = &job.message {
+                    if let Err(err) =
+                        store.set_result_markdown(&run_id, &format!("Job failed: {msg}"))
+                    {
+                        eprintln!("supervise {run_id}: could not record failure reason: {err}");
+                    }
+                }
+            }
+            let _ = done_tx.send(true);
+            if tokio::time::timeout(Duration::from_secs(20), &mut log_task)
+                .await
+                .is_err()
+            {
+                log_task.abort();
+            }
+            if let Some(creds) = &creds {
+                if let Err(err) = mirror_status(creds, &run_id, &status, &job.message).await {
+                    eprintln!("supervise {run_id}: final status mirror failed: {err}");
+                }
+            }
+            eprintln!("supervise {run_id}: finished ({status})");
+            return Ok(());
+        }
+
+        if status != last_status {
+            store.update_status(&run_id, &status, None, None)?;
+            let cancel_requested = match &creds {
+                Some(creds) => mirror_status(creds, &run_id, &status, &job.message)
+                    .await
+                    .unwrap_or(false),
+                None => local_cancel_requested(&store, &run_id),
+            };
+            eprintln!("supervise {run_id}: {last_status} -> {status} (stage {stage})");
+            last_status = status.clone();
+            if cancel_requested && !cancel_sent {
+                cancel_local(&dir, &run_id, &mut cancel_sent);
+            }
+        } else if !cancel_sent && local_cancel_requested(&store, &run_id) {
+            cancel_local(&dir, &run_id, &mut cancel_sent);
+        }
+
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// Local twin of `tail_logs_ssh` — mirrors the run dir's log into the store's
+/// log file so `orx logs` and the dashboard read the usual place.
+async fn tail_logs_local(
+    dir: std::path::PathBuf,
+    path: std::path::PathBuf,
+    run_id: String,
+    done: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut log_file = match std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&path)
+    {
+        Ok(f) => f,
+        Err(err) => {
+            eprintln!(
+                "supervise {run_id}: could not open {}: {err}",
+                path.display()
+            );
+            return;
+        }
+    };
+    let mut seen = 0u64;
+    loop {
+        let mut sink = |line: &str| {
+            let _ = writeln!(log_file, "{line}");
+        };
+        match localbox::stream_logs(&dir, seen, &mut sink) {
+            Ok(s) => seen = s,
+            Err(err) => eprintln!("supervise {run_id}: log stream error (will retry): {err}"),
+        }
+        let _ = log_file.flush();
+        if *done.borrow() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+fn cancel_local(dir: &std::path::Path, run_id: &str, cancel_sent: &mut bool) {
+    eprintln!("supervise {run_id}: cancel requested — killing local process group");
+    match localbox::cancel_job(dir) {
+        Ok(()) => *cancel_sent = true,
+        Err(err) => eprintln!("supervise {run_id}: local cancel failed (will retry): {err}"),
     }
 }
 

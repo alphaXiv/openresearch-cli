@@ -15,6 +15,7 @@ pub mod github;
 pub mod harness;
 pub mod hf;
 pub mod k8s;
+pub mod localrun;
 pub mod modal;
 pub mod model;
 pub mod opencode;

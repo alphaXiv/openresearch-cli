@@ -1,12 +1,14 @@
 //! Job backends — external compute that orx launches and supervises itself.
 //!
 //! The api never orchestrates these: orx submits natively (HF Jobs, Modal,
-//! Kubernetes, SSH, Slurm), a detached `orx supervise` watches the job beside
-//! it, and the api receives status/log mirrors. The run's `backend_json`
-//! descriptor is the serialized handle a later supervisor uses to reattach.
+//! Kubernetes, SSH, Slurm, this machine), a detached `orx supervise` watches
+//! the job beside it, and the api receives status/log mirrors. The run's
+//! `backend_json` descriptor is the serialized handle a later supervisor uses
+//! to reattach.
 
 pub mod huggingface;
 pub mod kubernetes;
+pub mod localbox;
 pub mod modal;
 pub mod slurm;
 pub mod ssh;
@@ -100,6 +102,16 @@ impl BackendDescriptor {
                 "Backend descriptor is missing the slurm host/job id — was the job submitted?"
             )),
         }
+    }
+
+    /// The local run dir (the reattach handle) for an on-this-machine run.
+    pub fn local_ref(&self) -> Result<&str> {
+        if self.kind != "local_job" {
+            return Err(anyhow!("Unsupported backend kind: {}", self.kind));
+        }
+        self.job_id.as_deref().ok_or_else(|| {
+            anyhow!("Backend descriptor is missing the run dir — was the job submitted?")
+        })
     }
 
     /// The SSH (host, remote run dir) handle; host rides on `namespace`.
