@@ -102,33 +102,46 @@ fn pid_alive(pid: &str) -> bool {
     }
 }
 
+/// The terminal state recorded in exit_code, if any. An empty file is run.sh
+/// mid-write (`>` truncates before the code lands) — not terminal yet.
+fn exit_code_state(dir: &Path) -> Option<JobState> {
+    let raw = std::fs::read_to_string(dir.join("exit_code")).ok()?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let code: i32 = raw.parse().unwrap_or(-1);
+    Some(if code == 0 {
+        JobState {
+            stage: "COMPLETED".into(),
+            message: None,
+        }
+    } else {
+        JobState {
+            stage: "ERROR".into(),
+            message: Some(format!("exited with code {code}")),
+        }
+    })
+}
+
 /// Job state in the shared stage vocabulary (see `jobs::stage_to_run_status`).
 /// exit_code present -> finished; pid alive -> running; pid dead & no
 /// exit_code -> killed/crashed.
 pub fn inspect_job(dir: &Path) -> JobState {
-    if let Ok(code) = std::fs::read_to_string(dir.join("exit_code")) {
-        let code: i32 = code.trim().parse().unwrap_or(-1);
-        return if code == 0 {
-            JobState {
-                stage: "COMPLETED".into(),
-                message: None,
-            }
-        } else {
-            JobState {
-                stage: "ERROR".into(),
-                message: Some(format!("exited with code {code}")),
-            }
-        };
+    if let Some(state) = exit_code_state(dir) {
+        return state;
     }
     match std::fs::read_to_string(dir.join("pid")) {
         Ok(pid) if pid_alive(pid.trim()) => JobState {
             stage: "RUNNING".into(),
             message: None,
         },
-        Ok(_) => JobState {
+        // Dead pid: run.sh may have written exit_code and exited between the
+        // check above and the ps probe — re-read before calling it killed.
+        Ok(_) => exit_code_state(dir).unwrap_or(JobState {
             stage: "ERROR".into(),
             message: Some("process died without an exit code (killed?)".into()),
-        },
+        }),
         // pid not written yet — just starting.
         Err(_) => JobState {
             stage: "RUNNING".into(),
