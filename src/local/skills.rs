@@ -120,7 +120,7 @@ Reproduce the claim:
 5. Hold the turn open with `orx exp wait` until the run is terminal, then read the evidence with `orx logs <run-id>`.
 6. Record findings immediately with `orx exp desc`.
 
-Downscale when necessary, but state exactly how the setup differs from the paper. Record an honest verdict — reproduced, partially reproduced, not reproduced, or not attempted — plus the paper's number, reproduced number, sample size, model/data substitutions, scoring method, run ID, and compute cost.
+Downscale when necessary, but state exactly how the setup differs from the paper. Record an honest verdict — reproduced, partially reproduced, not reproduced, or not attempted — plus the paper's number, reproduced number, sample size, model/data substitutions, scoring method, and compute cost. Keep internal run IDs in `orx exp desc`, not in reader-facing materials.
 
 Build the marimo notebook:
 - Create a valid marimo Python notebook, normally `claim_tutorial.py`, that works standalone when opened directly by molab.
@@ -134,24 +134,25 @@ Use this narrative structure:
 3. Reproduction result — display the verdict, headline metrics, sample sizes, and closest like-for-like comparison.
 4. Visual explanation — prefer an informative calibration curve, heatmap, layer sweep, intervention plot, or compact table. Explain axes and colors; avoid decoration that does not clarify the claim.
 5. Robustness and interpretation — include negative controls, leakage checks, or sensitivity analyses when available, and explain what would falsify the interpretation.
-6. Limitations and provenance — distinguish reproduced evidence from paper evidence, list substitutions and unattempted claims, and link to the exact GitHub experiment branches containing the runnable code and configuration. Include approximate compute cost; keep `orx` run IDs as secondary metadata rather than the reader's primary reference.
+6. Limitations and provenance — distinguish reproduced evidence from paper evidence, list substitutions and unattempted claims, and link to the exact GitHub experiment branches containing the runnable code and configuration. Include approximate compute cost.
 7. Optional interactive GPU lab — provide a small teaching experiment related to the claim.
 
 Make provenance reader-facing:
-- Never present a bare experiment or run ID as though an outside reader knows what it means.
+- Do not publish raw experiment or run IDs in the notebook or README; use descriptive branch links instead.
 - Use descriptive links such as `[Confirmatory reproduction code](<GitHub branch/tree URL>)` and `[Layer-sweep code](<GitHub branch/tree URL>)` as the primary references.
 - Briefly say what each linked branch contains: runner, fixed configuration, manifest, and evaluation method.
-- If a public run or dashboard URL exists, link it with a descriptive label. Otherwise place the raw `orx` run ID in a compact technical-details or provenance block and identify it explicitly as an internal run reference.
+- If a public run or dashboard URL exists, link it with a descriptive label; otherwise the branch link is sufficient.
 - Prefer a small provenance table with columns for experiment, code, verdict, and compute over a paragraph of opaque identifiers.
 
 Interactive GPU lab requirements:
 - Put expensive work behind a marimo run button so it never starts automatically.
 - Detect CUDA with `torch.cuda.is_available()` and report the selected device.
-- Design for molab's attached RTX PRO 6000, target a few seconds, and remain comfortably below two minutes.
-- Bound sample counts, optimization steps, downloads, and memory use; provide a CPU fallback when practical.
+- Design specifically for molab's attached RTX PRO 6000: the lab should materially benefit from GPU acceleration, not be a scalar/vector toy that runs just as well on CPU.
+- Prefer a genuine compact-model workload—such as batched inference, activation hooks, a layer × token intervention sweep, or probe training. A bounded one-time model download is acceptable when it is central to the lesson.
+- Target roughly 5–500 seconds on the RTX PRO 6000 after cached setup and remain comfortably below ten minutes. Bound samples, steps, downloads, and memory; a CPU fallback may run a reduced, clearly labeled version.
 - Let the reader manipulate a conceptually meaningful variable and produce a visible change in a plot or metric.
 - Label synthetic and toy experiments explicitly; never present them as reproduction evidence.
-- Do not download or run the paper's full model merely because molab has a strong GPU. The interactive section should teach the mechanism, not repeat a multi-hour reproduction.
+- Do not rerun the paper's full-scale experiment merely because molab has a strong GPU.
 
 Good interactive examples include varying probe signal strength and viewing calibration, selecting layers and updating an activation heatmap, changing intervention strength and plotting the effect, or training a tiny linear probe on already-published activations.
 
@@ -175,6 +176,8 @@ Publish on GitHub:
 Publish the notebook and README on `main`, provided `main` is not an experiment root. Add this single-line README badge, replacing the placeholders:
 `[![Open in molab](https://marimo.io/molab-shield.svg)](https://molab.marimo.io/github/<owner>/<repo>/blob/main/<notebook.py>)`
 
+Also add a short `Experiment log` to the README so a reader landing in the repository can understand what was tried. Include only the important branches, link each branch descriptively, and summarize its change and outcome; omit raw experiment and run IDs, and include failed attempts only when they explain the experimental lineage.
+
 After pushing:
 1. Verify the repository is public. If it is still private and permission has not been granted, explain that the molab link cannot work anonymously, ask permission to make the repository public, and stop. Once permission is granted, make it public with `gh` and verify the new visibility before continuing.
 2. Fetch the raw notebook anonymously and require HTTP 200.
@@ -182,7 +185,7 @@ After pushing:
 4. Confirm the returned notebook contains the expected title and interactive section.
 5. Point the repository homepage at the molab URL when appropriate.
 
-Do not create a GitHub release merely to obtain an immutable URL. Reproducibility comes from experiment branches, run IDs, pinned artifact commits, and Git history; `main` remains the friendly canonical entry point.
+Do not create a GitHub release merely to obtain an immutable URL. Reproducibility comes from experiment branches, pinned artifact commits, and Git history; `main` remains the friendly canonical entry point.
 
 Finish by reporting:
 - the molab and GitHub URLs;
@@ -298,6 +301,8 @@ mod tests {
             "Paper, compute, and preferences: What LLM Forecasters Know but Don't Say on k8s"
         ));
         assert!(out.contains("RTX PRO 6000"));
+        assert!(out.contains("materially benefit from GPU acceleration"));
+        assert!(out.contains("5–500 seconds"));
         assert!(out.contains("blob/main/<notebook.py>"));
         assert!(out.contains("Molab opens the notebook from GitHub but does not clone"));
         assert!(out.contains("Never use molab as a test runner"));
@@ -305,8 +310,9 @@ mod tests {
         assert!(out.contains("marimo's native reactive widgets"));
         assert!(out.contains("ask permission to make it public"));
         assert!(out.contains("do not make the user perform the change manually"));
-        assert!(out.contains("Never present a bare experiment or run ID"));
+        assert!(out.contains("Do not publish raw experiment or run IDs"));
         assert!(out.contains("Confirmatory reproduction code"));
+        assert!(out.contains("short `Experiment log`"));
         assert!(expand("/paper-to-marimo").unwrap().contains("ask the user"));
     }
 
