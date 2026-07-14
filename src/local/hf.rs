@@ -167,6 +167,10 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         context: None,
         manifest: None,
         resources: None,
+        ssh_host: None,
+        ssh_port: None,
+        ssh_user: None,
+        timeout_secs: None,
     };
     let run = StoredRun {
         id: run_id.clone(),

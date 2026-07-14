@@ -27,7 +27,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::ssh::{sh_quote, ssh_run};
+use super::ssh::{sh_quote, ssh_run, SshTarget};
 use crate::error::{anyhow, Result};
 
 // --- settings ---------------------------------------------------------------
@@ -218,7 +218,7 @@ pub async fn run_job(spec: &SlurmJobSpec) -> Result<String> {
         script = spec.setup_script,
     );
     ssh_run(
-        &spec.host,
+        &SshTarget::alias(&spec.host),
         &format!("mkdir -p \"$HOME/{dir}\" && chmod 700 \"$HOME/{dir}\" && bash -s"),
         Some(&setup),
     )
@@ -227,13 +227,13 @@ pub async fn run_job(spec: &SlurmJobSpec) -> Result<String> {
 
     // Write the batch script (owner-only: it embeds tokens) and submit.
     ssh_run(
-        &spec.host,
+        &SshTarget::alias(&spec.host),
         &format!("umask 077 && cat > \"$HOME/{dir}/job.sbatch\""),
         Some(&render_sbatch(spec)),
     )
     .await?;
     let out = ssh_run(
-        &spec.host,
+        &SshTarget::alias(&spec.host),
         &format!("cd \"$HOME/{dir}\" && sbatch --parsable job.sbatch"),
         None,
     )
@@ -270,7 +270,7 @@ pub async fn inspect_job(host: &str, run_id: &str, job_id: &str) -> Result<JobSt
            fi; \
          fi",
     );
-    let out = ssh_run(host, &cmd, None).await?;
+    let out = ssh_run(&SshTarget::alias(host), &cmd, None).await?;
     Ok(map_inspect_token(out.trim()))
 }
 
@@ -341,7 +341,12 @@ fn map_inspect_token(out: &str) -> JobState {
 /// Cancel = `scancel`. Tolerant of already-finished jobs (scancel exits
 /// non-zero for them); the supervisor's next poll observes the outcome.
 pub async fn cancel_job(host: &str, job_id: &str) -> Result<()> {
-    ssh_run(host, &format!("scancel {job_id} 2>/dev/null || true"), None).await?;
+    ssh_run(
+        &SshTarget::alias(host),
+        &format!("scancel {job_id} 2>/dev/null || true"),
+        None,
+    )
+    .await?;
     Ok(())
 }
 
@@ -366,7 +371,7 @@ pub async fn preflight(host: &str) -> SlurmPreflight {
                && command -v scancel >/dev/null 2>&1; then echo SLURM_OK; fi; \
                if command -v git >/dev/null 2>&1; then echo GIT_OK; fi; \
                sinfo -h -o %P 2>/dev/null || true";
-    match ssh_run(host, cmd, None).await {
+    match ssh_run(&SshTarget::alias(host), cmd, None).await {
         Ok(out) => {
             let mut slurm_found = false;
             let mut git_found = false;
@@ -525,7 +530,7 @@ mod tests {
         assert_eq!(done.stage, "COMPLETED", "message: {:?}", done.message);
         let mut lines = Vec::new();
         crate::jobs::ssh::stream_logs(
-            &host,
+            &SshTarget::alias(&host),
             &run_dir(&run_a),
             0,
             std::time::Duration::from_secs(5),
@@ -542,7 +547,7 @@ mod tests {
         cancel_job(&host, &job_b).await.unwrap();
         let after = poll(run_b, job_b, &["CANCELED", "GONE", "ERROR"]).await;
         // Best-effort teardown before asserting — don't litter the cluster.
-        let _ = ssh_run(&host, &cleanup, None).await;
+        let _ = ssh_run(&SshTarget::alias(&host), &cleanup, None).await;
         assert!(
             after.stage == "CANCELED" || after.stage == "GONE",
             "unexpected post-cancel stage: {after:?}"

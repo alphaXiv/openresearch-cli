@@ -203,6 +203,10 @@ pub async fn submit_local_k8s(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         context,
         manifest: Some(manifest_path),
         resources: Some(submitted.resources),
+        ssh_host: None,
+        ssh_port: None,
+        ssh_user: None,
+        timeout_secs: None,
     };
     let run = StoredRun {
         id: run_id.clone(),

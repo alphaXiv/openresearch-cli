@@ -1,21 +1,62 @@
-//! The `instance` command group: spin up standalone compute in an organization,
+//! The `instance` command group: standalone compute in an organization,
 //! independent of any experiment.
 //!
 //!   orx instance create <orgId> --gpu <id> [--count N] [--disk GB] [--provider P]
 //!   orx instance create <orgId> --cpu <cpu5c|cpu5g|cpu5m> [--vcpus 2|8|32]
+//!   orx instance list <orgId>
+//!   orx instance delete <sandboxId>
 //!
-//! This is the CLI equivalent of the dashboard's org "Spin up" panel — it hits
-//! `POST /sandboxes`, which provisions an org-level (not project-scoped) box.
+//! Create is the CLI equivalent of the dashboard's org "Spin up" panel — it
+//! hits `POST /sandboxes`, which provisions an org-level (not project-scoped)
+//! box. List/delete double as the cleanup path for a `--backend openresearch`
+//! box whose automatic teardown failed.
 
-use crate::client::{create_sandbox, CreateSandboxBody, SandboxTarget};
+use crate::client::{
+    create_sandbox, delete_sandbox, list_sandboxes, CreateSandboxBody, SandboxTarget,
+};
 use crate::error::{anyhow, require_credentials, Result};
-use crate::{InstanceCommand, InstanceCreateArgs};
+use crate::{InstanceCommand, InstanceCreateArgs, InstanceDeleteArgs, InstanceListArgs};
 
 pub async fn run(args: crate::InstanceArgs) -> Result<()> {
     let creds = require_credentials().await;
     match args.command {
         InstanceCommand::Create(create_args) => create(&creds, create_args).await,
+        InstanceCommand::List(list_args) => list(&creds, list_args).await,
+        InstanceCommand::Delete(delete_args) => delete(&creds, delete_args).await,
     }
+}
+
+/// `orx instance list <orgId>` — every box in the org, one line each.
+async fn list(creds: &crate::config::Credentials, args: InstanceListArgs) -> Result<()> {
+    let sandboxes = list_sandboxes(creds, &args.org_id).await?.sandboxes;
+    if sandboxes.is_empty() {
+        println!("No instances in org {}.", args.org_id);
+        return Ok(());
+    }
+    for s in &sandboxes {
+        let shape = match (&s.gpu, s.vcpu_count) {
+            (Some(gpu), _) => format!("{} x{}", gpu, s.gpu_count.unwrap_or(1)),
+            (None, Some(vcpus)) => format!("{vcpus} vcpus"),
+            _ => "byom".to_string(),
+        };
+        let price = s
+            .price_per_hour
+            .map(|p| format!("  ${p:.2}/hr"))
+            .unwrap_or_default();
+        let endpoint = match (&s.ssh_username, &s.ssh_hostname, s.ssh_port) {
+            (Some(user), Some(host), Some(port)) => format!("  {user}@{host}:{port}"),
+            _ => String::new(),
+        };
+        println!("{}  {:<12}  {shape}{price}{endpoint}", s.id, s.status);
+    }
+    Ok(())
+}
+
+/// `orx instance delete <sandboxId>` — terminate the box and its provider machine.
+async fn delete(creds: &crate::config::Credentials, args: InstanceDeleteArgs) -> Result<()> {
+    delete_sandbox(creds, &args.sandbox_id).await?;
+    println!("\u{2713} Instance {} deleted.", args.sandbox_id);
+    Ok(())
 }
 
 /// `orx instance create <orgId> …` — provision a standalone GPU or CPU instance.

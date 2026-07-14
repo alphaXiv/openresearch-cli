@@ -1421,7 +1421,7 @@ function InstancesTab() {
         </button>
       </div>
       <p className="settings-sub">
-        Compute spun up across all projects — Modal, Hugging Face, SSH, Kubernetes, and Slurm.
+        Compute spun up across all projects — Modal, Hugging Face, SSH, Kubernetes, Slurm, and OpenResearch.
       </p>
       {error && <div className="error">{error}</div>}
       {!running || !past ? (

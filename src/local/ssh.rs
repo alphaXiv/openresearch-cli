@@ -136,7 +136,7 @@ pub async fn submit_local_ssh(args: &crate::ExpRunArgs) -> Result<StoredRun> {
     }
 
     let remote_dir = ssh::run_job(&ssh::SshJobSpec {
-        host: host.clone(),
+        target: ssh::SshTarget::alias(&host),
         run_id: run_id.clone(),
         script,
         env,
@@ -153,6 +153,10 @@ pub async fn submit_local_ssh(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         context: None,
         manifest: None,
         resources: None,
+        ssh_host: None,
+        ssh_port: None,
+        ssh_user: None,
+        timeout_secs: None,
     };
     let run = StoredRun {
         id: run_id.clone(),
