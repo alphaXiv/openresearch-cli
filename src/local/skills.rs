@@ -147,11 +147,12 @@ Make provenance reader-facing:
 Interactive GPU lab requirements:
 - Put expensive work behind a marimo run button so it never starts automatically.
 - Detect CUDA with `torch.cuda.is_available()` and report the selected device.
-- Design for molab's attached RTX PRO 6000, target a few seconds, and remain comfortably below two minutes.
-- Bound sample counts, optimization steps, downloads, and memory use; provide a CPU fallback when practical.
+- Design specifically for molab's attached RTX PRO 6000: the lab should materially benefit from GPU acceleration, not be a scalar/vector toy that runs just as well on CPU.
+- Prefer a genuine compact-model workload—such as batched inference, activation hooks, a layer × token intervention sweep, or probe training. A bounded one-time model download is acceptable when it is central to the lesson.
+- Target roughly 5–500 seconds on the RTX PRO 6000 after cached setup and remain comfortably below two minutes. Bound samples, steps, downloads, and memory; a CPU fallback may run a reduced, clearly labeled version.
 - Let the reader manipulate a conceptually meaningful variable and produce a visible change in a plot or metric.
 - Label synthetic and toy experiments explicitly; never present them as reproduction evidence.
-- Do not download or run the paper's full model merely because molab has a strong GPU. The interactive section should teach the mechanism, not repeat a multi-hour reproduction.
+- Do not rerun the paper's full-scale experiment merely because molab has a strong GPU.
 
 Good interactive examples include varying probe signal strength and viewing calibration, selecting layers and updating an activation heatmap, changing intervention strength and plotting the effect, or training a tiny linear probe on already-published activations.
 
@@ -300,6 +301,8 @@ mod tests {
             "Paper, compute, and preferences: What LLM Forecasters Know but Don't Say on k8s"
         ));
         assert!(out.contains("RTX PRO 6000"));
+        assert!(out.contains("materially benefit from GPU acceleration"));
+        assert!(out.contains("5–60 seconds"));
         assert!(out.contains("blob/main/<notebook.py>"));
         assert!(out.contains("Molab opens the notebook from GitHub but does not clone"));
         assert!(out.contains("Never use molab as a test runner"));
