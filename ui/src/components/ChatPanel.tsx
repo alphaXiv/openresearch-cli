@@ -1017,6 +1017,33 @@ export function ChatPanel({
     if (activeId) void interruptChat(activeId);
   }
 
+  // Escape stops the streaming turn and drops focus back into the composer,
+  // mirroring the Claude Code desktop app. Harness-agnostic — `stop()` →
+  // `interruptChat` interrupts whichever harness (Claude, Codex, OpenCode, …)
+  // is running the active session. Only armed on the chat view while busy, so
+  // it never fires from the settings/files panels that also render inside
+  // ChatPanel.
+  //
+  // An overlay that should swallow Escape (rather than let it stop the turn)
+  // must own the key ahead of this document-level bubble listener, by one of
+  // two means already in use — a new overlay has to pick one or it will
+  // interrupt the turn on Escape:
+  //   - the slash menu preventDefaults in the composer's onKeyDown (bubble),
+  //     so the `defaultPrevented` guard below defers to it;
+  //   - the composer pickers (usePopover) stopPropagation in the capture phase,
+  //     so their Escape never reaches this listener at all.
+  useEffect(() => {
+    if (!busy || mainView !== "chat") return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      e.preventDefault();
+      stop();
+      composerRef.current?.focus();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [busy, activeId, mainView]);
+
   /** Drop every trace of a session — the local row, the open-thread selection,
    * and the cached transcript. Used on delete (ours or another dashboard's). */
   function forgetSession(sessionId: string) {

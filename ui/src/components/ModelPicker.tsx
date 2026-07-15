@@ -47,13 +47,23 @@ export function usePopover() {
       if (!ref.current?.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      // Escape closes the picker and must NOT bubble to other document-level
+      // Escape handlers (e.g. ChatPanel's stop-streaming listener) — closing an
+      // open picker shouldn't also interrupt an in-flight turn. Capture phase +
+      // stopPropagation makes this order-independent: relying on registration
+      // order and defaultPrevented among bubble-phase document listeners is
+      // fragile, since whichever registered first runs first.
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setOpen(false);
+      }
     };
     document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
     return () => {
       document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKey, true);
     };
   }, [open]);
   return { open, setOpen, ref };
