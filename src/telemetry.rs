@@ -31,6 +31,14 @@ use serde_json::json;
 /// client-side keys. Do NOT put a personal (`phx_`) key here.
 const POSTHOG_KEY: &str = "phc_u2i23xa8CBjcZpQprf6kdDzzR8vb2iTpRT8FmdcREBvX";
 
+/// Prefix stamped onto EVERY event name. This PostHog project is shared with
+/// the website/cloud-agent analytics, so CLI events must be separable by name
+/// alone — not just by the `source: "cli"` property (which one forgotten
+/// dashboard filter would leak past). Applied centrally in `build_payload`, so
+/// every current and future CLI event is `cli_*` by construction; call sites
+/// pass the bare name (`command`, `experiment_started`).
+const EVENT_PREFIX: &str = "cli_";
+
 /// US PostHog cloud. Overridable with `ORX_TELEMETRY_HOST` so tests can point
 /// at a throwaway local listener instead of production.
 fn posthog_host() -> String {
@@ -372,7 +380,9 @@ fn build_payload(event: &str, distinct_id: &str, extra: serde_json::Value) -> se
     }
     json!({
         "api_key": POSTHOG_KEY,
-        "event": event,
+        // Every CLI event name is `cli_`-prefixed so it's separable from the
+        // website's events in this shared project by name alone.
+        "event": format!("{EVENT_PREFIX}{event}"),
         "distinct_id": distinct_id,
         // Client-side event time (UTC ISO-8601). Without this PostHog buckets on
         // ingestion time, which for a fire-and-forget send that may land seconds
@@ -501,7 +511,8 @@ impl TelemetrySession {
     /// before this is called), matching every other event path. The handle is
     /// registered in the pending set and flushed by `finish`.
     pub(crate) fn start(command: &str) -> TelemetrySession {
-        capture("cli_command", json!({ "command": command }));
+        // Bare base name; `build_payload` prefixes it → wire event `cli_command`.
+        capture("command", json!({ "command": command }));
         TelemetrySession
     }
 
@@ -762,7 +773,9 @@ mod tests {
         );
 
         assert_eq!(payload["api_key"], POSTHOG_KEY);
-        assert_eq!(payload["event"], "experiment_started");
+        // The bare name is `cli_`-prefixed on the wire so CLI events are
+        // separable from the website's events in this shared PostHog project.
+        assert_eq!(payload["event"], "cli_experiment_started");
         assert_eq!(payload["distinct_id"], "test-distinct-id");
 
         let props = &payload["properties"];
@@ -796,7 +809,7 @@ mod tests {
     fn extra_cannot_overwrite_base_context() {
         // A caller passing base keys in `extra` must not corrupt identity/context.
         let payload = build_payload(
-            "cli_command",
+            "command",
             "did",
             json!({ "source": "EVIL", "ci": "EVIL", "command": "login" }),
         );
@@ -805,6 +818,21 @@ mod tests {
         assert!(props["ci"].is_boolean(), "base ci must win");
         // Non-colliding extra keys still land.
         assert_eq!(props["command"], "login");
+    }
+
+    #[test]
+    fn every_event_name_is_cli_prefixed() {
+        // This PostHog project is shared with the website; CLI events must be
+        // separable by name alone. `build_payload` prefixes unconditionally, so
+        // the two base names map to their prefixed wire names and nothing can
+        // emit an unprefixed event.
+        for (bare, wire) in [
+            ("command", "cli_command"),
+            ("experiment_started", "cli_experiment_started"),
+        ] {
+            let p = build_payload(bare, "did", json!({}));
+            assert_eq!(p["event"], wire, "`{bare}` must serialize as `{wire}`");
+        }
     }
 
     #[test]
