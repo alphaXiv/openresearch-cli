@@ -19,6 +19,7 @@ import {
   getSkills,
   interruptChat,
   listChatSessions,
+  renameChatSession,
   respondChat,
   sendChatMessage,
   setChatSessionArchived,
@@ -556,12 +557,14 @@ function SessionFilterMenu({
 }
 
 /** One Recents row. Hover swaps the timestamp for a three-dot menu with
- * Archive/Unarchive and Delete (Claude-desktop style). */
+ * Rename, Archive/Unarchive, and Delete (Claude-desktop style). Rename turns
+ * the title into an inline input. */
 function SessionRow({
   session,
   active,
   busy,
   onOpen,
+  onRename,
   onSetArchived,
   onDelete,
 }: {
@@ -569,28 +572,58 @@ function SessionRow({
   active: boolean;
   busy: boolean;
   onOpen: () => void;
+  onRename: (title: string) => void;
   onSetArchived: (archived: boolean) => void;
   onDelete: () => void;
 }) {
   const { open, setOpen, ref } = usePopover();
   const title = session.title?.trim() || "Untitled";
+  const [editing, setEditing] = useState(false);
+  // Seeded by startEditing() before the input mounts; "" is just a placeholder.
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function startEditing() {
+    setDraft(session.title?.trim() || "");
+    setEditing(true);
+  }
+  function commit() {
+    const next = draft.trim();
+    setEditing(false);
+    // Only persist a real change; an empty title would be rejected server-side.
+    if (next && next !== (session.title?.trim() || "")) onRename(next);
+  }
+
+  // Focus + select the input once the row enters edit mode.
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing]);
+
   // Not a <button>: the kebab is a real button and can't nest inside one.
   return (
     <div
       ref={ref}
       role="button"
       tabIndex={0}
-      className={`session-row ${active ? "active" : ""} ${open ? "menu-open" : ""}`}
+      className={`session-row ${active ? "active" : ""} ${open ? "menu-open" : ""} ${
+        editing ? "editing" : ""
+      }`}
       title={`${HARNESS_LABELS[session.harness]}${session.model ? ` · ${session.model}` : ""}`}
       onClick={() => {
+        // While editing, a body click is a no-op; blur/Enter/Esc drive it.
+        if (editing) return;
         // With the menu open, a body click just dismisses it — switching
         // sessions underneath an open menu would leave it orphaned.
         if (open) setOpen(false);
         else onOpen();
       }}
       onKeyDown={(e) => {
-        // Only keys aimed at the row itself: the kebab and menu items are
-        // descendants, and preventDefault here would cancel their activation.
+        // Only keys aimed at the row itself: the kebab, menu items, and the
+        // rename input are descendants, and preventDefault here would cancel
+        // their activation.
         if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
@@ -602,7 +635,29 @@ function SessionRow({
       }}
     >
       <span className="session-dot">{busy && <span className="busy-dot" />}</span>
-      <span className="session-title">{title}</span>
+      {editing ? (
+        <input
+          ref={inputRef}
+          className="session-title-input"
+          aria-label="Session title"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onClick={(e) => e.stopPropagation()}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              setEditing(false);
+            }
+          }}
+        />
+      ) : (
+        <span className="session-title">{title}</span>
+      )}
       <span className="session-time">{relTime(session.updatedAt)}</span>
       <button
         className="session-menu-btn"
@@ -617,6 +672,16 @@ function SessionRow({
       </button>
       {open && (
         <div className="option-menu drop-down session-menu">
+          <button
+            className="model-item"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+              startEditing();
+            }}
+          >
+            <span>Rename</span>
+          </button>
           <button
             className="model-item"
             onClick={(e) => {
@@ -1002,6 +1067,17 @@ export function ChatPanel({
     });
   }
 
+  function rename(session: ChatSession, title: string) {
+    // Optimistic; the server trims and re-broadcasts the row over chat.session.
+    // On failure restore the pre-request title (not the draft) so a concurrent
+    // authoritative update isn't undone.
+    const prev = session.title;
+    setSessions((cur) => cur.map((s) => (s.id === session.id ? { ...s, title } : s)));
+    void renameChatSession(session.id, title).catch(() => {
+      setSessions((cur) => cur.map((s) => (s.id === session.id ? { ...s, title: prev } : s)));
+    });
+  }
+
   async function removeSession(session: ChatSession) {
     const title = session.title?.trim() || "Untitled";
     if (!window.confirm(`Delete "${title}"?\n\nIts transcript is permanently removed.`)) return;
@@ -1079,6 +1155,7 @@ export function ChatPanel({
               setActiveId(s.id);
               onSelectMainView("chat");
             }}
+            onRename={(title) => rename(s, title)}
             onSetArchived={(archived) => setArchived(s, archived)}
             onDelete={() => void removeSession(s)}
           />
