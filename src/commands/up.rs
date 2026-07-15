@@ -145,6 +145,10 @@ fn router(state: AppState) -> Router {
             "/api/settings/git/token",
             post(set_git_token).delete(delete_git_token),
         )
+        .route(
+            "/api/settings/telemetry",
+            get(telemetry_settings).post(set_telemetry_settings),
+        )
         .route("/api/settings/ssh", get(ssh_settings))
         .route("/api/settings/ssh/preflight", post(ssh_preflight))
         .route(
@@ -1446,6 +1450,39 @@ async fn set_git_settings(Json(req): Json<SetGitSettingsReq>) -> ApiResult {
     })
     .await
     .map_err(|e| ApiError::from(anyhow!("git task failed: {e}")))?
+}
+
+// --- telemetry settings -----------------------------------------------------
+
+/// `{ enabled, reason }` — whether anonymous usage analytics is on, and if off,
+/// why (so the UI can explain a `--no-telemetry`-style override vs a persisted
+/// opt-out). `reason` is null when enabled.
+fn telemetry_settings_json() -> Value {
+    match crate::telemetry::disabled_reason(false) {
+        None => json!({ "enabled": true, "reason": null }),
+        Some(r) => json!({ "enabled": false, "reason": r.as_str() }),
+    }
+}
+
+async fn telemetry_settings() -> ApiResult {
+    tokio::task::spawn_blocking(|| Ok(Json(telemetry_settings_json())))
+        .await
+        .map_err(|e| ApiError::from(anyhow!("telemetry task failed: {e}")))?
+}
+
+#[derive(Deserialize)]
+struct SetTelemetryReq {
+    enabled: bool,
+}
+
+async fn set_telemetry_settings(Json(req): Json<SetTelemetryReq>) -> ApiResult {
+    tokio::task::spawn_blocking(move || {
+        crate::telemetry::set_persisted_disabled(!req.enabled)
+            .map_err(|e| ApiError::from(anyhow!("could not save telemetry setting: {e}")))?;
+        Ok(Json(telemetry_settings_json()))
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow!("telemetry task failed: {e}")))?
 }
 
 // --- ssh hosts ----------------------------------------------------------------

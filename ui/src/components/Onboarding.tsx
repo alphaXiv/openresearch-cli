@@ -3,19 +3,23 @@ import { useEffect, useState } from "react";
 import {
   getGitSettings,
   getHarnesses,
+  getTelemetry,
   modelLabel,
+  setTelemetry,
   type GitSettings,
   type Harness,
+  type TelemetrySettings,
 } from "../api";
 import { GitTokenForm } from "./GitTokenForm";
 
 /** First-run walkthrough: the detected coding agents, then the git/GitHub
- * model, then hand off to the (empty) projects page. Purely informative —
- * nothing here gates anything. */
+ * model, then the usage-analytics choice, then hand off to the (empty)
+ * projects page. Purely informative — nothing here gates anything. */
 export function Onboarding({ onDone }: { onDone: () => void }) {
-  const [step, setStep] = useState<0 | 1>(0);
+  const [step, setStep] = useState<0 | 1 | 2>(0);
   const [harnesses, setHarnesses] = useState<Harness[] | null>(null);
   const [git, setGit] = useState<GitSettings | null>(null);
+  const [telemetry, setTelemetryState] = useState<TelemetrySettings | null>(null);
   const [checking, setChecking] = useState(false);
 
   const load = (refresh: boolean) => {
@@ -23,6 +27,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     void Promise.allSettled([
       getHarnesses(refresh).then(setHarnesses),
       getGitSettings().then(setGit),
+      getTelemetry().then(setTelemetryState),
     ]).finally(() => setChecking(false));
   };
   useEffect(() => load(false), []);
@@ -33,7 +38,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         {step === 0 ? (
           <>
             <div className="onb-eyebrow">
-              Open<span>Research</span> · step 1 of 2
+              Open<span>Research</span> · step 1 of 3
             </div>
             <h2 className="onb-title">Your coding agents</h2>
             <p className="onb-sub">
@@ -59,10 +64,10 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               </button>
             </div>
           </>
-        ) : (
+        ) : step === 1 ? (
           <>
             <div className="onb-eyebrow">
-              Open<span>Research</span> · step 2 of 2
+              Open<span>Research</span> · step 2 of 3
             </div>
             <h2 className="onb-title">Git &amp; GitHub</h2>
             <p className="onb-sub">
@@ -79,6 +84,30 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               </button>
               <button className="btn ghost" onClick={() => load(false)} disabled={checking}>
                 <RefreshCw size={12} className={checking ? "spin" : ""} /> Re-check
+              </button>
+              <div style={{ flex: 1 }} />
+              <button className="btn primary" onClick={() => setStep(2)}>
+                Continue <ArrowRight size={13} />
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="onb-eyebrow">
+              Open<span>Research</span> · step 3 of 3
+            </div>
+            <h2 className="onb-title">Usage analytics</h2>
+            <p className="onb-sub">
+              orx can send anonymous usage analytics to help improve the tool. No code, prompts,
+              file contents, or identifiers are ever sent — just a random per-install id, the
+              command run, and your OS.
+            </p>
+            <div className="onb-cards">
+              <TelemetryCard telemetry={telemetry} onUpdate={setTelemetryState} />
+            </div>
+            <div className="onb-actions">
+              <button className="btn ghost" onClick={() => setStep(1)}>
+                <ArrowLeft size={12} /> Back
               </button>
               <div style={{ flex: 1 }} />
               <button className="btn primary" onClick={onDone}>
@@ -237,6 +266,78 @@ function GitCard({
             <span className="onb-gh-option-label">Paste a token</span>
             <GitTokenForm onSaved={onUpdate} />
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TelemetryCard({
+  telemetry,
+  onUpdate,
+}: {
+  telemetry: TelemetrySettings | null;
+  onUpdate: (t: TelemetrySettings) => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  if (telemetry === null) {
+    return (
+      <div className="onb-loading">
+        <span className="spinner" /> Checking analytics…
+      </div>
+    );
+  }
+  const on = telemetry.enabled;
+  // A per-run override (e.g. `--no-telemetry`) that isn't the persisted setting:
+  // the toggle writes the persisted flag, but this run stays off regardless.
+  const overridden = !on && telemetry.reason !== null && telemetry.reason !== "disabled via `orx telemetry off`";
+  const choose = (enabled: boolean) => {
+    if (saving || enabled === on) return;
+    setSaving(true);
+    void setTelemetry(enabled)
+      .then(onUpdate)
+      .finally(() => setSaving(false));
+  };
+  return (
+    <div className="onb-card">
+      <div className="onb-card-head">
+        <div>
+          <div className="onb-card-name">Share anonymous usage analytics</div>
+          <div className="onb-card-meta" style={{ marginTop: 2 }}>
+            {on
+              ? "On — helps prioritize what to build next."
+              : overridden
+                ? `Off — ${telemetry.reason}.`
+                : "Off — you can turn it back on anytime."}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 6, flex: "none" }}>
+          <button
+            className={`btn ${on ? "primary" : "ghost"}`}
+            onClick={() => choose(true)}
+            disabled={saving}
+            aria-pressed={on}
+          >
+            {on ? <Check size={12} strokeWidth={3} /> : null} On
+          </button>
+          <button
+            className={`btn ${!on ? "primary" : "ghost"}`}
+            onClick={() => choose(false)}
+            disabled={saving}
+            aria-pressed={!on}
+          >
+            {!on ? <Check size={12} strokeWidth={3} /> : null} Off
+          </button>
+        </div>
+      </div>
+      <div className="onb-card-meta" style={{ marginTop: 12 }}>
+        Sent: a random per-install id, the command run, CLI version, and OS. Never sent: code,
+        prompts, file contents, paths, or repo names. Change anytime in Settings or with{" "}
+        <code>orx telemetry off</code>.
+      </div>
+      {overridden && (
+        <div className="onb-card-meta" style={{ marginTop: 8 }}>
+          Note: this run is off because of {telemetry.reason}, which overrides the saved choice.
         </div>
       )}
     </div>

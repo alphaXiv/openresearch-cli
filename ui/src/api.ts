@@ -456,6 +456,18 @@ export const saveGitToken = (token: string) =>
 export const removeGitToken = () =>
   fetch("/api/settings/git/token", { method: "DELETE" }).then((r) => json<GitSettings>(r));
 
+export interface TelemetrySettings {
+  /** Whether anonymous usage analytics is currently on. */
+  enabled: boolean;
+  /** When off, a short human reason (e.g. "--no-telemetry flag"); null when on. */
+  reason: string | null;
+}
+
+export const getTelemetry = () => get<TelemetrySettings>("/api/settings/telemetry");
+
+export const setTelemetry = (enabled: boolean) =>
+  post<TelemetrySettings>("/api/settings/telemetry", { enabled });
+
 export type HarnessId = "claude-code" | "codex" | "opencode";
 
 export interface HarnessModel {
