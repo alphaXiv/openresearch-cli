@@ -99,16 +99,15 @@ project/experiment ids or names, repo names, tokens, emails, or any other
 personal or identifying data. The install UUID is random and not tied to your
 account.
 
-**How to opt out** — any one of:
+**How to opt out** — either:
 
 ```bash
 orx telemetry off          # persistent, per-machine
 orx telemetry status       # see current state + the anonymous install id
-export DO_NOT_TRACK=1       # honored (any value)
-export ORX_TELEMETRY=off    # 0 / off / false
 orx <cmd> --no-telemetry    # per-run
 ```
 
-Analytics is also disabled automatically when `CI` is set. Events are sent
-fire-and-forget on a background task with a short timeout, so they never
-meaningfully block or fail a command (at most a brief flush window on exit).
+Events are sent fire-and-forget on a background task with a short timeout, so
+they never meaningfully block or fail a command (at most a brief flush window on
+exit). Every event carries a `ci` property, so automated runs can be filtered in
+analytics without being dropped up front.

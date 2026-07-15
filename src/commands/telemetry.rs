@@ -42,7 +42,7 @@ fn set_disabled(disabled: bool) -> Result<()> {
         println!("\u{2713} Anonymous usage analytics disabled on this machine.");
     } else {
         println!("\u{2713} Anonymous usage analytics enabled.");
-        println!("  (Environment opt-outs like DO_NOT_TRACK or CI still take precedence.)");
+        println!("  (The --no-telemetry flag still disables it for a single run.)");
     }
     Ok(())
 }

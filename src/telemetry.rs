@@ -6,11 +6,11 @@
 //! identity — never any PII, prompt text, file paths, ids, or repo contents).
 //!
 //! Guarantees, enforced by this module:
-//! - **Opt-out and loud about it.** Honors `DO_NOT_TRACK`, `ORX_TELEMETRY`,
-//!   `CI`, a `--no-telemetry` flag, and a persisted `orx telemetry off`. A
-//!   disabled run sends nothing and generates no install id. (The sole disk
-//!   touch on a disabled run is the one-time first-login notice recording that
-//!   it was shown — local bookkeeping only, never a network call.)
+//! - **Opt-out and loud about it.** A `--no-telemetry` flag and a persisted
+//!   `orx telemetry off` (surfaced by a first-login notice). A disabled run
+//!   sends nothing and generates no install id. (The sole disk touch on a
+//!   disabled run is the one-time first-login notice recording that it was
+//!   shown — local bookkeeping only, never a network call.)
 //! - **Never blocks or crashes the CLI.** Sends are fire-and-forget on a
 //!   background task with a bounded flush window (modeled on
 //!   [`crate::updates::UpdateWarning`]); every error is swallowed. A telemetry
@@ -255,9 +255,6 @@ fn install_id() -> Option<String> {
 /// Why telemetry is off, for `orx telemetry status`. `None` = enabled.
 pub(crate) enum DisabledReason {
     Flag,
-    DoNotTrack,
-    OrxTelemetry,
-    Ci,
     Persisted,
     CorruptSettings,
 }
@@ -266,38 +263,26 @@ impl DisabledReason {
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
             DisabledReason::Flag => "--no-telemetry flag",
-            DisabledReason::DoNotTrack => "DO_NOT_TRACK is set",
-            DisabledReason::OrxTelemetry => "ORX_TELEMETRY is off",
-            DisabledReason::Ci => "CI is set",
             DisabledReason::Persisted => "disabled via `orx telemetry off`",
             DisabledReason::CorruptSettings => "settings file unreadable (failing safe)",
         }
     }
 }
 
-/// Resolves whether telemetry is disabled and why. Env/flag/CI are checked
-/// before the persisted setting so a disabled run never reads or writes disk.
+/// Resolves whether telemetry is disabled and why. The flag is checked before
+/// the persisted setting so a `--no-telemetry` run never reads disk.
 /// `cli_flag` is the `--no-telemetry` global flag.
+///
+/// Opt-out surface is intentionally minimal: the `--no-telemetry` flag and the
+/// persistent `orx telemetry off`. Automated/CI runs are not auto-disabled —
+/// the `ci` property on every event lets those be filtered at query time
+/// instead, which also catches automation the old `CI` env check missed
+/// (agent boxes, Jenkins, ad-hoc scripts).
 pub(crate) fn disabled_reason(cli_flag: bool) -> Option<DisabledReason> {
     if cli_flag {
         return Some(DisabledReason::Flag);
     }
-    // Presence (any value) opts out — the DO_NOT_TRACK convention.
-    if std::env::var_os("DO_NOT_TRACK").is_some() {
-        return Some(DisabledReason::DoNotTrack);
-    }
-    // Explicit off switch: 0 / off / false (case-insensitive).
-    if let Ok(v) = std::env::var("ORX_TELEMETRY") {
-        let v = v.trim().to_ascii_lowercase();
-        if v == "0" || v == "off" || v == "false" {
-            return Some(DisabledReason::OrxTelemetry);
-        }
-    }
-    // Keep CI pipelines out of DAU/retention.
-    if std::env::var_os("CI").is_some() {
-        return Some(DisabledReason::Ci);
-    }
-    // Persisted state is checked last (the only branch that reads disk).
+    // Persisted state is the only branch that reads disk.
     match read_settings_state() {
         SettingsState::Loaded(s) if s.telemetry_disabled == Some(true) => {
             Some(DisabledReason::Persisted)
@@ -535,12 +520,13 @@ impl TelemetrySession {
 ///
 /// The disclosure is printed regardless of whether telemetry is currently
 /// enabled, and `notice_shown` is recorded ONLY once it has actually been
-/// printed. This is deliberate: the common first-login-under-`CI` case (or with
-/// `DO_NOT_TRACK` set) would otherwise mark the notice "shown" while printing
-/// nothing, and the user would *never* see the disclosure even after telemetry
-/// later became active on that machine — a real gap for an opt-out system whose
-/// whole basis is "we told you once." When disabled, the text says so and names
-/// the reason. Best-effort throughout — never fails login, never touches stdout.
+/// printed. This is deliberate: a first login that happens to be disabled (e.g.
+/// `orx login --no-telemetry`, or a machine already opted out) would otherwise
+/// mark the notice "shown" while printing nothing, and the user would *never*
+/// see the disclosure even after telemetry later became active — a real gap for
+/// an opt-out system whose whole basis is "we told you once." When disabled, the
+/// text says so and names the reason. Best-effort throughout — never fails
+/// login, never touches stdout.
 pub(crate) fn show_notice_once() {
     if load_settings().and_then(|s| s.notice_shown) == Some(true) {
         return;
@@ -553,9 +539,7 @@ pub(crate) fn show_notice_once() {
                 "orx collects anonymous usage analytics to help improve the tool. \
                  No code, prompts, file contents, or identifiers are ever sent."
             );
-            eprintln!(
-                "Opt out anytime with `orx telemetry off`, DO_NOT_TRACK=1, or --no-telemetry."
-            );
+            eprintln!("Opt out anytime with `orx telemetry off` or the --no-telemetry flag.");
         }
         Some(reason) => {
             eprintln!();
@@ -612,7 +596,7 @@ mod tests {
     use std::sync::{Mutex, MutexGuard};
 
     // Serializes the telemetry tests below, which mutate process-global env
-    // (DO_NOT_TRACK / ORX_TELEMETRY / CI / XDG_CONFIG_HOME). IMPORTANT: this lock
+    // (XDG_CONFIG_HOME, and ORX_TELEMETRY_HOST in one test). IMPORTANT: this lock
     // is telemetry-module-local — it does NOT protect against a test in ANOTHER
     // module reading those same vars concurrently under the default
     // multithreaded test runner. Today no other test reads them at runtime (the
@@ -652,7 +636,7 @@ mod tests {
         }
     }
 
-    const OPT_VARS: &[&str] = &["DO_NOT_TRACK", "ORX_TELEMETRY", "CI", "XDG_CONFIG_HOME"];
+    const OPT_VARS: &[&str] = &["XDG_CONFIG_HOME"];
 
     #[test]
     fn opt_out_precedence() {
@@ -662,41 +646,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("orx-tel-none-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
 
-        // Clean env, no flag → enabled.
+        // Clean state, no flag → enabled. Automated/CI environments are NOT
+        // auto-disabled (that's a query-time filter via the `ci` property).
         assert!(is_enabled(false));
 
-        // --no-telemetry flag.
+        // The only per-run opt-out is the --no-telemetry flag.
         assert!(matches!(disabled_reason(true), Some(DisabledReason::Flag)));
 
-        // DO_NOT_TRACK: any value (even empty) opts out.
-        std::env::set_var("DO_NOT_TRACK", "");
-        assert!(matches!(
-            disabled_reason(false),
-            Some(DisabledReason::DoNotTrack)
-        ));
-        std::env::remove_var("DO_NOT_TRACK");
-
-        // ORX_TELEMETRY off switches.
-        for v in ["0", "off", "false", "OFF", "False"] {
-            std::env::set_var("ORX_TELEMETRY", v);
-            assert!(
-                matches!(disabled_reason(false), Some(DisabledReason::OrxTelemetry)),
-                "ORX_TELEMETRY={v} should disable"
-            );
-        }
-        // A non-off value leaves it enabled.
-        std::env::set_var("ORX_TELEMETRY", "1");
-        assert!(is_enabled(false));
-        std::env::remove_var("ORX_TELEMETRY");
-
-        // CI presence.
-        std::env::set_var("CI", "true");
-        assert!(matches!(disabled_reason(false), Some(DisabledReason::Ci)));
-        std::env::remove_var("CI");
-
-        // Flag beats everything.
-        std::env::set_var("CI", "true");
-        assert!(matches!(disabled_reason(true), Some(DisabledReason::Flag)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -888,19 +845,20 @@ mod tests {
         // Dead endpoint: the send will fail fast; we only care about registration
         // and that flush_pending returns (bounded, never hangs).
         std::env::set_var("ORX_TELEMETRY_HOST", "http://127.0.0.1:9");
-        set_flag(false);
         // Start from a clean pending set (this is the only test that uses it,
         // but guard against ordering just in case).
         pending().lock().unwrap().clear();
 
-        // Disabled → nothing registered.
-        std::env::set_var("DO_NOT_TRACK", "1");
+        // Disabled (persisted opt-out) → nothing registered. Using the persisted
+        // flag rather than the process-global `--no-telemetry` flag, which is a
+        // write-once OnceLock another test may already have set.
+        set_persisted_disabled(true).unwrap();
         capture("experiment_started", json!({ "kind": "run" }));
         assert!(
             pending().lock().unwrap().is_empty(),
             "disabled capture must register nothing"
         );
-        std::env::remove_var("DO_NOT_TRACK");
+        set_persisted_disabled(false).unwrap();
 
         // Enabled → capture returns immediately (non-blocking) and registers a
         // handle for the exit-time flush.

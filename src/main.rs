@@ -40,8 +40,8 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// Disable anonymous usage analytics for this run. See also DO_NOT_TRACK,
-    /// ORX_TELEMETRY=off, and `orx telemetry off`.
+    /// Disable anonymous usage analytics for this run. To disable it
+    /// persistently, run `orx telemetry off`.
     #[arg(long, global = true)]
     no_telemetry: bool,
 }
@@ -731,7 +731,7 @@ async fn main() {
     // modules can fire events without threading it through, then fire the
     // per-invocation event *before* dispatch so commands that exit on their own
     // (e.g. the "not logged in" path) are still counted. Opt out with
-    // --no-telemetry / DO_NOT_TRACK / ORX_TELEMETRY=off / `orx telemetry off`.
+    // --no-telemetry or `orx telemetry off`.
     telemetry::set_flag(cli.no_telemetry);
     let session = telemetry::TelemetrySession::start(command_name(&command));
 
