@@ -21,6 +21,7 @@ mod jobs;
 #[allow(dead_code)]
 mod local;
 mod output;
+mod remote;
 mod store;
 mod updates;
 
@@ -615,9 +616,16 @@ pub struct SuperviseArgs {
 
 #[derive(Args, Debug)]
 pub struct UpArgs {
-    /// Port to bind on 127.0.0.1.
+    /// Port to bind on 127.0.0.1. With `--remote`, the local port to forward.
     #[arg(long, default_value_t = 4791)]
     pub port: u16,
+    /// Run `orx up` on a remote box over SSH and forward it here. The value is
+    /// an `~/.ssh/config` host alias (or `user@host`). Starts the server there,
+    /// tunnels `--port` to your laptop, and opens your browser. Note: the remote
+    /// dashboard is unauthenticated and bound to that host's loopback, so anyone
+    /// else with an account on that host can reach it.
+    #[arg(long, value_name = "HOST")]
+    pub remote: Option<String>,
     /// Don't open the dashboard in the browser on startup.
     #[arg(long)]
     pub no_browser: bool,
@@ -745,6 +753,9 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Update(args) => commands::update::run(args).await,
         Command::Serve(args) => commands::serve::run(args).await,
         Command::Supervise(args) => commands::supervise::run(args).await,
-        Command::Up(args) => commands::up::run(args).await,
+        Command::Up(args) => match args.remote.clone() {
+            Some(host) => commands::up_remote::run(&host, args).await,
+            None => commands::up::run(args).await,
+        },
     }
 }

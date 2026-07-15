@@ -43,6 +43,7 @@ pub mod serve;
 pub mod skill;
 pub mod supervise;
 pub mod up;
+pub mod up_remote;
 pub mod update;
 pub mod version;
 pub mod wandb;
