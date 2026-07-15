@@ -86,8 +86,8 @@ sent as `Authorization: Bearer …` on every subsequent request.
 ## Usage analytics
 
 `orx` sends **anonymous** usage analytics to help us understand which features
-are used and prioritize accordingly. This is **opt-out** — a one-time notice is
-shown after your first `orx login`.
+are used and prioritize accordingly. This is **opt-out**; the `orx up` dashboard
+surfaces the choice as a step in first-run onboarding.
 
 **What is collected** — the command name that was run, a random per-install UUID,
 the CLI version, your OS/architecture, whether the run is in CI, and a small set

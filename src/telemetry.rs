@@ -6,11 +6,9 @@
 //! identity — never any PII, prompt text, file paths, ids, or repo contents).
 //!
 //! Guarantees, enforced by this module:
-//! - **Opt-out and loud about it.** A `--no-telemetry` flag and a persisted
-//!   `orx telemetry off` (surfaced by a first-login notice). A disabled run
-//!   sends nothing and generates no install id. (The sole disk touch on a
-//!   disabled run is the one-time first-login notice recording that it was
-//!   shown — local bookkeeping only, never a network call.)
+//! - **Opt-out.** A `--no-telemetry` flag and a persistent `orx telemetry off`
+//!   (also toggleable from the `orx up` onboarding step). A disabled run sends
+//!   nothing, touches no disk, and generates no install id.
 //! - **Never blocks or crashes the CLI.** Sends are fire-and-forget on a
 //!   background task with a bounded flush window (modeled on
 //!   [`crate::updates::UpdateWarning`]); every error is swallowed. A telemetry
@@ -85,9 +83,6 @@ pub(crate) struct Settings {
     /// Set by `orx telemetry off`. `Some(true)` = user opted out persistently.
     #[serde(default)]
     pub telemetry_disabled: Option<bool>,
-    /// Whether the one-time opt-out notice has been printed (after login).
-    #[serde(default)]
-    pub notice_shown: Option<bool>,
 }
 
 fn settings_path() -> PathBuf {
@@ -513,53 +508,6 @@ impl TelemetrySession {
 }
 
 // ---------------------------------------------------------------------------
-// First-run onboarding notice
-// ---------------------------------------------------------------------------
-
-/// The one-time disclosure, printed to stderr after the first `orx login`.
-///
-/// The disclosure is printed regardless of whether telemetry is currently
-/// enabled, and `notice_shown` is recorded ONLY once it has actually been
-/// printed. This is deliberate: a first login that happens to be disabled (e.g.
-/// `orx login --no-telemetry`, or a machine already opted out) would otherwise
-/// mark the notice "shown" while printing nothing, and the user would *never*
-/// see the disclosure even after telemetry later became active — a real gap for
-/// an opt-out system whose whole basis is "we told you once." When disabled, the
-/// text says so and names the reason. Best-effort throughout — never fails
-/// login, never touches stdout.
-pub(crate) fn show_notice_once() {
-    if load_settings().and_then(|s| s.notice_shown) == Some(true) {
-        return;
-    }
-
-    match disabled_reason(flag()) {
-        None => {
-            eprintln!();
-            eprintln!(
-                "orx collects anonymous usage analytics to help improve the tool. \
-                 No code, prompts, file contents, or identifiers are ever sent."
-            );
-            eprintln!("Opt out anytime with `orx telemetry off` or the --no-telemetry flag.");
-        }
-        Some(reason) => {
-            eprintln!();
-            eprintln!(
-                "orx can collect anonymous usage analytics to help improve the tool \
-                 (no code, prompts, file contents, or identifiers are ever sent)."
-            );
-            eprintln!(
-                "It is currently off ({}). Enable it with `orx telemetry on`.",
-                reason.as_str()
-            );
-        }
-    }
-
-    // Only reached after the disclosure was actually printed above, so we never
-    // mark it shown without showing it.
-    let _ = mutate_settings(|s| s.notice_shown = Some(true));
-}
-
-// ---------------------------------------------------------------------------
 // Key event: experiment started
 // ---------------------------------------------------------------------------
 
@@ -696,12 +644,13 @@ mod tests {
 
         set_persisted_disabled(true).unwrap(); // sets telemetry_disabled
         let _ = install_id(); // sets install_id via a separate mutation
-        mutate_settings(|s| s.notice_shown = Some(true)).unwrap();
 
         let s = load_settings().expect("settings present");
         assert_eq!(s.telemetry_disabled, Some(true), "opt-out survived");
-        assert!(s.install_id.is_some(), "install id survived");
-        assert_eq!(s.notice_shown, Some(true), "notice flag survived");
+        assert!(
+            s.install_id.is_some(),
+            "install id survived a separate opt-out mutation"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
