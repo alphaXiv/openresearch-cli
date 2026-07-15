@@ -13,6 +13,35 @@
 //! print the exact command to paste. Fully automatic forwarding lives in
 //! `orx up --remote <host>` (`commands::up_remote`), which owns the client side.
 
+use std::io::IsTerminal;
+
+/// Whether stderr can render ANSI: a real terminal and `NO_COLOR` unset. Pipes,
+/// CI, and redirects get plain text — never raw escape codes. Mirrors the same
+/// gate in [`crate::updates`].
+fn stderr_supports_ansi() -> bool {
+    std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal()
+}
+
+/// Bold when `enabled`, else the text unchanged. `\x1b[22m` resets bold/faint
+/// specifically (not `\x1b[0m`, which would clear surrounding styling too).
+fn bold(text: &str, enabled: bool) -> String {
+    if enabled {
+        format!("\x1b[1m{text}\x1b[22m")
+    } else {
+        text.to_string()
+    }
+}
+
+/// Dim (faint) when `enabled`, else the text unchanged — used to push the
+/// secondary path and asides behind the one command that matters.
+fn dim(text: &str, enabled: bool) -> String {
+    if enabled {
+        format!("\x1b[2m{text}\x1b[22m")
+    } else {
+        text.to_string()
+    }
+}
+
 /// Facts about the current SSH session, parsed from `SSH_CONNECTION`.
 ///
 /// `SSH_CONNECTION` is set by sshd as `"clientIP clientPort serverIP serverPort"`.
@@ -95,34 +124,60 @@ impl SshSession {
         Some(ip)
     }
 
-    /// The multi-line message to print on `orx up` startup when we're in SSH.
-    /// `port` is the port `orx up` bound on the remote's loopback.
+    /// The message to print on `orx up` startup when we're in SSH. `port` is the
+    /// port `orx up` bound on the remote's loopback.
     ///
     /// The reader is *inside* the SSH session, so the text is careful to say
-    /// "from your laptop, not this session" — both suggested commands run on the
-    /// laptop, never here.
+    /// "from your laptop" — both suggested commands run on the laptop, never here.
+    /// Styling is stripped on pipes/CI/`NO_COLOR` so those get clean plain text.
     pub fn instructions(&self, port: u16) -> String {
+        self.render_instructions(port, stderr_supports_ansi())
+    }
+
+    /// Core of [`instructions`], with ANSI styling as an explicit arg so it's
+    /// testable without touching the environment.
+    fn render_instructions(&self, port: u16, ansi: bool) -> String {
+        // `<ssh-alias>` is the ~/.ssh/config alias / user@host the reader typed
+        // to connect — carried inline so the "not the box's IP" point lands next
+        // to the placeholder instead of in a separate paragraph.
+        let alias = dim("<ssh-alias>", ansi);
         let mut out = format!(
-            "orx up: dashboard on http://127.0.0.1:{port} (on this remote host)\n\n\
-             You're connected over SSH, so this URL only works on the remote box.\n\
-             Both options below run on your laptop — not in this SSH session.\n\n\
-             Replace <ssh-alias> with the name you gave `ssh` to connect — the\n\
-             ~/.ssh/config alias (or user@host), not the box's IP address.\n\n\
-             The easiest way — from your laptop, run:\n\n\
-             \x20   orx up --remote <ssh-alias>\n\n\
-             That launches orx up on this host, forwards the port to your laptop,\n\
-             and opens your browser. Nothing else to run here.\n\n\
-             Or, to reach the server already running here, open a new terminal on\n\
-             your laptop and forward the port yourself, then browse to \
-             http://localhost:{port} :\n\n\
-             \x20   ssh -N -L {port}:localhost:{port} <ssh-alias>\n\
-             \x20   (that command stays running with no output — leave it open)\n"
+            "{header}\n\n\
+             {intro}\n\n\
+             {run_from_laptop}\n\
+             \x20 {primary} {alias}\n\n\
+             {alias_note}\n\n\
+             {or_line}\n\
+             \x20 {manual}\n",
+            header = bold(
+                &format!("orx up: serving on http://127.0.0.1:{port} (this remote host)"),
+                ansi,
+            ),
+            intro = "This URL only works here on the box. To open it on your laptop,\n\
+                     run one of these — from your laptop, not this SSH session:",
+            run_from_laptop = "Easiest — let orx forward it for you:",
+            primary = bold("orx up --remote", ansi),
+            alias_note = dim(
+                "<ssh-alias> is the name you gave ssh (~/.ssh/config alias or \
+                 user@host), not the box's IP.",
+                ansi,
+            ),
+            or_line = dim("Or forward it yourself in a new laptop terminal:", ansi),
+            manual = dim(
+                &format!(
+                    "ssh -N -L {port}:localhost:{port} <ssh-alias>   \
+                     # then open http://localhost:{port}",
+                ),
+                ansi,
+            ),
         );
         if let Some(ip) = self.server_ip_hint() {
-            out.push_str(&format!(
-                "\n(no alias set up? the address {ip} may work in place of \
-                 <ssh-alias>, though you may need your usual `-i`/`-p` ssh options)\n"
+            out.push('\n');
+            out.push_str(&dim(
+                &format!("No alias? {ip} may work in its place (add your usual -i/-p)."),
+                ansi,
             ));
+            out.push('\n');
         }
         out
     }
@@ -166,7 +221,7 @@ mod tests {
         // Parsed and stored, but filtered out of the suggestion.
         assert_eq!(s.server_ip, "10.0.0.5");
         assert!(s.server_ip_hint().is_none());
-        assert!(!s.instructions(4791).contains("10.0.0.5"));
+        assert!(!s.render_instructions(4791, false).contains("10.0.0.5"));
     }
 
     #[test]
@@ -181,19 +236,38 @@ mod tests {
     fn public_server_ip_is_hinted() {
         let s = detect_from(Some("203.0.113.7 51344 198.51.100.5 22"), false).unwrap();
         assert_eq!(s.server_ip_hint(), Some("198.51.100.5"));
-        assert!(s.instructions(4791).contains("198.51.100.5"));
+        assert!(s.render_instructions(4791, false).contains("198.51.100.5"));
     }
 
     #[test]
     fn instructions_mention_both_paths_and_port() {
+        // Plain (no ANSI) so assertions match the literal text.
         let msg = detect_from(Some("203.0.113.7 51344 10.0.0.5 22"), false)
             .unwrap()
-            .instructions(4899);
+            .render_instructions(4899, false);
         assert!(msg.contains("orx up --remote"));
         assert!(msg.contains("ssh -N -L 4899:localhost:4899"));
         assert!(msg.contains("http://localhost:4899"));
         // The placeholder is the ssh alias, and the text says so explicitly.
         assert!(msg.contains("<ssh-alias>"));
-        assert!(msg.contains("not the box's IP address"));
+        assert!(msg.contains("not the box's IP"));
+    }
+
+    #[test]
+    fn styling_is_stripped_when_ansi_disabled() {
+        // No raw escape codes leak into non-terminal output.
+        let msg = detect_from(Some("203.0.113.7 51344 198.51.100.5 22"), false)
+            .unwrap()
+            .render_instructions(4791, false);
+        assert!(!msg.contains('\x1b'));
+    }
+
+    #[test]
+    fn styling_wraps_the_primary_command_when_ansi_enabled() {
+        let msg = detect_from(Some("203.0.113.7 51344 10.0.0.5 22"), false)
+            .unwrap()
+            .render_instructions(4791, true);
+        // The primary command is bolded; the whole thing carries escape codes.
+        assert!(msg.contains("\x1b[1morx up --remote\x1b[22m"));
     }
 }
