@@ -1742,6 +1742,7 @@ async fn delete_chat_session(State(state): State<AppState>, Path(id): Path<Strin
 #[serde(rename_all = "camelCase")]
 struct UpdateChatSessionReq {
     archived: Option<bool>,
+    title: Option<String>,
 }
 
 async fn update_chat_session(
@@ -1749,14 +1750,25 @@ async fn update_chat_session(
     Path(id): Path<String>,
     Json(req): Json<UpdateChatSessionReq>,
 ) -> ApiResult {
-    let Some(archived) = req.archived else {
+    let session = if let Some(title) = req.title {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(bad_request("title cannot be empty"));
+        }
+        state
+            .chat
+            .set_title(&id, title)
+            .await?
+            .ok_or_else(|| not_found("chat session"))?
+    } else if let Some(archived) = req.archived {
+        state
+            .chat
+            .set_archived(&id, archived)
+            .await?
+            .ok_or_else(|| not_found("chat session"))?
+    } else {
         return Err(bad_request("nothing to update"));
     };
-    let session = state
-        .chat
-        .set_archived(&id, archived)
-        .await?
-        .ok_or_else(|| not_found("chat session"))?;
     let busy = state.chat.is_busy(&id).await;
     Ok(Json(
         json!({ "session": local::chat::session_json(&session, busy) }),
