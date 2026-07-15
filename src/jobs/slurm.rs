@@ -169,10 +169,14 @@ fn render_sbatch(spec: &SlurmJobSpec) -> String {
     // The script exits with the payload's code so Slurm's own COMPLETED/FAILED
     // verdict mirrors the payload — inspect leans on that when the exit_code
     // file is NFS-lagged behind the compute node's write.
+    // Default the payload's Python to unbuffered so its prints stream live
+    // instead of block-buffering behind Slurm's --output redirect. Only the
+    // sbatch payload runs the job — the login-node setup script (below) is a
+    // git clone, so it keeps the raw env (see jobs::default_unbuffered).
     format!(
         "#!/usr/bin/env bash\n{directives}\n{exports}\n(\ncd repo || exit 97\n{command}\n)\ncode=$?\necho \"$code\" > exit_code\nexit \"$code\"\n",
         directives = directives.join("\n"),
-        exports = render_exports(&spec.env),
+        exports = render_exports(&super::default_unbuffered(&spec.env)),
         command = spec.command,
     )
 }
@@ -436,6 +440,9 @@ mod tests {
         assert!(!script.contains("--account"));
         assert!(!script.contains("--gres"));
         assert!(!script.contains("--time"));
+        // Python is defaulted to unbuffered even with no author env, so Slurm's
+        // --output redirect streams the job's prints live.
+        assert!(script.contains("export PYTHONUNBUFFERED='1'\n"));
         // Payload in a subshell; its code is recorded AND becomes the script's
         // exit status (Slurm's COMPLETED/FAILED must mirror the payload).
         assert!(script.ends_with(

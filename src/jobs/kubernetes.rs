@@ -472,6 +472,12 @@ fn prepare_docs(
             .filter(|e| e["name"] != "ORX_SCRIPT")
             .collect();
         env.push(json!({ "name": "ORX_SCRIPT", "value": script }));
+        // Default the container's Python to unbuffered so the job's prints
+        // stream live (kubectl logs -f can't flush what the app never wrote).
+        // A user-set value in the manifest wins.
+        if !env.iter().any(|e| e["name"] == super::PYTHONUNBUFFERED) {
+            env.push(json!({ "name": super::PYTHONUNBUFFERED, "value": "1" }));
+        }
         c["env"] = json!(env);
         let env_from = c["envFrom"]
             .as_array_mut()
@@ -870,11 +876,39 @@ mod tests {
         let (docs, _) = prepare(j).unwrap();
         let c = &docs[0]["spec"]["template"]["spec"]["containers"][0];
         let env = c["env"].as_array().unwrap();
-        assert_eq!(env.len(), 2);
+        // FOO + rewritten ORX_SCRIPT + the injected PYTHONUNBUFFERED default.
+        assert_eq!(env.len(), 3);
         assert!(env.iter().any(|e| e["name"] == "FOO"));
         assert!(env
             .iter()
             .any(|e| e["name"] == "ORX_SCRIPT" && e["value"] == "echo hi"));
         assert_eq!(c["envFrom"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn python_unbuffered_defaulted_and_author_value_wins() {
+        // Default: injected when the author didn't set it.
+        let (docs, _) = prepare(job("train")).unwrap();
+        let c = &docs[0]["spec"]["template"]["spec"]["containers"][0];
+        assert!(c["env"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["name"] == "PYTHONUNBUFFERED" && e["value"] == "1"));
+
+        // Override: an explicit author value is preserved, not duplicated.
+        let mut j = job("train");
+        j["spec"]["template"]["spec"]["containers"][0]["env"] =
+            json!([{ "name": "PYTHONUNBUFFERED", "value": "0" }]);
+        let (docs, _) = prepare(j).unwrap();
+        let c = &docs[0]["spec"]["template"]["spec"]["containers"][0];
+        let hits: Vec<_> = c["env"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["name"] == "PYTHONUNBUFFERED")
+            .collect();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["value"], "0");
     }
 }

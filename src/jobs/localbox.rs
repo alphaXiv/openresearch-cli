@@ -41,8 +41,11 @@ pub fn run_job(spec: &LocalJobSpec) -> Result<PathBuf> {
     let dir = run_dir(&spec.run_id);
     std::fs::create_dir_all(&dir)
         .map_err(|e| anyhow!("Could not create {}: {}", dir.display(), e))?;
-    let exports: String = spec
-        .env
+    // Default the job's Python to unbuffered so its prints land in `log` (which
+    // we tail) live instead of block-buffering behind the redirect (see
+    // jobs::default_unbuffered).
+    let env = super::default_unbuffered(&spec.env);
+    let exports: String = env
         .iter()
         .map(|(k, v)| format!("export {}={}", k, sh_quote(v)))
         .collect::<Vec<_>>()
@@ -218,6 +221,9 @@ mod tests {
         .unwrap();
         let state = wait_terminal(&dir);
         assert_eq!(state.stage, "COMPLETED", "message: {:?}", state.message);
+        // Python is defaulted to unbuffered so tailed-`log` output streams live.
+        let run_sh = std::fs::read_to_string(dir.join("run.sh")).unwrap();
+        assert!(run_sh.contains("export PYTHONUNBUFFERED='1'\n"));
 
         let mut lines = Vec::new();
         let seen = stream_logs(&dir, 0, &mut |l| lines.push(l.to_string())).unwrap();
