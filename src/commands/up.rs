@@ -600,6 +600,8 @@ struct RunReq {
     /// ssh config host alias of the Slurm login node (slurm only; defaults to
     /// the slurm settings' host).
     host: Option<String>,
+    /// Org to bill the box to (openresearch only; omit = the sole org).
+    org: Option<String>,
 }
 
 async fn run_experiment(Path(id): Path<String>, body: Bytes) -> ApiResult {
@@ -621,6 +623,7 @@ async fn run_experiment(Path(id): Path<String>, body: Bytes) -> ApiResult {
         sandbox: None,
         backend: Some(backend.clone()),
         flavor: req.flavor,
+        org: req.org,
         host: req.host,
         manifest: req.manifest,
         image: None,
@@ -632,8 +635,9 @@ async fn run_experiment(Path(id): Path<String>, body: Bytes) -> ApiResult {
         "hf" => local::hf::submit_local_hf(&args).await,
         "k8s" => local::k8s::submit_local_k8s(&args).await,
         "slurm" => local::slurm::submit_local_slurm(&args).await,
+        "openresearch" => local::openresearch::submit_local_openresearch(&args).await,
         other => Err(anyhow!(
-            "Unknown backend '{other}'. Supported: hf, k8s, slurm."
+            "Unknown backend '{other}'. Supported: hf, k8s, slurm, openresearch."
         )),
     }
     .map_err(bad_request)?;
@@ -1536,7 +1540,7 @@ async fn ssh_preflight(Json(req): Json<SshPreflightReq>) -> ApiResult {
     if host.is_empty() {
         return Err(bad_request("host is required"));
     }
-    let p = crate::jobs::ssh::preflight(&host).await;
+    let p = crate::jobs::ssh::preflight(&crate::jobs::ssh::SshTarget::alias(&host)).await;
     let test = SshHostTest {
         host,
         reachable: p.reachable,

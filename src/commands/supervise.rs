@@ -26,6 +26,7 @@ use crate::jobs::huggingface as hf;
 use crate::jobs::kubernetes as k8s;
 use crate::jobs::localbox;
 use crate::jobs::modal;
+use crate::jobs::openresearch;
 use crate::jobs::slurm;
 use crate::jobs::ssh;
 use crate::jobs::{is_terminal_stage, stage_to_run_status, BackendDescriptor};
@@ -61,6 +62,9 @@ pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
     }
     if descriptor.kind == "slurm_job" {
         return run_slurm(store, stored, descriptor, creds, run_id).await;
+    }
+    if descriptor.kind == "openresearch_job" {
+        return run_openresearch(store, stored, descriptor, creds, run_id).await;
     }
     if descriptor.kind == "local_job" {
         return run_local(store, stored, descriptor, creds, run_id).await;
@@ -678,26 +682,39 @@ async fn run_ssh(
     run_id: String,
 ) -> Result<()> {
     let (host, dir) = descriptor.ssh_ref()?;
-    let host = host.to_string();
-    let dir = dir.to_string();
-
     eprintln!("supervise {run_id}: watching ssh job {host}:{dir}");
+    let target = ssh::SshTarget::alias(host);
+    let dir = dir.to_string();
+    watch_ssh_job(&store, &stored.status, target, dir, &creds, &run_id).await?;
+    Ok(())
+}
 
-    let path = log_path(&run_id);
+/// The ssh two-half loop, shared by every backend whose job is a run dir on a
+/// box we ssh into (ssh itself, openresearch). Runs until the job is terminal;
+/// returns the final run status after logs are drained and mirrored.
+async fn watch_ssh_job(
+    store: &Store,
+    initial_status: &str,
+    target: ssh::SshTarget,
+    dir: String,
+    creds: &Option<Credentials>,
+    run_id: &str,
+) -> Result<String> {
+    let path = log_path(run_id);
     let (done_tx, done_rx) = tokio::sync::watch::channel(false);
     let mut log_task = tokio::spawn(tail_logs_ssh(
-        host.clone(),
+        target.clone(),
         dir.clone(),
         path.clone(),
-        run_id.clone(),
+        run_id.to_string(),
         done_rx,
     ));
 
-    let mut last_status = stored.status.clone();
+    let mut last_status = initial_status.to_string();
     let mut cancel_sent = false;
 
     loop {
-        let job = match ssh::inspect_job(&host, &dir).await {
+        let job = match ssh::inspect_job(&target, &dir).await {
             Ok(j) => j,
             Err(err) => {
                 eprintln!("supervise {run_id}: inspect failed (will retry): {err}");
@@ -713,11 +730,11 @@ async fn run_ssh(
         };
 
         if is_terminal_stage(stage) {
-            store.update_status(&run_id, &status, Some(now_ms()), None)?;
+            store.update_status(run_id, &status, Some(now_ms()), None)?;
             if creds.is_none() && status == "failed" {
                 if let Some(msg) = &job.message {
                     if let Err(err) =
-                        store.set_result_markdown(&run_id, &format!("Job failed: {msg}"))
+                        store.set_result_markdown(run_id, &format!("Job failed: {msg}"))
                     {
                         eprintln!("supervise {run_id}: could not record failure reason: {err}");
                     }
@@ -730,10 +747,10 @@ async fn run_ssh(
             {
                 log_task.abort();
             }
-            if let Some(creds) = &creds {
+            if let Some(creds) = creds {
                 if let Ok(bytes) = std::fs::read(&path) {
                     if !bytes.is_empty() {
-                        match presign_external_run_log(creds, &run_id).await {
+                        match presign_external_run_log(creds, run_id).await {
                             Ok(presigned) => {
                                 if let Err(err) = upload_to_presigned(
                                     &presigned.url,
@@ -749,37 +766,37 @@ async fn run_ssh(
                         }
                     }
                 }
-                if let Err(err) = mirror_status(creds, &run_id, &status, &job.message).await {
+                if let Err(err) = mirror_status(creds, run_id, &status, &job.message).await {
                     eprintln!("supervise {run_id}: final status mirror failed: {err}");
                 }
             }
             eprintln!("supervise {run_id}: finished ({status})");
-            return Ok(());
+            return Ok(status);
         }
 
         if status != last_status {
-            store.update_status(&run_id, &status, None, None)?;
-            let cancel_requested = match &creds {
-                Some(creds) => mirror_status(creds, &run_id, &status, &job.message)
+            store.update_status(run_id, &status, None, None)?;
+            let cancel_requested = match creds {
+                Some(creds) => mirror_status(creds, run_id, &status, &job.message)
                     .await
                     .unwrap_or(false),
-                None => local_cancel_requested(&store, &run_id),
+                None => local_cancel_requested(store, run_id),
             };
             eprintln!("supervise {run_id}: {last_status} -> {status} (stage {stage})");
             last_status = status.clone();
             if cancel_requested && !cancel_sent {
-                cancel_ssh(&host, &dir, &run_id, &mut cancel_sent).await;
+                cancel_ssh(&target, &dir, run_id, &mut cancel_sent).await;
             }
         } else if !cancel_sent {
-            let cancel_requested = match &creds {
-                Some(creds) => crate::client::get_external_run_state(creds, &run_id)
+            let cancel_requested = match creds {
+                Some(creds) => crate::client::get_external_run_state(creds, run_id)
                     .await
                     .map(|s| s.cancel_requested)
                     .unwrap_or(false),
-                None => local_cancel_requested(&store, &run_id),
+                None => local_cancel_requested(store, run_id),
             };
             if cancel_requested {
-                cancel_ssh(&host, &dir, &run_id, &mut cancel_sent).await;
+                cancel_ssh(&target, &dir, run_id, &mut cancel_sent).await;
             }
         }
 
@@ -790,7 +807,7 @@ async fn run_ssh(
 /// SSH twin of `tail_logs` — each pass reads the remote log past the lines
 /// already consumed, so the same truncate-and-dedup contract applies.
 async fn tail_logs_ssh(
-    host: String,
+    target: ssh::SshTarget,
     dir: String,
     path: std::path::PathBuf,
     run_id: String,
@@ -816,7 +833,7 @@ async fn tail_logs_ssh(
         let mut sink = |line: &str| {
             let _ = writeln!(log_file, "{line}");
         };
-        match ssh::stream_logs(&host, &dir, seen, LOG_IDLE, &mut sink).await {
+        match ssh::stream_logs(&target, &dir, seen, LOG_IDLE, &mut sink).await {
             Ok(s) => seen = s,
             Err(err) => eprintln!("supervise {run_id}: log stream error (will retry): {err}"),
         }
@@ -828,11 +845,212 @@ async fn tail_logs_ssh(
     }
 }
 
-async fn cancel_ssh(host: &str, dir: &str, run_id: &str, cancel_sent: &mut bool) {
+async fn cancel_ssh(target: &ssh::SshTarget, dir: &str, run_id: &str, cancel_sent: &mut bool) {
     eprintln!("supervise {run_id}: cancel requested — killing remote process group");
-    match ssh::cancel_job(host, dir).await {
+    match ssh::cancel_job(target, dir).await {
         Ok(()) => *cancel_sent = true,
         Err(err) => eprintln!("supervise {run_id}: ssh cancel failed (will retry): {err}"),
+    }
+}
+
+// --- openresearch ---------------------------------------------------------------
+//
+// The ssh loop with a provisioning prologue and a billing epilogue: the box
+// comes from the platform, so the supervisor first waits for it to come online
+// (recording the SSH endpoint on the descriptor for restarts), launches the
+// payload over ssh, runs the shared watch loop, and deletes the box at the
+// end. EVERY exit path tears the box down — a leaked box bills the org.
+
+async fn run_openresearch(
+    store: Store,
+    stored: crate::store::StoredRun,
+    mut descriptor: BackendDescriptor,
+    creds: Option<Credentials>,
+    run_id: String,
+) -> Result<()> {
+    let (_org, sandbox_id) = descriptor.openresearch_ref()?;
+    let sandbox_id = sandbox_id.to_string();
+
+    // Lifecycle credentials (poll/teardown) are the user's `orx login` token —
+    // needed even though local runs skip the mirror (`creds`). Never
+    // `require_credentials()` here: it exit(1)s, and dying silently in a
+    // detached process would strand the run as "starting" and leak the box.
+    let lifecycle = match crate::config::load_credentials().await {
+        Ok(Some(c)) => c,
+        _ => {
+            store.update_status(&run_id, "failed", Some(now_ms()), None)?;
+            store.set_result_markdown(
+                &run_id,
+                &format!(
+                    "The supervisor found no OpenResearch credentials (`orx login`), so it \
+                     could not manage box {sandbox_id} — the box may still be running; \
+                     delete it from the dashboard."
+                ),
+            )?;
+            return Err(anyhow!("no credentials for the openresearch backend"));
+        }
+    };
+
+    let dir = openresearch::run_dir(&run_id);
+
+    // Provisioning: wait for the box unless a restarted supervisor already
+    // recorded its endpoint.
+    let target = match descriptor.openresearch_ssh_target() {
+        Some(target) => target,
+        None => {
+            eprintln!("supervise {run_id}: waiting for box {sandbox_id} to come online");
+            let outcome = openresearch::wait_online(
+                &lifecycle,
+                &sandbox_id,
+                openresearch::PROVISION_DEADLINE,
+                || local_cancel_requested(&store, &run_id),
+            )
+            .await;
+            let sandbox = match outcome {
+                Ok(openresearch::WaitOutcome::Online(sandbox)) => sandbox,
+                Ok(openresearch::WaitOutcome::Cancelled) => {
+                    eprintln!("supervise {run_id}: cancelled during provisioning");
+                    store.update_status(&run_id, "cancelled", Some(now_ms()), None)?;
+                    teardown_box(&store, &lifecycle, &sandbox_id, &run_id).await;
+                    return Ok(());
+                }
+                Err(err) => {
+                    store.update_status(&run_id, "failed", Some(now_ms()), None)?;
+                    store.set_result_markdown(&run_id, &format!("Provisioning failed: {err}"))?;
+                    teardown_box(&store, &lifecycle, &sandbox_id, &run_id).await;
+                    return Ok(());
+                }
+            };
+            descriptor.ssh_host = sandbox.ssh_hostname.clone();
+            descriptor.ssh_port = sandbox.ssh_port;
+            descriptor.ssh_user = sandbox.ssh_username.clone();
+            store.set_backend_json(&run_id, &descriptor.to_json())?;
+            descriptor
+                .openresearch_ssh_target()
+                .ok_or_else(|| anyhow!("box {sandbox_id} came online without an SSH endpoint"))?
+        }
+    };
+
+    // Launch, unless a previous supervisor already did (restart mid-run just
+    // reattaches to the watch loop). An unreachable box reads as fresh here;
+    // the launch retries below absorb that.
+    let already_launched = openresearch::launched(&target, &run_id)
+        .await
+        .unwrap_or(false);
+    if !already_launched {
+        // The payload is re-derivable from the store + config, so a restart
+        // that died before launching can rebuild it exactly.
+        let Some(exp) = store.get_local_experiment(&stored.experiment_id)? else {
+            store.update_status(&run_id, "failed", Some(now_ms()), None)?;
+            store.set_result_markdown(
+                &run_id,
+                "Local experiment vanished from the store before launch.",
+            )?;
+            teardown_box(&store, &lifecycle, &sandbox_id, &run_id).await;
+            return Ok(());
+        };
+        let Some(project) = store.get_local_project(&exp.project_id)? else {
+            store.update_status(&run_id, "failed", Some(now_ms()), None)?;
+            store.set_result_markdown(
+                &run_id,
+                "Local project vanished from the store before launch.",
+            )?;
+            teardown_box(&store, &lifecycle, &sandbox_id, &run_id).await;
+            return Ok(());
+        };
+        let script = crate::commands::exp::hf_clone_script(
+            &exp.branch_name,
+            &project.github_owner,
+            &project.github_repo,
+            &stored.command,
+        );
+        let script =
+            openresearch::wrap_with_timeout(&script, descriptor.timeout_secs.unwrap_or(4 * 3600));
+        let mut env: std::collections::HashMap<String, String> =
+            crate::config::list_synced_env().into_iter().collect();
+        if let Ok(hf_token) = hf::resolve_token() {
+            env.entry("HF_TOKEN".to_string()).or_insert(hf_token);
+        }
+        if let Some(gh) = crate::local::git::resolve_github_token() {
+            env.insert("GITHUB_TOKEN".to_string(), gh);
+        }
+
+        // sshd and the org key sync can lag a freshly-online box, so the
+        // launch retries for ~2 minutes before giving up.
+        let mut launch_err = None;
+        for backoff_secs in [0u64, 5, 10, 20, 30, 45] {
+            if backoff_secs > 0 {
+                tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+            }
+            if local_cancel_requested(&store, &run_id) {
+                eprintln!("supervise {run_id}: cancelled before launch");
+                store.update_status(&run_id, "cancelled", Some(now_ms()), None)?;
+                teardown_box(&store, &lifecycle, &sandbox_id, &run_id).await;
+                return Ok(());
+            }
+            match ssh::run_job(&ssh::SshJobSpec {
+                target: target.clone(),
+                run_id: run_id.clone(),
+                script: script.clone(),
+                env: env.clone(),
+            })
+            .await
+            {
+                Ok(_) => {
+                    launch_err = None;
+                    break;
+                }
+                Err(err) => {
+                    eprintln!("supervise {run_id}: launch failed (will retry): {err}");
+                    launch_err = Some(err);
+                }
+            }
+        }
+        if let Some(err) = launch_err {
+            store.update_status(&run_id, "failed", Some(now_ms()), None)?;
+            store.set_result_markdown(
+                &run_id,
+                &format!("Could not launch the run on box {sandbox_id}: {err}"),
+            )?;
+            teardown_box(&store, &lifecycle, &sandbox_id, &run_id).await;
+            return Ok(());
+        }
+    }
+
+    eprintln!(
+        "supervise {run_id}: watching openresearch box {sandbox_id} ({})",
+        target.dest
+    );
+    // The shared ssh loop owns status/logs/mirror; the box is deleted after
+    // it returns (logs are drained from the box BEFORE teardown), and even
+    // when it errors.
+    let watch = watch_ssh_job(&store, &stored.status, target, dir, &creds, &run_id).await;
+    teardown_box(&store, &lifecycle, &sandbox_id, &run_id).await;
+    watch?;
+    Ok(())
+}
+
+/// Delete the run's box; on failure warn loudly and leave a cleanup hint on
+/// the run. Teardown failure never changes the run's status — the run's
+/// outcome and the box's fate are separate facts.
+async fn teardown_box(store: &Store, creds: &Credentials, sandbox_id: &str, run_id: &str) {
+    match openresearch::teardown(creds, sandbox_id).await {
+        Ok(()) => eprintln!("supervise {run_id}: box {sandbox_id} deleted"),
+        Err(err) => {
+            eprintln!("supervise {run_id}: box {sandbox_id} could NOT be torn down: {err}");
+            let existing = store
+                .get_run(run_id)
+                .ok()
+                .flatten()
+                .and_then(|r| r.result_markdown)
+                .unwrap_or_default();
+            let hint = format!(
+                "\n\n> **Warning**: box {sandbox_id} could not be torn down ({err}) — it is \
+                 still billing. Delete it with `orx instance delete {sandbox_id}` or from the \
+                 dashboard."
+            );
+            let _ = store.set_result_markdown(run_id, &format!("{existing}{hint}"));
+        }
     }
 }
 
@@ -996,7 +1214,7 @@ async fn run_slurm(
     let path = log_path(&run_id);
     let (done_tx, done_rx) = tokio::sync::watch::channel(false);
     let mut log_task = tokio::spawn(tail_logs_ssh(
-        host.clone(),
+        ssh::SshTarget::alias(&host),
         dir.clone(),
         path.clone(),
         run_id.clone(),

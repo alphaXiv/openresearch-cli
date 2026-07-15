@@ -174,12 +174,14 @@ export const createExperiment = (projectId: string, body: NewExperiment) =>
 export const startRun = (
   experimentId: string,
   body: {
-    backend?: "hf" | "k8s" | "slurm";
+    backend?: "hf" | "k8s" | "slurm" | "openresearch";
     flavor?: string;
     manifest?: string;
     timeout?: string;
     /** Slurm login node (~/.ssh/config alias); defaults to the slurm settings' host. */
     host?: string;
+    /** Org to bill the box to (openresearch only; omit = the sole org). */
+    org?: string;
   } = {},
 ) => post<{ run: Run }>(`/api/experiments/${experimentId}/run`, body).then((r) => r.run);
 

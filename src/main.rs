@@ -369,6 +369,12 @@ pub enum InstanceCommand {
     /// Provision a standalone instance in an org (GPU with `--gpu`, or CPU with
     /// `--cpu`). Not tied to an experiment — like the dashboard's "Spin up".
     Create(InstanceCreateArgs),
+    /// List an org's instances (status, SSH endpoint, price) — including any
+    /// `--backend openresearch` box a failed teardown left behind.
+    List(InstanceListArgs),
+    /// Terminate an instance (destroys the provider machine). The manual
+    /// cleanup path when a run's automatic teardown failed.
+    Delete(InstanceDeleteArgs),
 }
 
 #[derive(Args, Debug)]
@@ -397,6 +403,18 @@ pub struct InstanceCreateArgs {
     /// vCPUs for a CPU instance (with `--cpu`): 2, 8, or 32 (default 8).
     #[arg(long)]
     pub vcpus: Option<i64>,
+}
+
+#[derive(Args, Debug)]
+pub struct InstanceListArgs {
+    /// Organization id (from `orx projects`).
+    pub org_id: String,
+}
+
+#[derive(Args, Debug)]
+pub struct InstanceDeleteArgs {
+    /// The instance (sandbox) id to terminate.
+    pub sandbox_id: String,
 }
 
 #[derive(Args, Debug)]
@@ -506,11 +524,13 @@ pub struct ExpRunArgs {
     /// GPUs per instance (with `--gpu`; default 1).
     #[arg(long)]
     pub count: Option<i64>,
-    /// Disk in GB (with `--gpu`; default 100).
+    /// Disk in GB (with `--gpu` or a `--backend openresearch` GPU flavor;
+    /// default 100).
     #[arg(long)]
     pub disk: Option<i64>,
-    /// Provider to provision from (with `--gpu`), e.g. runpod, vast, lambda.
-    /// Defaults to runpod when omitted; validated server-side.
+    /// Provider to provision from (with `--gpu` or a `--backend openresearch`
+    /// GPU flavor), e.g. runpod, vast, lambda. Defaults to runpod (`--gpu`) or
+    /// the cheapest offer (`openresearch`) when omitted; validated server-side.
     #[arg(long)]
     pub provider: Option<String>,
     /// Provision a CPU-only instance with this flavor: cpu5c (compute), cpu5g
@@ -527,20 +547,28 @@ pub struct ExpRunArgs {
     /// billed to your HF account), `modal` (a Modal Sandbox on your own Modal
     /// account, billed per second), `k8s` (a Job on your own Kubernetes
     /// cluster), `ssh` (a detached process on one of your own boxes), `slurm`
-    /// (a batch job on your Slurm cluster, submitted via its login node), or
-    /// `local` (a detached process on this machine). k8s, ssh, slurm, and
-    /// local are local experiments only. orx submits the job and a detached
-    /// supervisor mirrors status/logs back.
+    /// (a batch job on your Slurm cluster, submitted via its login node),
+    /// `openresearch` (an ephemeral OpenResearch GPU/CPU box billed to your
+    /// org; needs `orx login`), or `local` (a detached process on this
+    /// machine). k8s, ssh, slurm, openresearch, and local are local
+    /// experiments only. orx submits the job and a detached supervisor
+    /// mirrors status/logs back.
     #[arg(long)]
     pub backend: Option<String>,
     /// Hardware flavor. With `--backend hf`: t4-small, a10g-small, a100-large,
     /// h200, … With `--backend modal`: a Modal GPU (t4, l4, a10g, a100,
     /// a100-80gb, l40s, h100, h200, or e.g. h100:2) or cpu/cpu-large. With
     /// `--backend slurm`: a GPU request as a GRES spec (h100:2 → --gres=gpu:h100:2;
-    /// plain `gpu` → one GPU; omit for CPU-only). Not used by k8s (see
-    /// --manifest) or ssh (see --host).
+    /// plain `gpu` → one GPU; omit for CPU-only). With `--backend openresearch`:
+    /// a GPU id from `orx compute` (h100_sxm, or h100_sxm:2 for two) or a CPU
+    /// flavor (cpu5c/cpu5g/cpu5m, or cpu5c:32 for the vCPU tier). Not used by
+    /// k8s (see --manifest) or ssh (see --host).
     #[arg(long)]
     pub flavor: Option<String>,
+    /// The org to bill the box to (with `--backend openresearch`). Omit when
+    /// you belong to exactly one org.
+    #[arg(long)]
+    pub org: Option<String>,
     /// The ~/.ssh/config host alias to run on (with `--backend ssh`), or the
     /// cluster login node (with `--backend slurm`; defaults to the slurm
     /// settings' host).
@@ -557,11 +585,13 @@ pub struct ExpRunArgs {
     /// `--backend k8s`, set the image in the manifest instead.
     #[arg(long)]
     pub image: Option<String>,
-    /// Job timeout (with `--backend hf/modal/k8s/slurm`): 90s, 30m, 4h, 1d.
-    /// Default 4h (HF's own default is only 30 minutes). With `--backend k8s`
-    /// it becomes activeDeadlineSeconds unless the manifest sets its own. With
-    /// `--backend slurm` it becomes `#SBATCH --time=` and has no 4h default —
-    /// unset falls back to the slurm settings, then the cluster's own limit.
+    /// Job timeout (with `--backend hf/modal/k8s/slurm/openresearch`): 90s,
+    /// 30m, 4h, 1d. Default 4h (HF's own default is only 30 minutes). With
+    /// `--backend k8s` it becomes activeDeadlineSeconds unless the manifest
+    /// sets its own. With `--backend slurm` it becomes `#SBATCH --time=` and
+    /// has no 4h default — unset falls back to the slurm settings, then the
+    /// cluster's own limit. With `--backend openresearch` it bounds the run's
+    /// wall clock on the box (the box itself is deleted when the run ends).
     #[arg(long)]
     pub timeout: Option<String>,
     /// Launch even if the experiment's branch has no changes over its parent

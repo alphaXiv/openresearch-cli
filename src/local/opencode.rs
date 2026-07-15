@@ -205,6 +205,7 @@ preferences.
 | `orx exp run <expId> --backend k8s [--manifest <path>] [--timeout 4h]` | Launch on the user's cluster from the manifest committed on the branch (default `.orx/k8s.yaml`). No flavors or --image — the manifest declares the resources. |
 | `orx exp run <expId> --backend ssh --host <alias>` | Launch as a detached process on the user's own box (an `~/.ssh/config` alias). |
 | `orx exp run <expId> --backend slurm [--host <alias>] [--flavor h100:2] [--timeout 4h]` | Launch as a batch job on the user's Slurm cluster (login node from `--host` or the slurm settings default; `--flavor` is a GRES GPU request, omit for CPU-only). |
+| `orx exp run <expId> --backend openresearch --flavor <gpu_id[:count]\|cpu5c\|cpu5g\|cpu5m[:vcpus]> [--org <id>] [--disk GB] [--provider P] [--timeout 4h]` | Launch on an **ephemeral OpenResearch box** billed to the user's org (needs `orx login`) — provisioned for this run and deleted when it ends. GPU ids from `orx compute`. |
 | `orx exp run <expId> --backend local` | Launch as a detached, supervised process on **this machine** (see "Where runs execute"). No flags — the hardware is whatever this machine has. |
 | `orx exp cancel <expId>` | Cancel the in-flight run. |
 | `orx exp wait <expId> [--timeout <s>]` / `orx exp wait --project {id}` | Poll until a run reaches a terminal state (project form returns on the first completion). Exits **non-zero** after `--timeout` seconds (default 1800) with nothing changed — that means "still running", not an error. |
@@ -315,15 +316,18 @@ identically. A detached `orx supervise` mirrors status and logs; don't kill it.
 | `k8s` | the user's own Kubernetes cluster — auth from their kubeconfig; context/namespace in Settings → Compute | a **manifest you commit on the experiment branch** (default `.orx/k8s.yaml`, or `--manifest <path>`) — see below |
 | `ssh` | a detached process on the user's own box — no scheduler, no container, the host's environment as-is | `--host`: an `~/.ssh/config` host alias |
 | `slurm` | a batch job on the user's Slurm cluster, submitted via `sbatch` on the login node over ssh | `--host`: the login node's `~/.ssh/config` alias (defaults from the slurm settings); `--flavor`: a GRES GPU request (`h100:2`; omit for CPU-only) |
+| `openresearch` | an **ephemeral OpenResearch box** billed to the user's org (needs `orx login` + a registered SSH key) — provisioned for the run, deleted when it ends; fixed CUDA+PyTorch+uv image | `--flavor`: a GPU id from `orx compute` (`h100_sxm`, `h100_sxm:2`) or a CPU flavor (`cpu5c`/`cpu5g`/`cpu5m`, `cpu5c:32`); plus `[--org <id>] [--disk GB] [--provider P]` |
 | `local` | a detached process on **this machine** — no scheduler, no container, this machine's environment as-is | nothing — no flags; the hardware is whatever this machine has |
 
-- `--timeout` (default `4h`) applies to `hf`/`modal`/`k8s`/`slurm`; set it to
-  cover the whole run — a job killed at the timeout reads as a failed run.
-  Doesn't apply to `ssh` or `local` (the process runs until it exits or is
-  cancelled). On k8s a manifest-set `activeDeadlineSeconds` wins over the flag.
+- `--timeout` (default `4h`) applies to `hf`/`modal`/`k8s`/`slurm`/
+  `openresearch`; set it to cover the whole run — a job killed at the timeout
+  reads as a failed run. Doesn't apply to `ssh` or `local` (the process runs
+  until it exits or is cancelled). On k8s a manifest-set
+  `activeDeadlineSeconds` wins over the flag.
 - `--image` overrides the container on `hf`/`modal` (default: CUDA pytorch on
   GPU flavors, `python:3.12` on CPU). Doesn't apply to `ssh`/`slurm`/`local`
-  (the host's own environment) or `k8s` (the manifest sets the image).
+  (the host's own environment), `k8s` (the manifest sets the image), or
+  `openresearch` (the platform's fixed image).
 
 ### The k8s manifest contract
 

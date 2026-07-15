@@ -671,6 +671,27 @@ pub struct SandboxEnvelope {
     pub sandbox: Sandbox,
 }
 
+/// `GET /sandboxes` — each row is a `Sandbox` (the extra `connections` the
+/// dashboard renders is ignored on deserialize).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListSandboxes {
+    pub sandboxes: Vec<Sandbox>,
+}
+
+/// A registered SSH public key (`zSshKey`, secrets-free).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshKey {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListSshKeys {
+    pub ssh_keys: Vec<SshKey>,
+}
+
 // ---------------------------------------------------------------------------
 // Core request helper — preserves TS error semantics exactly.
 // ---------------------------------------------------------------------------
@@ -1005,6 +1026,34 @@ pub async fn create_sandbox(
 ) -> Result<SandboxEnvelope> {
     let body = serde_json::to_value(body)?;
     api_post(creds, "/sandboxes", body).await
+}
+
+/// One box's provisioning state / SSH target — `GET /sandboxes/{id}`. The
+/// openresearch backend polls this while its box goes provisioning → online.
+pub async fn get_sandbox(creds: &Credentials, sandbox_id: &str) -> Result<SandboxEnvelope> {
+    api_get(creds, &format!("/sandboxes/{}", sandbox_id)).await
+}
+
+/// Tear a box down (destroys the provider instance) — `DELETE /sandboxes/{id}`.
+pub async fn delete_sandbox(creds: &Credentials, sandbox_id: &str) -> Result<()> {
+    request_no_content(
+        creds,
+        Method::DELETE,
+        &format!("/sandboxes/{}", sandbox_id),
+        None,
+    )
+    .await
+}
+
+/// Every sandbox in an org (project-scoped + standalone) — `GET /sandboxes`.
+pub async fn list_sandboxes(creds: &Credentials, org_id: &str) -> Result<ListSandboxes> {
+    api_get(creds, &format!("/sandboxes?organizationId={}", org_id)).await
+}
+
+/// The user's registered SSH public keys — `GET /ssh-keys`. Boxes authorize
+/// org members' registered keys, so an empty list means an unreachable box.
+pub async fn list_ssh_keys(creds: &Credentials) -> Result<ListSshKeys> {
+    api_get(creds, "/ssh-keys").await
 }
 
 pub async fn cancel_experiment_run(creds: &Credentials, exp_id: &str) -> Result<()> {
@@ -1709,5 +1758,41 @@ mod tests {
         assert_eq!(sb.gpu_count, Some(1));
         assert_eq!(sb.vcpu_count, None);
         assert_eq!(sb.price_per_hour, Some(2.5));
+    }
+
+    /// `GET /sandboxes/{id}` on an online box: ssh fields populated — this is
+    /// the shape the openresearch backend's provisioning wait consumes. Extra
+    /// keys (the list endpoint adds `connections`) must be tolerated.
+    #[test]
+    fn deserializes_sandbox_envelope_when_online() {
+        let json = r#"{
+            "sandbox": {
+                "id": "sb_1",
+                "organizationId": "org_1",
+                "projectId": null,
+                "sshHostname": "203.0.113.7",
+                "sshPort": 22022,
+                "sshUsername": "root",
+                "status": "online",
+                "machineType": "persistent",
+                "createdBy": "user_1",
+                "updatedAt": "2026-06-18T00:00:00Z",
+                "provisionWarnings": null,
+                "providerName": "runpod",
+                "providerInstanceId": "pod-abc",
+                "pricePerHour": 2.5,
+                "gpu": "H100_SXM",
+                "gpuCount": 1,
+                "vcpuCount": null,
+                "connections": []
+            }
+        }"#;
+
+        let parsed: SandboxEnvelope = serde_json::from_str(json).expect("should deserialize");
+        let sb = parsed.sandbox;
+        assert_eq!(sb.status, "online");
+        assert_eq!(sb.ssh_hostname.as_deref(), Some("203.0.113.7"));
+        assert_eq!(sb.ssh_port, Some(22022));
+        assert_eq!(sb.ssh_username.as_deref(), Some("root"));
     }
 }

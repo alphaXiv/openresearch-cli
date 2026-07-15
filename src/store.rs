@@ -327,6 +327,17 @@ impl Store {
         Ok(())
     }
 
+    /// Update only the run's backend descriptor — for a supervisor learning
+    /// more about its job mid-flight (e.g. the openresearch box's SSH
+    /// endpoint) without clobbering status/markdown/cancel state.
+    pub fn set_backend_json(&self, run_id: &str, backend_json: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET backend_json = ?2, updated_at = ?3 WHERE id = ?1",
+            params![run_id, backend_json, now_ms()],
+        )?;
+        Ok(())
+    }
+
     // --- local projects (orx up) ---
 
     pub fn create_local_project(&self, p: &LocalProject) -> Result<()> {

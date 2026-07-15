@@ -443,6 +443,12 @@ async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<
     if args.host.is_some() && !matches!(args.backend.as_deref(), Some("ssh") | Some("slurm")) {
         return Err(anyhow!("--host only applies with --backend ssh or slurm."));
     }
+    if args.org.is_some() {
+        return Err(anyhow!(
+            "--org only applies with --backend openresearch (local experiments); server \
+             experiments bill the project's own org."
+        ));
+    }
     match args.backend.as_deref() {
         Some("hf") => return launch_hf(creds, args).await,
         Some("modal") => return launch_modal(creds, args).await,
@@ -461,6 +467,12 @@ async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<
                 "--backend slurm is supported for local experiments (`orx up`) only for now."
             ));
         }
+        Some("openresearch") => {
+            return Err(anyhow!(
+                "--backend openresearch is for local experiments (`orx up`) only. Server \
+                 experiments already run on OpenResearch compute — pass --gpu/--cpu/--sandbox."
+            ));
+        }
         Some("local") => {
             return Err(anyhow!(
                 "--backend local is supported for local experiments (`orx up`) only."
@@ -469,7 +481,8 @@ async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<
         Some(other) => {
             return Err(anyhow!(
                 "Unknown --backend '{}'. Supported: hf (Hugging Face Jobs), \
-                 modal (Modal serverless GPUs), k8s/ssh/slurm/local (local experiments only).",
+                 modal (Modal serverless GPUs), k8s/ssh/slurm/openresearch/local \
+                 (local experiments only).",
                 other
             ));
         }
@@ -586,6 +599,10 @@ async fn launch_hf(creds: &crate::config::Credentials, args: ExpRunArgs) -> Resu
         context: None,
         manifest: None,
         resources: None,
+        ssh_host: None,
+        ssh_port: None,
+        ssh_user: None,
+        timeout_secs: None,
     };
     let created =
         create_external_run(creds, &args.exp_id, serde_json::to_value(&descriptor)?).await?;
@@ -722,6 +739,10 @@ async fn launch_modal(creds: &crate::config::Credentials, args: ExpRunArgs) -> R
         context: None,
         manifest: None,
         resources: None,
+        ssh_host: None,
+        ssh_port: None,
+        ssh_user: None,
+        timeout_secs: None,
     };
     let created =
         create_external_run(creds, &args.exp_id, serde_json::to_value(&descriptor)?).await?;
@@ -947,17 +968,22 @@ async fn local_launch(args: ExpRunArgs) -> Result<()> {
     if args.host.is_some() && !matches!(args.backend.as_deref(), Some("ssh") | Some("slurm")) {
         return Err(anyhow!("--host only applies with --backend ssh or slurm."));
     }
+    if args.org.is_some() && args.backend.as_deref() != Some("openresearch") {
+        return Err(anyhow!("--org only applies with --backend openresearch."));
+    }
     match args.backend.as_deref() {
         Some("hf") => crate::local::hf::launch_local_hf(&args).await,
         Some("modal") => crate::local::modal::launch_local_modal(&args).await,
         Some("k8s") => crate::local::k8s::launch_local_k8s(&args).await,
         Some("ssh") => crate::local::ssh::launch_local_ssh(&args).await,
         Some("slurm") => crate::local::slurm::launch_local_slurm(&args).await,
+        Some("openresearch") => crate::local::openresearch::launch_local_openresearch(&args).await,
         Some("local") => crate::local::localrun::launch_local_run(&args).await,
         Some(other) => Err(anyhow!(
             "Unknown --backend '{}'. Local experiments support: hf (Hugging Face Jobs), \
              modal (Modal serverless GPUs), k8s (your Kubernetes cluster), ssh (your own box), \
-             slurm (your Slurm cluster), local (this machine).",
+             slurm (your Slurm cluster), openresearch (an ephemeral OpenResearch box), \
+             local (this machine).",
             other
         )),
         None => Err(anyhow!(
@@ -968,6 +994,8 @@ async fn local_launch(args: ExpRunArgs) -> Result<()> {
              default .orx/k8s.yaml, or --manifest <path>), \
              `--backend ssh --host <alias>` (an ~/.ssh/config alias), \
              `--backend slurm [--host <alias>] [--flavor h100:2]` (your Slurm cluster), \
+             `--backend openresearch --flavor <shape>` (an ephemeral OpenResearch box, \
+             e.g. --flavor h100_sxm or cpu5c; needs `orx login`), \
              or `--backend local` (a detached process on this machine)."
         )),
     }
