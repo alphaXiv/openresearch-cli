@@ -44,6 +44,7 @@ pub mod skill;
 pub mod supervise;
 pub mod telemetry;
 pub mod up;
+pub mod up_remote;
 pub mod update;
 pub mod version;
 pub mod wandb;
