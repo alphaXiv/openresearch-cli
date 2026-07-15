@@ -41,8 +41,13 @@ pub fn run_job(spec: &LocalJobSpec) -> Result<PathBuf> {
     let dir = run_dir(&spec.run_id);
     std::fs::create_dir_all(&dir)
         .map_err(|e| anyhow!("Could not create {}: {}", dir.display(), e))?;
-    let exports: String = spec
-        .env
+    // Default the job's Python to unbuffered so its prints land in `log` (which
+    // we tail) live instead of block-buffering behind the redirect. An explicit
+    // user value still wins.
+    let mut env = spec.env.clone();
+    env.entry("PYTHONUNBUFFERED".to_string())
+        .or_insert_with(|| "1".to_string());
+    let exports: String = env
         .iter()
         .map(|(k, v)| format!("export {}={}", k, sh_quote(v)))
         .collect::<Vec<_>>()
@@ -212,7 +217,8 @@ mod tests {
 
         let dir = run_job(&LocalJobSpec {
             run_id: "lifecycle".into(),
-            script: "echo hello-$ORX_TEST_VAR".into(),
+            // Echoes the defaulted PYTHONUNBUFFERED too, proving it reaches the job.
+            script: "echo hello-$ORX_TEST_VAR unbuffered-$PYTHONUNBUFFERED".into(),
             env: HashMap::from([("ORX_TEST_VAR".to_string(), "42".to_string())]),
         })
         .unwrap();
@@ -222,7 +228,7 @@ mod tests {
         let mut lines = Vec::new();
         let seen = stream_logs(&dir, 0, &mut |l| lines.push(l.to_string())).unwrap();
         assert_eq!(seen, 1);
-        assert_eq!(lines, ["hello-42"]);
+        assert_eq!(lines, ["hello-42 unbuffered-1"]);
         // Re-poll past the consumed lines: nothing new.
         assert_eq!(stream_logs(&dir, seen, &mut |_| ()).unwrap(), seen);
 

@@ -155,8 +155,13 @@ pub struct SshJobSpec {
 /// the remote run dir (relative to `$HOME`) — the reattach handle.
 pub async fn run_job(spec: &SshJobSpec) -> Result<String> {
     let dir = format!(".orx/runs/{}", spec.run_id);
-    let exports: String = spec
-        .env
+    // Default the remote job's Python to unbuffered so its prints land in `log`
+    // (which we tail) live instead of block-buffering behind the redirect. An
+    // explicit user value still wins.
+    let mut env = spec.env.clone();
+    env.entry("PYTHONUNBUFFERED".to_string())
+        .or_insert_with(|| "1".to_string());
+    let exports: String = env
         .iter()
         .map(|(k, v)| format!("export {}={}", k, sh_quote(v)))
         .collect::<Vec<_>>()

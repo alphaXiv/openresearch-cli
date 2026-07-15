@@ -178,6 +178,12 @@ fn render_sbatch(spec: &SlurmJobSpec) -> String {
 }
 
 fn render_exports(env: &HashMap<String, String>) -> String {
+    // Default the job's Python to unbuffered so its prints land in the tailed
+    // output live instead of block-buffering behind the redirect. An explicit
+    // user value still wins.
+    let mut env = env.clone();
+    env.entry("PYTHONUNBUFFERED".to_string())
+        .or_insert_with(|| "1".to_string());
     let mut pairs: Vec<_> = env.iter().collect();
     pairs.sort(); // deterministic script for tests & debugging
     pairs
@@ -457,6 +463,19 @@ mod tests {
         assert!(script.contains("#SBATCH --account=lab-a\n"));
         assert!(script.contains("#SBATCH --time=04:00:00\n"));
         assert!(script.contains("export TOKEN='it'\\''s; rm -rf /'\n"));
+    }
+
+    #[test]
+    fn python_unbuffered_defaulted_and_author_value_wins() {
+        // Default: injected when the job didn't set it.
+        let exports = render_exports(&HashMap::new());
+        assert!(exports.contains("export PYTHONUNBUFFERED='1'"));
+
+        // Override: an explicit user value is preserved, not duplicated.
+        let env = HashMap::from([("PYTHONUNBUFFERED".to_string(), "0".to_string())]);
+        let exports = render_exports(&env);
+        assert!(exports.contains("export PYTHONUNBUFFERED='0'"));
+        assert_eq!(exports.matches("export PYTHONUNBUFFERED=").count(), 1);
     }
 
     #[test]
