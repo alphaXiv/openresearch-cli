@@ -14,9 +14,29 @@ pub mod openresearch;
 pub mod slurm;
 pub mod ssh;
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::{anyhow, Result};
+
+/// CPython env var that forces stdout/stderr unbuffered. Every backend streams a
+/// job's output by tailing a pipe or a redirected `log` file, so a block-buffered
+/// job would make its logs appear frozen until the buffer fills. We default it on
+/// so prints stream live; it's inert for non-Python jobs and inherited by child
+/// processes (unlike the `-u` flag).
+pub const PYTHONUNBUFFERED: &str = "PYTHONUNBUFFERED";
+
+/// Default `PYTHONUNBUFFERED=1` into a job's environment map unless the caller
+/// already set it (an explicit value always wins). Shared by every backend that
+/// carries env as a `HashMap`; kubernetes open-codes the equivalent because its
+/// env is a JSON `[{name, value}]` array, not a map.
+pub fn default_unbuffered(env: &HashMap<String, String>) -> HashMap<String, String> {
+    let mut env = env.clone();
+    env.entry(PYTHONUNBUFFERED.to_string())
+        .or_insert_with(|| "1".to_string());
+    env
+}
 
 /// Backend descriptor stored on the run (locally and mirrored to the api).
 /// `kind` discriminates. This is a fixed field list — a key absent here does
@@ -283,5 +303,17 @@ mod tests {
         let opts = target.extra_opts.join(" ");
         assert!(opts.contains("-p 22022"), "{opts}");
         assert!(opts.contains("StrictHostKeyChecking=no"), "{opts}");
+    }
+
+    #[test]
+    fn default_unbuffered_injects_when_absent_and_lets_author_win() {
+        // Injected when the caller didn't set it.
+        let got = default_unbuffered(&HashMap::new());
+        assert_eq!(got.get(PYTHONUNBUFFERED).map(String::as_str), Some("1"));
+
+        // An explicit value is preserved — even a falsy one — never overwritten.
+        let author = HashMap::from([(PYTHONUNBUFFERED.to_string(), "0".to_string())]);
+        let got = default_unbuffered(&author);
+        assert_eq!(got.get(PYTHONUNBUFFERED).map(String::as_str), Some("0"));
     }
 }

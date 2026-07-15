@@ -305,6 +305,9 @@ async fn launcher_capture(args: &[&str], stdin: Option<&str>) -> Result<Vec<u8>>
     cmd.arg("-c")
         .arg(LAUNCHER)
         .args(args)
+        // Unbuffer the launcher's own stdout: we read it line-by-line, so block
+        // buffering (stdout is a pipe here, not a TTY) would stall log streaming.
+        .env(super::PYTHONUNBUFFERED, "1")
         .envs(modal_auth_env())
         .stdin(if stdin.is_some() {
             Stdio::piped()
@@ -406,6 +409,9 @@ pub async fn run_job(spec: &ModalJobSpec) -> Result<String> {
     // Merge stderr into stdout for the whole script so the single stdout stream
     // the launcher tails carries everything.
     let merged = format!("{{\n{}\n}} 2>&1", spec.script);
+    // Default the sandbox's Python to unbuffered so the job's own prints stream
+    // live instead of block-buffering behind a pipe (see jobs::default_unbuffered).
+    let env = super::default_unbuffered(&spec.env);
     let body = json!({
         "app": spec.app,
         "image": spec.image,
@@ -413,7 +419,7 @@ pub async fn run_job(spec: &ModalJobSpec) -> Result<String> {
         "gpu": spec.gpu,
         "cpu": spec.cpu,
         "memory": spec.memory,
-        "env": spec.env,
+        "env": env,
         "timeoutSeconds": spec.timeout_seconds,
         "tags": spec.tags,
     });
@@ -476,6 +482,9 @@ pub async fn stream_logs(
         .arg("-c")
         .arg(LAUNCHER)
         .args(["logs", sandbox_id])
+        // Unbuffer the launcher's own stdout: we read it line-by-line, so block
+        // buffering (stdout is a pipe here, not a TTY) would stall log streaming.
+        .env(super::PYTHONUNBUFFERED, "1")
         .envs(modal_auth_env())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
