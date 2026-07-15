@@ -1,6 +1,6 @@
 //! `orx telemetry status | on | off` — inspect and control anonymous usage
-//! analytics. The discoverable, persistent opt-out that the post-login notice
-//! points at.
+//! analytics. The discoverable, persistent opt-out, also toggleable from the
+//! `orx up` onboarding step.
 
 use crate::error::{anyhow, Result};
 use crate::telemetry;
@@ -8,14 +8,14 @@ use crate::telemetry;
 pub async fn run(args: crate::TelemetryArgs) -> Result<()> {
     match args.command {
         crate::TelemetryCommand::Status => status(),
-        crate::TelemetryCommand::On => set_disabled(false),
-        crate::TelemetryCommand::Off => set_disabled(true),
+        crate::TelemetryCommand::On => set_enabled(true).await,
+        crate::TelemetryCommand::Off => set_enabled(false).await,
     }
 }
 
 fn status() -> Result<()> {
     // `--no-telemetry` is a per-run flag, not persisted state, so status reports
-    // the standing configuration (env + persisted setting) with flag=false.
+    // the standing (persisted) setting with flag=false.
     match telemetry::disabled_reason(false) {
         None => {
             println!("Anonymous usage analytics: on");
@@ -35,14 +35,17 @@ fn status() -> Result<()> {
     Ok(())
 }
 
-fn set_disabled(disabled: bool) -> Result<()> {
-    telemetry::set_persisted_disabled(disabled)
+async fn set_enabled(enabled: bool) -> Result<()> {
+    // Record the consent decision itself — unconditionally, so an opt-out is
+    // still counted (see telemetry::record_consent).
+    telemetry::record_consent(enabled).await;
+    telemetry::set_persisted_disabled(!enabled)
         .map_err(|e| anyhow!("Could not save telemetry setting: {e}"))?;
-    if disabled {
-        println!("\u{2713} Anonymous usage analytics disabled on this machine.");
-    } else {
+    if enabled {
         println!("\u{2713} Anonymous usage analytics enabled.");
         println!("  (The --no-telemetry flag still disables it for a single run.)");
+    } else {
+        println!("\u{2713} Anonymous usage analytics disabled on this machine.");
     }
     Ok(())
 }

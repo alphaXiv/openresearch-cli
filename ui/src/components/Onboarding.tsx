@@ -5,6 +5,7 @@ import {
   getHarnesses,
   getTelemetry,
   modelLabel,
+  recordTelemetryConsent,
   setTelemetry,
   type GitSettings,
   type Harness,
@@ -31,6 +32,15 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     ]).finally(() => setChecking(false));
   };
   useEffect(() => load(false), []);
+
+  // Leaving step 3 → record the final consent decision once (agree or reject),
+  // so every user who reaches the analytics step is counted, including those who
+  // accept the default. Default to enabled if the setting hasn't loaded yet
+  // (that's the default state shown). Best-effort — never block finishing.
+  const finishOnboarding = () => {
+    void recordTelemetryConsent(telemetry?.enabled ?? true).catch(() => {});
+    onDone();
+  };
 
   return (
     <div className="home onboarding">
@@ -110,7 +120,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
                 <ArrowLeft size={12} /> Back
               </button>
               <div style={{ flex: 1 }} />
-              <button className="btn primary" onClick={onDone}>
+              <button className="btn primary" onClick={finishOnboarding}>
                 Create your first project <ArrowRight size={13} />
               </button>
             </div>

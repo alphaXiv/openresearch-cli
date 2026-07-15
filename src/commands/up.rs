@@ -149,6 +149,10 @@ fn router(state: AppState) -> Router {
             "/api/settings/telemetry",
             get(telemetry_settings).post(set_telemetry_settings),
         )
+        .route(
+            "/api/settings/telemetry/consent",
+            post(record_telemetry_consent),
+        )
         .route("/api/settings/ssh", get(ssh_settings))
         .route("/api/settings/ssh/preflight", post(ssh_preflight))
         .route(
@@ -1476,13 +1480,23 @@ struct SetTelemetryReq {
 }
 
 async fn set_telemetry_settings(Json(req): Json<SetTelemetryReq>) -> ApiResult {
+    let enabled = req.enabled;
     tokio::task::spawn_blocking(move || {
-        crate::telemetry::set_persisted_disabled(!req.enabled)
+        crate::telemetry::set_persisted_disabled(!enabled)
             .map_err(|e| ApiError::from(anyhow!("could not save telemetry setting: {e}")))?;
         Ok(Json(telemetry_settings_json()))
     })
     .await
     .map_err(|e| ApiError::from(anyhow!("telemetry task failed: {e}")))?
+}
+
+/// Record the consent decision (agree/reject) for the analytics choice — fired
+/// once when the user leaves the onboarding step, so every user who sees it is
+/// counted, including those who accept the default. Unconditional by design (see
+/// telemetry::record_consent): it lands even when the choice is "off".
+async fn record_telemetry_consent(Json(req): Json<SetTelemetryReq>) -> ApiResult {
+    crate::telemetry::record_consent(req.enabled).await;
+    Ok(Json(json!({ "ok": true })))
 }
 
 // --- ssh hosts ----------------------------------------------------------------

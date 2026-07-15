@@ -457,6 +457,41 @@ fn capture(event: impl Into<String>, extra: serde_json::Value) {
     }
 }
 
+/// Record a telemetry consent decision — `cli_telemetry_consent` with
+/// `{ agreed: bool }`. This is the ONE event that fires UNCONDITIONALLY: it must
+/// land even when the user chose to disable telemetry, otherwise every rejection
+/// would be invisible and the agree/reject ratio would be hopelessly skewed
+/// toward "agree". So it deliberately bypasses the opt-out check (`is_enabled`)
+/// and the persisted `install_id` (we neither read nor create one — a user
+/// opting out should not get a persisted anonymous id as a side effect). It
+/// carries a fresh throwaway `distinct_id` per call, so it's uncorrelated with
+/// any other event and can't be used to re-identify.
+///
+/// Awaited with a bounded timeout so a caller (the `orx up` settings handler or
+/// the `orx telemetry on/off` command) can fire-and-confirm without hanging.
+/// Errors are swallowed — recording consent must never fail the action.
+pub(crate) async fn record_consent(agreed: bool) {
+    // Anonymous, non-persistent id: this event stands alone by design.
+    let distinct_id = uuid::Uuid::new_v4().to_string();
+    let payload = build_payload(
+        "telemetry_consent",
+        &distinct_id,
+        json!({ "agreed": agreed }),
+    );
+    let url = format!("{}/i/v0/e/", posthog_host());
+    let send = async {
+        let _ = http()
+            .post(&url)
+            .timeout(Duration::from_secs(3))
+            .json(&payload)
+            .send()
+            .await;
+    };
+    // Cap the wait so the settings POST / command return promptly even if the
+    // network is slow; the send itself also has its own 3s request timeout.
+    let _ = tokio::time::timeout(Duration::from_secs(3), send).await;
+}
+
 /// Flush every pending event send (the session's `cli_command` plus any key
 /// events fired during the command) within ONE shared window — the sends run
 /// concurrently, so total tail latency is bounded by a single `FLUSH_GRACE`, not
@@ -735,10 +770,51 @@ mod tests {
         for (bare, wire) in [
             ("command", "cli_command"),
             ("experiment_started", "cli_experiment_started"),
+            ("telemetry_consent", "cli_telemetry_consent"),
         ] {
             let p = build_payload(bare, "did", json!({}));
             assert_eq!(p["event"], wire, "`{bare}` must serialize as `{wire}`");
         }
+    }
+
+    #[test]
+    fn consent_payload_carries_agreed_flag() {
+        for agreed in [true, false] {
+            let p = build_payload("telemetry_consent", "did", json!({ "agreed": agreed }));
+            assert_eq!(p["event"], "cli_telemetry_consent");
+            assert_eq!(p["properties"]["agreed"], agreed);
+        }
+    }
+
+    #[tokio::test]
+    async fn record_consent_sends_even_when_opted_out() {
+        // The consent event is UNCONDITIONAL: a persisted opt-out must not
+        // suppress it (otherwise rejections would be invisible). We can't easily
+        // assert the wire send in-process, but we CAN assert record_consent does
+        // not early-return on the opt-out path and returns promptly against a
+        // dead endpoint — i.e. it neither hangs nor panics while disabled.
+        let _g = EnvGuard::new(OPT_VARS);
+        let dir = std::env::temp_dir().join(format!("orx-tel-consent-{}", uuid::Uuid::new_v4()));
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        std::env::set_var("ORX_TELEMETRY_HOST", "http://127.0.0.1:9");
+
+        // Persist an opt-out; normal telemetry is now disabled.
+        set_persisted_disabled(true).unwrap();
+        assert!(matches!(
+            disabled_reason(false),
+            Some(DisabledReason::Persisted)
+        ));
+
+        // Still returns (bounded by the internal timeout) without panicking, and
+        // does NOT create a persisted install id as a side effect.
+        record_consent(false).await;
+        assert!(
+            load_settings().and_then(|s| s.install_id).is_none(),
+            "consent must not generate a persisted install id"
+        );
+
+        std::env::remove_var("ORX_TELEMETRY_HOST");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
