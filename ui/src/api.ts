@@ -615,6 +615,12 @@ export const setChatSessionArchived = (sessionId: string, archived: boolean) =>
     (r) => r.session,
   );
 
+/** Rename a session. The title is trimmed server-side; empty titles are rejected. */
+export const renameChatSession = (sessionId: string, title: string) =>
+  patch<{ session: ChatSession }>(`/api/chat/sessions/${sessionId}`, { title }).then(
+    (r) => r.session,
+  );
+
 export const getChatMessages = (sessionId: string) =>
   get<{ messages: ChatMessage[] }>(`/api/chat/sessions/${sessionId}/messages`).then(
     (r) => r.messages,

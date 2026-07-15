@@ -858,6 +858,28 @@ textarea::placeholder {
   animation: pulse 1.2s infinite;
   flex-shrink: 0;
 }
+/* Inline rename: the title span is replaced by an input sharing its box so the
+   text doesn't jump. Take the row's full width and hide the kebab/time. */
+.session-row .session-title-input {
+  flex: 1;
+  min-width: 0;
+  padding: 1px 5px;
+  margin: -2px 0;
+  font: inherit;
+  color: var(--text);
+  background: var(--base);
+  border: 1px solid var(--primary);
+  border-radius: 5px;
+  outline: none;
+}
+.session-row.editing {
+  background: var(--surface);
+  cursor: default;
+}
+.session-row.editing .session-menu-btn,
+.session-row.editing .session-time {
+  display: none;
+}
 .chat-thread {
   flex: 1;
   min-height: 0;

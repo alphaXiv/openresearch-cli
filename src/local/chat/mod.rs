@@ -721,6 +721,29 @@ impl ChatHost {
         Ok(Some(session))
     }
 
+    /// Rename a session and broadcast the updated row. Returns `None` for an
+    /// unknown id (e.g. deleted mid-flight).
+    pub async fn set_title(
+        &self,
+        session_id: &str,
+        title: &str,
+    ) -> Result<Option<StoredChatSession>> {
+        let store = Store::open()?;
+        store.set_chat_session_title(session_id, title)?;
+        // Re-read after the write (finish_turn's pattern): broadcast the fresh
+        // snapshot so a concurrent archive/updated_at change isn't clobbered,
+        // and a session deleted mid-flight isn't resurrected.
+        let Some(session) = store.get_chat_session(session_id)? else {
+            return Ok(None);
+        };
+        let busy = self.is_busy(session_id).await;
+        self.emit(
+            "chat.session",
+            json!({ "session": session_json(&session, busy) }),
+        );
+        Ok(Some(session))
+    }
+
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
         let _ = self.interrupt(session_id).await;
         // A live opencode serve child would keep running in (and lock) the
@@ -1036,7 +1059,16 @@ impl TurnCtx {
             return;
         }
         if let Ok(store) = Store::open() {
-            let _ = store.set_chat_session_title(&self.session_id, title);
+            // Only adopt a harness-generated title when the session has none
+            // yet — mirrors the first-message auto-title guard. Otherwise a
+            // later `session.updated` (e.g. opencode re-titling) would silently
+            // overwrite a title the user set via Rename. The check-and-set is a
+            // single conditional UPDATE so a concurrent Rename can't slip in
+            // between a read and the write.
+            match store.set_chat_session_title_if_empty(&self.session_id, title) {
+                Ok(true) => {}
+                _ => return,
+            }
             if let Ok(Some(session)) = store.get_chat_session(&self.session_id) {
                 self.host.emit(
                     "chat.session",

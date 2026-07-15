@@ -593,6 +593,18 @@ impl Store {
         Ok(())
     }
 
+    /// Set the title only if the session currently has none (NULL or blank).
+    /// Atomic check-and-set for harness auto-titling, so it can't clobber a
+    /// title the user set via Rename. Returns true if a row was written.
+    pub fn set_chat_session_title_if_empty(&self, id: &str, title: &str) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE chat_sessions SET title = ?2, updated_at = ?3 \
+             WHERE id = ?1 AND (title IS NULL OR trim(title) = '')",
+            params![id, title, now_ms()],
+        )?;
+        Ok(n > 0)
+    }
+
     pub fn touch_chat_session(&self, id: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE chat_sessions SET updated_at = ?2 WHERE id = ?1",
