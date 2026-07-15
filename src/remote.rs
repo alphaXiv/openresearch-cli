@@ -106,20 +106,22 @@ impl SshSession {
             "orx up: dashboard on http://127.0.0.1:{port} (on this remote host)\n\n\
              You're connected over SSH, so this URL only works on the remote box.\n\
              Both options below run on your laptop — not in this SSH session.\n\n\
+             Replace <ssh-alias> with the name you gave `ssh` to connect — the\n\
+             ~/.ssh/config alias (or user@host), not the box's IP address.\n\n\
              The easiest way — from your laptop, run:\n\n\
-             \x20   orx up --remote <the-host-you-ssh'd-into>\n\n\
+             \x20   orx up --remote <ssh-alias>\n\n\
              That launches orx up on this host, forwards the port to your laptop,\n\
              and opens your browser. Nothing else to run here.\n\n\
              Or, to reach the server already running here, open a new terminal on\n\
              your laptop and forward the port yourself, then browse to \
              http://localhost:{port} :\n\n\
-             \x20   ssh -N -L {port}:localhost:{port} <the-host-you-ssh'd-into>\n\
+             \x20   ssh -N -L {port}:localhost:{port} <ssh-alias>\n\
              \x20   (that command stays running with no output — leave it open)\n"
         );
         if let Some(ip) = self.server_ip_hint() {
             out.push_str(&format!(
-                "\n(if you don't know the host name, the address {ip} may work in \
-                 both commands above)\n"
+                "\n(no alias set up? the address {ip} may work in place of \
+                 <ssh-alias>, though you may need your usual `-i`/`-p` ssh options)\n"
             ));
         }
         out
@@ -190,5 +192,8 @@ mod tests {
         assert!(msg.contains("orx up --remote"));
         assert!(msg.contains("ssh -N -L 4899:localhost:4899"));
         assert!(msg.contains("http://localhost:4899"));
+        // The placeholder is the ssh alias, and the text says so explicitly.
+        assert!(msg.contains("<ssh-alias>"));
+        assert!(msg.contains("not the box's IP address"));
     }
 }
