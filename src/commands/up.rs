@@ -63,20 +63,63 @@ pub async fn run(args: UpArgs) -> Result<()> {
 
     let app = router(state);
     let url = format!("http://127.0.0.1:{port}");
-    eprintln!("orx up: dashboard on {url}");
-    if !args.no_browser {
-        browser::open_browser(&url);
+    // In an SSH session the loopback URL only works on the remote box and there's
+    // no local browser to open — print forwarding guidance instead of the bare
+    // URL, and skip the (futile) browser-open. Otherwise, today's local flow.
+    if let Some(session) = crate::remote::detect_ssh_session() {
+        eprint!("{}", session.instructions(port));
+    } else {
+        eprintln!("orx up: dashboard on {url}");
+        if !args.no_browser {
+            browser::open_browser(&url);
+        }
     }
 
     // select! instead of graceful shutdown: open SSE streams never complete,
     // so waiting on connections would hang Ctrl-C forever.
+    //
+    // We wait on SIGTERM/SIGHUP as well as SIGINT: when this server is started
+    // over SSH by `orx up --remote`, closing that tunnel (the launcher's Ctrl-C)
+    // delivers SIGHUP here as the channel tears down — without handling it the
+    // remote server would leak, staying bound to its port after the tunnel dies.
     tokio::select! {
         r = axum::serve(listener, app) => r.map_err(|e| anyhow!("orx up: server error: {e}"))?,
-        _ = tokio::signal::ctrl_c() => eprintln!("orx up: shutting down"),
+        _ = shutdown_signal() => eprintln!("orx up: shutting down"),
     }
     agent.shutdown().await;
     codex.shutdown().await;
     Ok(())
+}
+
+/// Resolves when the process is asked to stop. SIGINT everywhere; on Unix also
+/// SIGTERM and SIGHUP (SIGHUP is what an SSH tunnel delivers on disconnect, so
+/// a `--remote`-launched server exits with its tunnel instead of leaking).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, Signal, SignalKind};
+        // If a signal stream can't be installed, that arm simply never fires —
+        // fall back to whatever handlers do register rather than aborting.
+        async fn wait(s: &mut Option<Signal>) {
+            match s {
+                Some(s) => {
+                    s.recv().await;
+                }
+                None => std::future::pending().await,
+            }
+        }
+        let mut term = signal(SignalKind::terminate()).ok();
+        let mut hup = signal(SignalKind::hangup()).ok();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = wait(&mut term) => {}
+            _ = wait(&mut hup) => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 #[derive(Clone)]
