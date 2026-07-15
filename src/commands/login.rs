@@ -35,6 +35,10 @@ pub async fn run(args: crate::LoginArgs) -> Result<()> {
     save_credentials(&Credentials { api_url, token }).await?;
     println!("\u{2713} Logged in. Credentials saved.");
 
+    // One-time anonymous-analytics disclosure (this is the natural first-run
+    // touchpoint). Best-effort; never fails login.
+    crate::telemetry::show_notice_once();
+
     // Offer to install the `orx` skill shim into any coding agent already set up
     // here, so it auto-discovers how to drive the CLI. Consent-gated and
     // best-effort: writes nothing without a yes, never fails login over it.

@@ -22,6 +22,7 @@ mod jobs;
 mod local;
 mod output;
 mod store;
+mod telemetry;
 mod updates;
 
 use clap::{Args, Parser, Subcommand};
@@ -38,6 +39,11 @@ struct Cli {
     // `if (!command) { console.log(USAGE); return; }`) instead of clap's exit-2.
     #[command(subcommand)]
     command: Option<Command>,
+
+    /// Disable anonymous usage analytics for this run. See also DO_NOT_TRACK,
+    /// ORX_TELEMETRY=off, and `orx telemetry off`.
+    #[arg(long, global = true)]
+    no_telemetry: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -139,6 +145,9 @@ enum Command {
     /// Start the local autoresearch dashboard on 127.0.0.1: embedded UI,
     /// JSON/SSE API over the local store, and the opencode agent proxy.
     Up(UpArgs),
+
+    /// Turn anonymous usage analytics on or off, or show current status.
+    Telemetry(TelemetryArgs),
 }
 
 #[derive(Args, Debug)]
@@ -643,6 +652,22 @@ pub struct InstallSkillsArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct TelemetryArgs {
+    #[command(subcommand)]
+    pub command: TelemetryCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TelemetryCommand {
+    /// Show whether analytics is on, why, and the anonymous install id.
+    Status,
+    /// Enable anonymous usage analytics.
+    On,
+    /// Disable anonymous usage analytics on this machine.
+    Off,
+}
+
+#[derive(Args, Debug)]
 pub struct LitArgs {
     /// Full-text search query.
     pub query: String,
@@ -702,15 +727,62 @@ async fn main() {
     let warning = (!matches!(command, Command::Version(_) | Command::Update(_)))
         .then(updates::UpdateWarning::start);
 
+    // Anonymous usage analytics. Record the flag process-globally so command
+    // modules can fire events without threading it through, then fire the
+    // per-invocation event *before* dispatch so commands that exit on their own
+    // (e.g. the "not logged in" path) are still counted. Opt out with
+    // --no-telemetry / DO_NOT_TRACK / ORX_TELEMETRY=off / `orx telemetry off`.
+    telemetry::set_flag(cli.no_telemetry);
+    let session = telemetry::TelemetrySession::start(command_name(&command));
+
     let result = dispatch(command).await;
     if let Some(warning) = warning {
         warning.finish().await;
     }
+    session.finish(result.is_ok()).await;
 
     if let Err(err) = result {
         // Match the TS: print only the message, exit 1.
         eprintln!("{}", err);
         std::process::exit(1);
+    }
+}
+
+/// A stable, PII-free event label for each command, decoupled from the enum
+/// variant name so renames don't silently break analytics continuity.
+fn command_name(command: &Command) -> &'static str {
+    match command {
+        Command::Login(_) => "login",
+        Command::Logout => "logout",
+        Command::Projects(_) => "projects",
+        Command::Explore(_) => "explore",
+        Command::Project(_) => "project",
+        Command::Experiments(_) => "experiments",
+        Command::Env(_) => "env",
+        Command::Runs(_) => "runs",
+        Command::Logs(_) => "logs",
+        Command::SearchLogs(_) => "search-logs",
+        Command::Artifacts(_) => "artifacts",
+        Command::Artifact(_) => "artifact",
+        Command::Wandb(_) => "wandb",
+        Command::Query(_) => "query",
+        Command::Chart(_) => "chart",
+        Command::CreateProject(_) => "create-project",
+        Command::CreateExperiment(_) => "create-experiment",
+        Command::Compute(_) => "compute",
+        Command::Instance(_) => "instance",
+        Command::Exp(_) => "exp",
+        Command::Report(_) => "report",
+        Command::Skill(_) => "skill",
+        Command::InstallSkills(_) => "install-skills",
+        Command::Lit(_) => "lit",
+        Command::Paper(_) => "paper",
+        Command::Version(_) => "version",
+        Command::Update(_) => "update",
+        Command::Serve(_) => "serve",
+        Command::Supervise(_) => "supervise",
+        Command::Up(_) => "up",
+        Command::Telemetry(_) => "telemetry",
     }
 }
 
@@ -746,5 +818,6 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Serve(args) => commands::serve::run(args).await,
         Command::Supervise(args) => commands::supervise::run(args).await,
         Command::Up(args) => commands::up::run(args).await,
+        Command::Telemetry(args) => commands::telemetry::run(args).await,
     }
 }
