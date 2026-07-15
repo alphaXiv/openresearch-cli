@@ -82,3 +82,32 @@ and CI never see the notice.
 `{api}/auth/cli/login` in your browser, and waits for the API to redirect back
 with a freshly minted personal access token after you authenticate. The token is
 sent as `Authorization: Bearer …` on every subsequent request.
+
+## Usage analytics
+
+`orx` sends **anonymous** usage analytics to help us understand which features
+are used and prioritize accordingly. This is **opt-out**; the `orx up` dashboard
+surfaces the choice as a step in first-run onboarding.
+
+**What is collected** — the command name that was run, a random per-install UUID,
+the CLI version, your OS/architecture, whether the run is in CI, and a small set
+of coarse labels for key events (e.g. an experiment was created or a run was
+launched, and a broad compute target like `modal`/`k8s`/`local`).
+
+**What is never collected** — no code, prompt text, file contents, file paths,
+project/experiment ids or names, repo names, tokens, emails, or any other
+personal or identifying data. The install UUID is random and not tied to your
+account.
+
+**How to opt out** — either:
+
+```bash
+orx telemetry off          # persistent, per-machine
+orx telemetry status       # see current state + the anonymous install id
+orx <cmd> --no-telemetry    # per-run
+```
+
+Events are sent fire-and-forget on a background task with a short timeout, so
+they never meaningfully block or fail a command (at most a brief flush window on
+exit). Every event carries a `ci` property, so automated runs can be filtered in
+analytics without being dropped up front.

@@ -547,7 +547,16 @@ async fn launch(creds: &crate::config::Credentials, args: ExpRunArgs) -> Result<
         ));
     }
 
+    // Coarse target label for analytics — NOT the sandbox id / gpu / flavor.
+    let target_kind = match &target {
+        RunTarget::Existing { .. } => "existing",
+        RunTarget::New { .. } => "gpu",
+        RunTarget::NewCpu { .. } => "cpu",
+    };
     start_experiment_run(creds, &args.exp_id, target, args.force).await?;
+
+    // Key event, fired only on success. Server run (not local mode here).
+    crate::telemetry::capture_experiment_started("run", false, Some(target_kind));
 
     println!("\u{2713} Run queued.");
     println!(
@@ -697,6 +706,8 @@ async fn launch_hf(creds: &crate::config::Credentials, args: ExpRunArgs) -> Resu
         "  Follow it with `orx exp wait {}` or `orx logs {run_id}`.",
         args.exp_id
     );
+    // Key event, fired only on success. Managed run on the user's HF account.
+    crate::telemetry::capture_experiment_started("run", false, Some("hf"));
     Ok(())
 }
 
@@ -831,6 +842,8 @@ async fn launch_modal(creds: &crate::config::Credentials, args: ExpRunArgs) -> R
         "  Follow it with `orx exp wait {}` or `orx logs {run_id}`.",
         args.exp_id
     );
+    // Key event, fired only on success. Managed run on the user's Modal account.
+    crate::telemetry::capture_experiment_started("run", false, Some("modal"));
     Ok(())
 }
 
@@ -971,7 +984,10 @@ async fn local_launch(args: ExpRunArgs) -> Result<()> {
     if args.org.is_some() && args.backend.as_deref() != Some("openresearch") {
         return Err(anyhow!("--org only applies with --backend openresearch."));
     }
-    match args.backend.as_deref() {
+    // Coarse backend label for analytics; the backend name is already an enum,
+    // never user data. Recorded before the (borrowing) dispatch below.
+    let backend_label = args.backend.clone();
+    let result = match args.backend.as_deref() {
         Some("hf") => crate::local::hf::launch_local_hf(&args).await,
         Some("modal") => crate::local::modal::launch_local_modal(&args).await,
         Some("k8s") => crate::local::k8s::launch_local_k8s(&args).await,
@@ -998,7 +1014,16 @@ async fn local_launch(args: ExpRunArgs) -> Result<()> {
              e.g. --flavor h100_sxm or cpu5c; needs `orx login`), \
              or `--backend local` (a detached process on this machine)."
         )),
+    };
+    // Key event, fired only on a successful launch. Coarse backend only.
+    // `backend_label` is always `Some(<known backend>)` here — every arm that
+    // yields `Ok` matched a `Some("hf"|"modal"|...)`; `None`/unknown arms return
+    // `Err`. The `"unknown"` fallback is unreachable defense, never emitted.
+    if result.is_ok() {
+        let target = backend_label.as_deref().unwrap_or("unknown");
+        crate::telemetry::capture_experiment_started("run", true, Some(target));
     }
+    result
 }
 
 /// Local `exp cancel`: flag cancel intent on every in-flight run (concurrent

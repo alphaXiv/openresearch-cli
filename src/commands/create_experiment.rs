@@ -35,7 +35,7 @@ pub async fn run(args: crate::CreateExperimentArgs) -> Result<()> {
     // Local project (orx up): create the row + branch locally, no api.
     let store = Store::open()?;
     if let Some(project) = store.get_local_project(&args.project_id)? {
-        return run_local(
+        run_local(
             &store,
             &project,
             title,
@@ -43,7 +43,10 @@ pub async fn run(args: crate::CreateExperimentArgs) -> Result<()> {
             args.baseline,
             args.description,
             args.run_command,
-        );
+        )?;
+        // Key event, fired only on success. Coarse props only — no ids/names.
+        crate::telemetry::capture_experiment_started("create", true, None);
+        return Ok(());
     }
 
     // The server child-create API carries no run command field — refuse rather
@@ -108,6 +111,8 @@ pub async fn run(args: crate::CreateExperimentArgs) -> Result<()> {
         "  git commit -am \"<msg>\" && git push -u origin {}",
         experiment.branch_name
     );
+    // Key event, fired only on success. Coarse props only — no ids/names.
+    crate::telemetry::capture_experiment_started("create", false, None);
     Ok(())
 }
 

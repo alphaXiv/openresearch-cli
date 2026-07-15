@@ -42,6 +42,7 @@ pub mod search_logs;
 pub mod serve;
 pub mod skill;
 pub mod supervise;
+pub mod telemetry;
 pub mod up;
 pub mod up_remote;
 pub mod update;
