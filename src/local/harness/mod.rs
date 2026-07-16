@@ -34,6 +34,7 @@ use crate::local::chat::{PromptAnswer, ResumeCtx, TurnCtx, WirePrompt};
 
 pub use detect::{HarnessInfo, ModelInfo};
 pub use options::{HarnessOptions, PermissionMode};
+pub use plan_gate::command_is_readonly;
 pub use plan_gate::decide as plan_gate_decide;
 
 /// How an answered interactive prompt flows back into the harness. The two axes

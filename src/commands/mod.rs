@@ -32,6 +32,7 @@ pub mod lit;
 pub mod login;
 pub mod logout;
 pub mod logs;
+pub mod mcp_gate;
 pub mod paper;
 pub mod plan_gate;
 pub mod project;

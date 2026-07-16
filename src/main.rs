@@ -159,6 +159,13 @@ enum Command {
     /// inspection; not a user command.
     #[command(name = "plan-gate", hide = true)]
     PlanGate,
+
+    /// Internal: the plan-mode permission bridge. A stdio MCP server Claude
+    /// Code spawns (`--mcp-config`) and consults (`--permission-prompt-tool`);
+    /// relays each permission request to the running `orx up`, which surfaces
+    /// an approval card and blocks until answered. Not a user command.
+    #[command(name = "mcp-gate", hide = true)]
+    McpGate,
 }
 
 #[derive(Args, Debug)]
@@ -757,6 +764,17 @@ async fn main() {
         }
         return;
     }
+    // `mcp-gate` is Claude's stdio MCP child for the turn: stdout is the MCP
+    // channel (nothing else may write to it) and startup must be instant or
+    // Claude times the server out — skip the update check and telemetry.
+    if matches!(command, Command::McpGate) {
+        if let Err(err) = commands::mcp_gate::run().await {
+            // stderr only; a failed bridge degrades plan mode, never the CLI.
+            eprintln!("orx mcp-gate: {err}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     let warning = (!matches!(command, Command::Version(_) | Command::Update(_)))
         .then(updates::UpdateWarning::start);
@@ -818,6 +836,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Up(_) => "up",
         Command::Telemetry(_) => "telemetry",
         Command::PlanGate => "plan-gate",
+        Command::McpGate => "mcp-gate",
     }
 }
 
@@ -859,5 +878,6 @@ async fn dispatch(command: Command) -> error::Result<()> {
         Command::Telemetry(args) => commands::telemetry::run(args).await,
         // Handled before dispatch (fast path, no telemetry/update check).
         Command::PlanGate => commands::plan_gate::run().await,
+        Command::McpGate => commands::mcp_gate::run().await,
     }
 }

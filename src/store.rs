@@ -268,15 +268,25 @@ impl Store {
             );
         }
         // Retired permission modes → `auto`, per harness:
-        //  * Claude Code / Codex offer only `auto`/`bypass` now — `ask`/
-        //    `accept-edits` were never grantable in their headless CLIs, and
-        //    `plan` (read-only) fought the orx workflow. All three dropped.
+        //  * Claude Code KEEPS `plan` — it's a real mode again (the plan-gate
+        //    hook + mcp-gate permission bridge make read-only planning and
+        //    plan approval work headless). `ask`/`accept-edits` stay retired
+        //    from the *picker* (never grantable headless mid-turn), and a
+        //    session parked on them by an old build normalizes to `auto`.
+        //    NOTE: this list runs on every open — a mode offered by
+        //    `options()` must never appear in it, or picking that mode
+        //    silently degrades to `auto` on the next request (exactly what
+        //    happened to `plan` between #75 and this fix).
+        //  * Codex offers only `auto`/`bypass`; `ask`/`accept-edits`/`plan`
+        //    all retired.
         //  * OpenCode dropped its hollow `ask` (its default is permissive, so a
         //    dedicated ask mode almost never fired) — but KEEPS `plan` (its real
         //    plan agent), so that one is left untouched.
         let _ = conn.execute(
             "UPDATE chat_sessions SET permission_mode = 'auto'
-             WHERE (harness IN ('claude-code', 'codex')
+             WHERE (harness = 'claude-code'
+                    AND permission_mode IN ('ask', 'accept-edits'))
+                OR (harness = 'codex'
                     AND permission_mode IN ('ask', 'accept-edits', 'plan'))
                 OR (harness = 'opencode'
                     AND permission_mode IN ('ask', 'accept-edits'))",

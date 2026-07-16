@@ -141,15 +141,79 @@ impl Harness for ClaudeCode {
             .with_reasoning_levels(&CLAUDE_EFFORT_LEVELS, "high")
     }
 
-    /// Claude ends its turn on a prompt, so every answer resumes by sending a
-    /// *new user message* under `--resume` (see `run_turn`). A denied permission
-    /// is the one case with no resume.
+    /// Two resume paths. A card the permission bridge surfaced mid-turn
+    /// (`native_id` set) settles the held bridge request — the still-running
+    /// turn unblocks in place ([`ResumeAction::Handled`]), except plan
+    /// approval, which interrupts the paused plan turn and resumes via a new
+    /// message under the approved mode. An end-turn card (no `native_id`)
+    /// resumes by sending a *new user message* under `--resume` (see
+    /// `run_turn`); a denied permission is the one case with no resume.
     async fn resume_from_prompt(
         &self,
-        _ctx: &ResumeCtx,
+        ctx: &ResumeCtx,
         prompt: &WirePrompt,
         answer: &PromptAnswer,
     ) -> Result<ResumeAction> {
+        if let Some(native_id) = &prompt.native_id {
+            // The bridge request lives inside a running turn; once that turn is
+            // gone (interrupted / errored) the card is stale.
+            if !ctx.is_busy().await {
+                return Err(anyhow!("this approval is no longer pending"));
+            }
+            let note = answer.note.as_deref().filter(|s| !s.trim().is_empty());
+            return match (prompt.kind.as_str(), answer.approve) {
+                // Mid-turn tool approval: answer the held request; the turn
+                // keeps streaming. The CLI requires updatedInput on an allow —
+                // echo the card's recorded input.
+                ("permission", true) => {
+                    ctx.host.settle_permission(
+                        native_id,
+                        crate::local::chat::PermissionDecision::Allow {
+                            updated_input: prompt.tool_input.clone(),
+                        },
+                    )?;
+                    Ok(ResumeAction::Handled)
+                }
+                ("permission", false) => {
+                    let message = match note {
+                        Some(note) => format!(
+                            "The user denied this action: {note}. Do not retry it; adjust course."
+                        ),
+                        None => "The user denied this action. Do not retry it; adjust course."
+                            .to_string(),
+                    };
+                    ctx.host.settle_permission(
+                        native_id,
+                        crate::local::chat::PermissionDecision::Deny { message },
+                    )?;
+                    Ok(ResumeAction::Handled)
+                }
+                // Keep planning: deny the held ExitPlanMode with the refinement
+                // as the reason — the model revises the plan in the same turn.
+                ("plan", false) => {
+                    let message = match note {
+                        Some(note) => format!("Keep refining the plan: {note}"),
+                        None => "The user wants the plan revised before approving.".to_string(),
+                    };
+                    ctx.host.settle_permission(
+                        native_id,
+                        crate::local::chat::PermissionDecision::Deny { message },
+                    )?;
+                    Ok(ResumeAction::Handled)
+                }
+                // Plan approval: don't settle the held request — the paused
+                // plan turn gets interrupted (respond()'s SendMessage arm) and
+                // replaced by a fresh implementation turn under the approved
+                // mode, reusing the proven --resume machinery. The drained
+                // bridge request is denied into the dying child, harmlessly.
+                ("plan", true) => {
+                    let (text, mode) = synthesize_resume("plan", answer);
+                    Ok(ResumeAction::SendMessage { text, mode })
+                }
+                _ => Err(anyhow!("unsupported prompt kind for a bridge card")),
+            };
+        }
+
         // A denied permission closes the card without resuming; every other
         // answer continues the session.
         if prompt.kind == "permission" && !answer.approve {
@@ -201,28 +265,36 @@ fn claude_permission_mode(mode: Option<PermissionMode>) -> &'static str {
 /// is already git-excluded.
 const PLAN_SETTINGS_REL: &str = ".openresearch/agent/claude-plan-settings.json";
 
+/// Path (relative to the worktree) of the plan-mode MCP config wiring the
+/// `orx mcp-gate` permission bridge. Same git-excluded agent dir.
+const MCP_CONFIG_REL: &str = ".openresearch/agent/claude-mcp.json";
+
 /// Write the plan-mode `--settings` file into `repo` and return its path. The
-/// file registers a `PreToolUse` hook on `Bash` that runs `orx plan-gate`
-/// (this same binary), which allows read-only `orx` inspection through plan
-/// mode's gate while leaving launches/edits blocked. See `plan_gate`.
+/// file registers `PreToolUse` hooks running `orx plan-gate` (this same
+/// binary): on `Bash` it allows read-only inspection through plan mode's gate,
+/// and on `ExitPlanMode` it forces an `ask` — headless plan mode otherwise
+/// SELF-approves the call ("User has approved exiting plan mode", nobody
+/// asked; verified on claude 2.1.197) and starts editing. The `ask` routes
+/// plan approval to the permission bridge card. See `plan_gate`.
 ///
 /// The hook command is this executable's absolute path, so it resolves without
 /// depending on `orx` being on Claude's `PATH`.
 fn write_plan_settings(repo: &std::path::Path) -> Result<PathBuf> {
     let orx = std::env::current_exe()
         .map_err(|e| anyhow!("cannot resolve orx binary path for plan-mode hook: {e}"))?;
+    let hook = serde_json::json!([{
+        "type": "command",
+        "command": format!(
+            "{} plan-gate",
+            crate::jobs::ssh::sh_quote(&orx.to_string_lossy())
+        ),
+    }]);
     let settings = serde_json::json!({
         "hooks": {
-            "PreToolUse": [{
-                "matcher": "Bash",
-                "hooks": [{
-                    "type": "command",
-                    "command": format!(
-                        "{} plan-gate",
-                        crate::jobs::ssh::sh_quote(&orx.to_string_lossy())
-                    ),
-                }],
-            }],
+            "PreToolUse": [
+                { "matcher": "Bash", "hooks": hook },
+                { "matcher": "ExitPlanMode", "hooks": hook },
+            ],
         }
     });
     let path = repo.join(PLAN_SETTINGS_REL);
@@ -231,6 +303,42 @@ fn write_plan_settings(repo: &std::path::Path) -> Result<PathBuf> {
             .map_err(|e| anyhow!("cannot create {}: {e}", parent.display()))?;
     }
     std::fs::write(&path, serde_json::to_vec_pretty(&settings).unwrap())
+        .map_err(|e| anyhow!("cannot write {}: {e}", path.display()))?;
+    Ok(path)
+}
+
+/// Write the per-turn `--mcp-config` file pointing Claude at `orx mcp-gate`
+/// (this same binary) and return its path. The bridge's env block carries the
+/// `orx up` port, the session id, and a fresh per-turn token — everything the
+/// child needs to relay permission requests back to the running server.
+fn write_mcp_config(
+    repo: &std::path::Path,
+    up_port: u16,
+    session_id: &str,
+    token: &str,
+) -> Result<PathBuf> {
+    let orx = std::env::current_exe()
+        .map_err(|e| anyhow!("cannot resolve orx binary path for the mcp bridge: {e}"))?;
+    let config = serde_json::json!({
+        "mcpServers": {
+            "orx": {
+                "type": "stdio",
+                "command": orx.to_string_lossy(),
+                "args": ["mcp-gate"],
+                "env": {
+                    "ORX_UP_PORT": up_port.to_string(),
+                    "ORX_SESSION_ID": session_id,
+                    "ORX_GATE_TOKEN": token,
+                },
+            },
+        }
+    });
+    let path = repo.join(MCP_CONFIG_REL);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow!("cannot create {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&path, serde_json::to_vec_pretty(&config).unwrap())
         .map_err(|e| anyhow!("cannot write {}: {e}", path.display()))?;
     Ok(path)
 }
@@ -438,21 +546,48 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     if let Some(native_id) = &ctx.native_session_id {
         cmd.args(["--resume", native_id]);
     }
-    // In plan mode, a `PreToolUse` hook lets read-only `orx` inspection through
-    // (plan mode would otherwise gate `Bash(orx …)`); launches stay blocked. The
-    // settings file is written into the worktree and passed for this invocation.
+    // In plan mode, two per-turn files change what the CLI gates:
+    //  * `--settings` wires the `orx plan-gate` PreToolUse hook — read-only
+    //    inspection allowed, ExitPlanMode forced to `ask` (headless would
+    //    self-approve it otherwise).
+    //  * `--mcp-config` + `--permission-prompt-tool` wire the `orx mcp-gate`
+    //    bridge: every permission the CLI would have prompted for interactively
+    //    is relayed to `orx up`, which surfaces a card and holds the call open
+    //    until the user answers — desktop-style mid-turn approvals.
+    // Both are best-effort: without them plan mode degrades to its default
+    // gating (denials) rather than failing the turn. On CLI versions without
+    // `--permission-prompt-tool` the flag is silently ignored (verified), so no
+    // version gate is needed.
+    let mut bridge_active = false;
     if ctx.permission_mode == Some(PermissionMode::Plan) {
         match write_plan_settings(&repo) {
             Ok(path) => {
                 cmd.arg("--settings").arg(path);
             }
-            // Non-fatal: without the hook, plan mode still runs — read-only orx
-            // just gets gated (no headless approval), so inspection is degraded
-            // but the turn proceeds rather than failing to spawn.
             Err(e) => {
                 eprintln!(
                     "orx up: plan-mode settings not written, orx inspection will be gated: {e}"
                 );
+            }
+        }
+        // Without a bound port (not under `orx up`) there's no HTTP surface to
+        // relay approvals to — skip the bridge.
+        if let Some(port) = ctx.host.up_port() {
+            let token = ctx.host.mint_gate_token(&ctx.session_id);
+            match write_mcp_config(&repo, port, &ctx.session_id, &token) {
+                Ok(path) => {
+                    cmd.arg("--mcp-config").arg(path);
+                    cmd.args(["--permission-prompt-tool", "mcp__orx__approve"]);
+                    // Give a held approval an hour before the CLI abandons
+                    // the tool call; orx denies at 55 min, safely inside it.
+                    cmd.env("MCP_TOOL_TIMEOUT", "3600000");
+                    bridge_active = true;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "orx up: mcp bridge not configured, gray-area tools will be denied: {e}"
+                    );
+                }
             }
         }
     }
@@ -471,7 +606,10 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     // Synthesized-plan-card tracking (see `should_synthesize_plan`): whether
     // any interactive card was surfaced, whether the turn errored, and the
     // last non-empty text block — the plan, if the model wrote one as text.
+    // Clear any bridge-card flag a previous aborted turn left behind so it
+    // can't suppress this turn's fallback.
     let plan_mode = ctx.permission_mode == Some(PermissionMode::Plan);
+    let _ = ctx.host.take_bridge_prompted(&ctx.session_id);
     let mut saw_prompt = false;
     let mut turn_errored = false;
     let mut last_text = String::new();
@@ -521,11 +659,19 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                             let name = block.get("name").and_then(Value::as_str).unwrap_or("");
                             let input = block.get("input");
                             // ExitPlanMode / AskUserQuestion surface as interactive
-                            // prompt cards instead of plain tool rows; the CLI
-                            // ends the turn on them (headless can't answer inline),
-                            // and the user's choice resumes the session.
-                            if let Some(prompt) =
-                                plan_prompt(name, input).or_else(|| question_prompt(name, input))
+                            // prompt cards instead of plain tool rows, and the
+                            // user's choice resumes the session. With the bridge
+                            // active, ExitPlanMode's card comes from the bridge
+                            // instead (a held, mid-turn-answerable card), so the
+                            // tool_use renders as a plain tool row — two cards
+                            // for one plan would race each other.
+                            let bridged_plan = bridge_active && name == "ExitPlanMode";
+                            if let Some(prompt) = (!bridged_plan)
+                                .then(|| {
+                                    plan_prompt(name, input)
+                                        .or_else(|| question_prompt(name, input))
+                                })
+                                .flatten()
                             {
                                 saw_prompt = true;
                                 ctx.upsert_part(WirePart::prompt(id, prompt));
@@ -626,7 +772,9 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     // and no ExitPlanMode call. Headless leaves no way out of plan mode then —
     // only a plan-card answer switches the resume mode, so a chat "yes" would
     // resume still read-only. Synthesize a card from the final text so
-    // approval always has a handle.
+    // approval always has a handle. A card the bridge surfaced mid-turn counts
+    // as "saw a prompt" (e.g. keep-planning continued this same turn).
+    let saw_prompt = saw_prompt || ctx.host.take_bridge_prompted(&ctx.session_id);
     if should_synthesize_plan(plan_mode, saw_prompt, turn_errored, &last_text) {
         ctx.upsert_part(WirePart::prompt(
             format!("plan-synth-{}", ctx.assistant.id),

@@ -54,6 +54,8 @@ pub async fn run(args: UpArgs) -> Result<()> {
         harnesses: Arc::new(tokio::sync::Mutex::new(None)),
         data_dir_move_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
+    // Plan-mode turns hand this port to the `orx mcp-gate` permission bridge.
+    state.chat.set_up_port(port);
 
     spawn_hf_preflight();
     spawn_k8s_preflight();
@@ -228,6 +230,10 @@ fn router(state: AppState) -> Router {
         .route("/api/chat/sessions/{id}/message", post(send_chat_message))
         .route("/api/chat/sessions/{id}/interrupt", post(interrupt_chat))
         .route("/api/chat/sessions/{id}/respond", post(respond_chat))
+        // Internal: the `orx mcp-gate` permission bridge's long-poll (plan
+        // mode). Token-authenticated in the handler; blocks until the surfaced
+        // card is answered.
+        .route("/api/internal/permissions", post(bridge_permission))
         .route("/api/chat/attachments/{name}", get(chat_attachment))
         .route("/api/agent/status", get(agent_status))
         .fallback(spa)
@@ -2279,6 +2285,33 @@ async fn respond_chat(
         .await
         .map_err(bad_request)?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// The `orx mcp-gate` bridge relaying one blocked tool call from a plan-mode
+/// claude turn. The response body is the permission decision verbatim
+/// (`{"behavior":"allow",…}` / `{"behavior":"deny",…}`) — the bridge
+/// stringifies it into the MCP tool result unchanged. Deliberately long-held:
+/// it returns when the user answers the card (or policy/timeout decides).
+async fn bridge_permission(
+    State(state): State<AppState>,
+    Json(req): Json<BridgePermissionReq>,
+) -> ApiResult {
+    let decision = state
+        .chat
+        .request_permission(&req.session_id, &req.token, &req.tool_name, req.tool_input)
+        .await
+        .map_err(bad_request)?;
+    Ok(Json(serde_json::to_value(decision).map_err(bad_request)?))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BridgePermissionReq {
+    session_id: String,
+    token: String,
+    tool_name: String,
+    #[serde(default)]
+    tool_input: Value,
 }
 
 // --- agent ----------------------------------------------------------------

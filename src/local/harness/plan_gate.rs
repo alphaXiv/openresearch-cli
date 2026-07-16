@@ -98,14 +98,35 @@ const GIT_WHOLE_VERB_READS: &[&str] = &[
 
 /// Decide whether a `PreToolUse` hook payload describes a read-only command
 /// that plan mode should let through. Returns the JSON to print on stdout (an
-/// `allow` decision) or `None` to stay silent and defer to plan mode's default
-/// gating.
+/// `allow`/`ask` decision) or `None` to stay silent and defer to plan mode's
+/// default gating.
 ///
 /// The payload shape is Claude Code's hook contract: `tool_name` names the tool
 /// and `tool_input.command` carries the Bash command line.
+///
+/// ExitPlanMode gets an explicit `ask`: headless plan mode **self-approves**
+/// the call otherwise ("User has approved exiting plan mode", nobody asked —
+/// verified on claude 2.1.197), letting the model exit plan mode and edit
+/// files without the user's say. `ask` routes it to the permission prompt tool
+/// (the `orx mcp-gate` bridge), which surfaces the plan card and blocks until
+/// the user answers; without a bridge configured, `ask` in headless denies —
+/// still strictly better than self-approval.
 pub fn decide(payload: &Value) -> Option<Value> {
+    let tool_name = payload.get("tool_name").and_then(Value::as_str)?;
+
+    if tool_name == "ExitPlanMode" {
+        return Some(json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "ask",
+                "permissionDecisionReason":
+                    "plan approval is the user's decision",
+            }
+        }));
+    }
+
     // Only Bash calls carry a shell command to inspect; every other tool defers.
-    if payload.get("tool_name").and_then(Value::as_str) != Some("Bash") {
+    if tool_name != "Bash" {
         return None;
     }
     let command = payload
@@ -654,6 +675,17 @@ mod tests {
         // Missing command field → defer, not panic.
         let p = json!({ "tool_name": "Bash", "tool_input": {} });
         assert!(decide(&p).is_none());
+    }
+
+    #[test]
+    fn exit_plan_mode_asks_instead_of_self_approving() {
+        let p = json!({ "tool_name": "ExitPlanMode", "tool_input": { "plan": "do X" } });
+        let out = decide(&p).expect("ExitPlanMode must get a decision");
+        assert_eq!(
+            out.pointer("/hookSpecificOutput/permissionDecision")
+                .and_then(Value::as_str),
+            Some("ask")
+        );
     }
 
     #[test]
