@@ -68,6 +68,7 @@ type Action =
   | { type: "seed"; sessionId: string; messages: ChatMessage[] }
   | { type: "upsertMessage"; sessionId: string; message: ChatMessage }
   | { type: "optimisticUser"; sessionId: string; text: string; imageUrls: string[] }
+  | { type: "dropOptimisticUser"; sessionId: string }
   | { type: "busy"; sessionId: string; busy: boolean }
   | { type: "seedBusy"; sessions: string[] }
   | { type: "forget"; sessionId: string };
@@ -124,6 +125,22 @@ function reducer(state: ChatState, action: Action): ChatState {
       return {
         ...state,
         messagesBySession: { ...state.messagesBySession, [action.sessionId]: [...list, msg] },
+      };
+    }
+    case "dropOptimisticUser": {
+      // Roll back the last optimistic user bubble when the send failed (e.g. a
+      // 409 during a data-dir move) — otherwise it lingers until reload since no
+      // server message ever arrives to replace it.
+      const list = state.messagesBySession[action.sessionId];
+      if (!list?.length) return state;
+      const last = list[list.length - 1];
+      if (last.role !== "user" || !last.id.startsWith(LOCAL_PREFIX)) return state;
+      return {
+        ...state,
+        messagesBySession: {
+          ...state.messagesBySession,
+          [action.sessionId]: list.slice(0, -1),
+        },
       };
     }
     case "busy": {
@@ -1008,8 +1025,20 @@ export function ChatPanel({
         dataBase64: a.dataUrl.slice(a.dataUrl.indexOf(",") + 1),
       }));
       await sendChatMessage(sid, text, turnOpts, images.length ? images : undefined);
-    } catch {
-      if (sid) dispatch({ type: "busy", sessionId: sid, busy: false });
+    } catch (err) {
+      if (sid) {
+        dispatch({ type: "busy", sessionId: sid, busy: false });
+        // Roll back the optimistic bubble so a failed send leaves no phantom.
+        dispatch({ type: "dropOptimisticUser", sessionId: sid });
+      }
+      // Surface the failure and restore the composer so the message isn't lost.
+      // A data-dir move in progress returns 409 with an explanatory message —
+      // now a reachable outcome, so it must be shown rather than swallowed.
+      setDraft((d) => (d ? d : text));
+      setAttachments((a) => (a.length ? a : pending));
+      window.alert(
+        `Couldn't send: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 

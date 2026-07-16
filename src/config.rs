@@ -100,6 +100,27 @@ pub async fn clear_credentials() -> Result<()> {
     }
 }
 
+/// The user-chosen data dir, if one is persisted and non-empty. Consumed by
+/// `store::data_dir()` between the `$ORX_DATA_DIR` override and the XDG default.
+///
+/// `settings.json` (in `config_dir()`, deliberately *outside* the data dir so it
+/// can point *at* it without a chicken-and-egg) is owned by `crate::telemetry`,
+/// which already guards it with an in-process mutex + cross-process flock +
+/// atomic temp-and-rename RMW. We delegate rather than add a second writer — a
+/// naive whole-object write here would clobber `installId`/`telemetryDisabled`
+/// (and vice-versa). Sync because `store::data_dir()` calls it on every open.
+pub fn settings_data_dir() -> Option<PathBuf> {
+    crate::telemetry::persisted_data_dir().map(PathBuf::from)
+}
+
+/// Set or clear the persisted data dir, preserving every other settings field.
+/// Delegates to `telemetry::set_persisted_data_dir` (the locked, atomic RMW).
+/// `None` clears it (revert to the env/XDG/default chain).
+pub fn set_settings_data_dir(data_dir: Option<String>) -> Result<()> {
+    crate::telemetry::set_persisted_data_dir(data_dir)?;
+    Ok(())
+}
+
 /// Look up a var from the box's synced env file (`~/.openresearch/env`, written
 /// by the api's env sync). Needed because non-interactive shells never source
 /// it via .bashrc (Ubuntu's interactive guard returns first), so an agent's

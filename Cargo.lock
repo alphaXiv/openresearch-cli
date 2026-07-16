@@ -938,6 +938,7 @@ dependencies = [
  "dirs",
  "fd-lock",
  "futures",
+ "libc",
  "reqwest",
  "rusqlite",
  "rust-embed",

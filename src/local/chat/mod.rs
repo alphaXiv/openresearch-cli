@@ -373,6 +373,22 @@ impl ChatHost {
         let _ = self.events.send((name, data));
     }
 
+    /// Publish an arbitrary named event onto the SSE broadcast that `/api/events`
+    /// forwards. Used by non-chat features (e.g. the data-dir move) that want to
+    /// stream progress to the UI without standing up a second channel.
+    pub fn emit_event(&self, name: &'static str, data: Value) {
+        self.emit(name, data);
+    }
+
+    /// Shut down both harness hosts' long-lived child processes. They respawn
+    /// lazily on the next turn — used after a data-dir move so a child that
+    /// captured the old path (Codex hard-pins `$ORX_DATA_DIR` at spawn) comes
+    /// back resolving the new one.
+    pub async fn shutdown_harnesses(&self) {
+        self.opencode.shutdown().await;
+        self.codex.shutdown().await;
+    }
+
     pub async fn busy_sessions(&self) -> Vec<String> {
         self.turns.lock().await.keys().cloned().collect()
     }

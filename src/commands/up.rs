@@ -52,6 +52,7 @@ pub async fn run(args: UpArgs) -> Result<()> {
         agent: agent.clone(),
         chat: Arc::new(ChatHost::new(agent.clone(), codex.clone())),
         harnesses: Arc::new(tokio::sync::Mutex::new(None)),
+        data_dir_move_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     spawn_hf_preflight();
@@ -129,6 +130,10 @@ struct AppState {
     /// Harness detection cache — detection shells out to CLIs, so it's rate-
     /// limited to once per TTL unless the UI asks for a refresh.
     harnesses: Arc<tokio::sync::Mutex<Option<(std::time::Instant, Value)>>>,
+    /// Set while a data-dir move is running. New chat turns and run launches
+    /// check it and refuse (409) so nothing starts writing the store mid-move —
+    /// closing the window between the move's in-flight check and its completion.
+    data_dir_move_in_progress: Arc<std::sync::atomic::AtomicBool>,
 }
 
 fn router(state: AppState) -> Router {
@@ -180,6 +185,12 @@ fn router(state: AppState) -> Router {
             "/api/settings/env/{key}",
             axum::routing::delete(delete_env_var),
         )
+        .route(
+            "/api/settings/data-dir",
+            get(data_dir_settings).post(set_data_dir),
+        )
+        .route("/api/settings/data-dir/validate", post(validate_data_dir))
+        .route("/api/settings/data-dir/move", post(move_data_dir))
         .route(
             "/api/settings/git",
             get(git_settings).post(set_git_settings),
@@ -377,7 +388,11 @@ struct CreateProjectReq {
     fork_repo: bool,
 }
 
-async fn create_project(Json(req): Json<CreateProjectReq>) -> ApiResult {
+async fn create_project(
+    State(state): State<AppState>,
+    Json(req): Json<CreateProjectReq>,
+) -> ApiResult {
+    reject_if_moving(&state)?;
     let name = req.name.trim().to_string();
     if name.is_empty() {
         return Err(bad_request("name is required"));
@@ -476,7 +491,12 @@ struct UpdateProjectReq {
     run_command: Option<Option<String>>,
 }
 
-async fn update_project(Path(id): Path<String>, Json(req): Json<UpdateProjectReq>) -> ApiResult {
+async fn update_project(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateProjectReq>,
+) -> ApiResult {
+    reject_if_moving(&state)?;
     if req.name.is_none() && req.run_command.is_none() {
         return Err(bad_request(
             "nothing to update: pass name and/or runCommand",
@@ -509,6 +529,7 @@ async fn update_project(Path(id): Path<String>, Json(req): Json<UpdateProjectReq
 /// requests their cancellation, so a retry shortly after goes through. The
 /// GitHub repo and the cache clone are left untouched.
 async fn delete_project(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
+    reject_if_moving(&state)?;
     let store = Store::open()?;
     let project = store
         .get_local_project(&id)?
@@ -604,9 +625,11 @@ struct CreateExperimentReq {
 }
 
 async fn create_experiment(
+    State(state): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<CreateExperimentReq>,
 ) -> ApiResult {
+    reject_if_moving(&state)?;
     // Branch create + push shells out to git (network); off the async workers.
     let experiment = tokio::task::spawn_blocking(move || {
         let store = Store::open()?;
@@ -655,7 +678,12 @@ struct RunReq {
     org: Option<String>,
 }
 
-async fn run_experiment(Path(id): Path<String>, body: Bytes) -> ApiResult {
+async fn run_experiment(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> ApiResult {
+    reject_if_moving(&state)?;
     // Tolerate an empty body — every field is optional in the schema.
     let req: RunReq = if body.is_empty() {
         RunReq::default()
@@ -1013,7 +1041,12 @@ async fn file_report(Path(id): Path<String>, Query(q): Query<FilePathQuery>) -> 
 }
 
 /// Delete a file or report folder in the files dir, by relative path.
-async fn delete_file(Path(id): Path<String>, Query(q): Query<FilePathQuery>) -> ApiResult {
+async fn delete_file(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<FilePathQuery>,
+) -> ApiResult {
+    reject_if_moving(&state)?;
     blocking_api(move || {
         let store = Store::open()?;
         let project = store
@@ -1362,6 +1395,263 @@ async fn delete_env_var(Path(key): Path<String>) -> ApiResult {
     })
     .await
     .map_err(|e| ApiError::from(anyhow!("env task failed: {e}")))?
+}
+
+// --- data directory ---------------------------------------------------------
+
+/// Current data-dir state for the Storage settings card: where it resolves,
+/// whether that's the default, the path we'd fall back to, and *why* it resolves
+/// where it does (so the UI can lock the field when `$ORX_DATA_DIR` forces it).
+fn data_dir_json() -> Value {
+    use crate::store::DataDirSource;
+    let current = crate::store::data_dir();
+    let default = crate::store::default_data_dir();
+    let source = crate::store::data_dir_source();
+    json!({
+        "current": current.to_string_lossy(),
+        "defaultPath": default.to_string_lossy(),
+        // "On the fallback chain" = no explicit choice (env pin or saved config).
+        // Env can happen to equal the default path but is still a forced override.
+        "isDefault": matches!(source, DataDirSource::Xdg | DataDirSource::Default),
+        // env | config | xdg | default — env means a forced override (read-only).
+        "source": source,
+    })
+}
+
+async fn data_dir_settings() -> ApiResult {
+    tokio::task::spawn_blocking(|| Ok(Json(data_dir_json())))
+        .await
+        .map_err(|e| ApiError::from(anyhow!("data-dir task failed: {e}")))?
+}
+
+#[derive(Deserialize)]
+struct DataDirReq {
+    path: String,
+}
+
+/// Reject a mutation when `$ORX_DATA_DIR` is forcing the path — the config value
+/// would be shadowed, so honoring the request would silently do nothing.
+fn ensure_not_env_forced() -> std::result::Result<(), ApiError> {
+    if crate::store::data_dir_source() == crate::store::DataDirSource::Env {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "The data directory is pinned by the ORX_DATA_DIR environment \
+             variable, which overrides this setting. Unset it to choose a path here."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Pre-flight a candidate path for a **move** without committing: absolute? empty
+/// target? room? Returns `{ ok, error?, treeBytes, freeBytes?, sameFilesystem }`.
+async fn validate_data_dir(Json(req): Json<DataDirReq>) -> ApiResult {
+    use crate::local::datadir::TargetIntent;
+    let path = req.path.trim().to_string();
+    if path.is_empty() {
+        return Err(bad_request("path is required"));
+    }
+    tokio::task::spawn_blocking(move || {
+        match crate::local::datadir::validate_target(
+            std::path::Path::new(&path),
+            TargetIntent::Move,
+        ) {
+            Ok(report) => Ok(Json(json!({
+                "ok": true,
+                "treeBytes": report.tree_bytes,
+                "freeBytes": report.free_bytes,
+                "sameFilesystem": report.same_filesystem,
+            }))),
+            Err(e) => Ok(Json(json!({ "ok": false, "error": e.to_string() }))),
+        }
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow!("validate task failed: {e}")))?
+}
+
+/// Set the data dir *without moving* — for onboarding on an empty install, or
+/// reconnecting to an already-populated location (a second machine, after config
+/// loss). The UI routes here only when the current dir has nothing to migrate;
+/// otherwise it calls `/move`. Uses `TargetIntent::Set`, which (unlike `Move`)
+/// permits a populated existing dir since nothing is copied.
+async fn set_data_dir(State(state): State<AppState>, Json(req): Json<DataDirReq>) -> ApiResult {
+    use crate::local::datadir::TargetIntent;
+    reject_if_moving(&state)?;
+    ensure_not_env_forced()?;
+    let path = req.path.trim().to_string();
+    if path.is_empty() {
+        return Err(bad_request("path is required"));
+    }
+    // Validate before persisting so we never store a bad path.
+    let validate_path = path.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::local::datadir::validate_target(
+            std::path::Path::new(&validate_path),
+            TargetIntent::Set,
+        )
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow!("validate task failed: {e}")))?
+    .map_err(bad_request)?;
+
+    tokio::task::spawn_blocking(move || crate::config::set_settings_data_dir(Some(path)))
+        .await
+        .map_err(|e| ApiError::from(anyhow!("settings task failed: {e}")))??;
+    Ok(Json(data_dir_json()))
+}
+
+/// Relocate the data dir to `path`, streaming `datadir.move.*` progress events
+/// over `/api/events`. Returns 202 immediately; the UI watches the SSE stream.
+///
+/// Concurrency safety: sets `data_dir_move_in_progress` *first*, then refuses
+/// (409) if a run or chat turn is already active. The substantive store-mutating
+/// handlers (`send`/`launch`, project/experiment/chat CRUD, file delete,
+/// `set_data_dir`) check the flag on entry and back off, so once the move is
+/// underway nothing new writes the store. Even the residual races don't lose
+/// data: a request that passed its own flag check in the tiny window before this
+/// one set the flag — or an unguarded incidental write (an `open_project`
+/// timestamp touch, an `ssh_preflight` test row) — lands in the *old* dir, but
+/// the cross-filesystem path never deletes it (it's returned as `oldPathLeft`),
+/// so the write is preserved there; only the atomic same-filesystem rename
+/// consumes the old dir, and that path has no copy window.
+async fn move_data_dir(State(state): State<AppState>, Json(req): Json<DataDirReq>) -> Response {
+    use crate::local::datadir::TargetIntent;
+    use std::sync::atomic::Ordering;
+
+    if let Err(e) = ensure_not_env_forced() {
+        return e.into_response();
+    }
+    let path = req.path.trim().to_string();
+    if path.is_empty() {
+        return bad_request("path is required").into_response();
+    }
+
+    // Claim the move slot first (compare-exchange): only one move at a time, and
+    // once claimed, new turns/launches see the flag and back off.
+    if state
+        .data_dir_move_in_progress
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return ApiError(
+            StatusCode::CONFLICT,
+            "A data-directory move is already in progress.".into(),
+        )
+        .into_response();
+    }
+
+    // Helper to release the slot on any early return.
+    let release = |state: &AppState| {
+        state
+            .data_dir_move_in_progress
+            .store(false, Ordering::SeqCst);
+    };
+
+    // In-flight guard: block if a chat turn or a run is active right now. (The
+    // flag we just set prevents *new* ones from starting past this point.)
+    let busy = state.chat.busy_sessions().await;
+    let active_runs = tokio::task::spawn_blocking(active_run_count)
+        .await
+        .unwrap_or(0);
+    if !busy.is_empty() || active_runs > 0 {
+        release(&state);
+        return ApiError(
+            StatusCode::CONFLICT,
+            format!(
+                "Can't move while work is in progress ({} active chat turn(s), \
+                 {active_runs} active run(s)). Finish or stop them, then retry.",
+                busy.len()
+            ),
+        )
+        .into_response();
+    }
+
+    // Validate before kicking off the background move.
+    let vpath = path.clone();
+    let validated = tokio::task::spawn_blocking(move || {
+        crate::local::datadir::validate_target(std::path::Path::new(&vpath), TargetIntent::Move)
+    })
+    .await;
+    match validated {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            release(&state);
+            return bad_request(e).into_response();
+        }
+        Err(e) => {
+            release(&state);
+            return ApiError::from(anyhow!("validate task failed: {e}")).into_response();
+        }
+    }
+
+    // Spawn the move on a blocking task (it does synchronous FS work); forward
+    // throttled progress onto the SSE broadcast, clear the flag when done.
+    let chat = state.chat.clone();
+    let flag = state.data_dir_move_in_progress.clone();
+    let target = std::path::PathBuf::from(path);
+    tokio::spawn(async move {
+        use crate::local::datadir::MoveProgress;
+        let chat_for_progress = chat.clone();
+        // Throttle: forward at most one progress event per ~120ms of copy, but
+        // always emit phase edges (copied==0 or ==total) so the first/last tick
+        // of every phase gets through.
+        let last = std::sync::Mutex::new(0i64);
+        let on_progress = move |p: MoveProgress| {
+            let now = crate::store::now_ms();
+            let mut guard = last.lock().unwrap();
+            let is_edge = p.copied_bytes == 0 || p.copied_bytes >= p.total_bytes;
+            if is_edge || now - *guard >= 120 {
+                *guard = now;
+                chat_for_progress.emit_event("datadir.move.progress", json!(p));
+            }
+        };
+        let target_for_move = target.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            crate::local::datadir::move_data_dir(target_for_move, on_progress)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(outcome)) => {
+                // Restart harness children so any that pinned the old data dir
+                // (Codex hard-pins $ORX_DATA_DIR at spawn) respawn on the new one.
+                chat.shutdown_harnesses().await;
+                chat.emit_event("datadir.move.done", json!(outcome));
+            }
+            Ok(Err(e)) => chat.emit_event("datadir.move.error", json!({ "error": e.to_string() })),
+            Err(e) => chat.emit_event(
+                "datadir.move.error",
+                json!({ "error": format!("move task panicked: {e}") }),
+            ),
+        }
+        flag.store(false, Ordering::SeqCst);
+    });
+
+    (StatusCode::ACCEPTED, Json(json!({ "started": true }))).into_response()
+}
+
+/// Count runs currently in an active state (`starting`/`running`), for the
+/// data-dir move's in-flight guard. SQL-side and unbounded (see
+/// `Store::count_active_runs`).
+fn active_run_count() -> usize {
+    Store::open()
+        .and_then(|s| s.count_active_runs())
+        .unwrap_or(0)
+}
+
+/// Refuse an operation that would write the store while a data-dir move is in
+/// progress — the move relies on nothing new touching the old dir mid-flight.
+fn reject_if_moving(state: &AppState) -> std::result::Result<(), ApiError> {
+    if state
+        .data_dir_move_in_progress
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "A data-directory move is in progress. Try again once it finishes.".into(),
+        ));
+    }
+    Ok(())
 }
 
 // --- git settings -----------------------------------------------------------
@@ -1799,7 +2089,11 @@ struct CreateChatSessionReq {
     reasoning_level: Option<String>,
 }
 
-async fn create_chat_session(Json(req): Json<CreateChatSessionReq>) -> ApiResult {
+async fn create_chat_session(
+    State(state): State<AppState>,
+    Json(req): Json<CreateChatSessionReq>,
+) -> ApiResult {
+    reject_if_moving(&state)?;
     if !local::harness::is_chat_harness(&req.harness) {
         return Err(bad_request(format!("unknown harness: {}", req.harness)));
     }
@@ -1828,6 +2122,7 @@ async fn create_chat_session(Json(req): Json<CreateChatSessionReq>) -> ApiResult
 }
 
 async fn delete_chat_session(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
+    reject_if_moving(&state)?;
     state.chat.delete_session(&id).await?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -1844,6 +2139,7 @@ async fn update_chat_session(
     Path(id): Path<String>,
     Json(req): Json<UpdateChatSessionReq>,
 ) -> ApiResult {
+    reject_if_moving(&state)?;
     let session = if let Some(title) = req.title {
         let title = title.trim();
         if title.is_empty() {
@@ -1893,6 +2189,7 @@ async fn send_chat_message(
     Path(id): Path<String>,
     Json(req): Json<SendChatReq>,
 ) -> ApiResult {
+    reject_if_moving(&state)?;
     let text = req.text.trim().to_string();
     if text.is_empty() && req.images.is_empty() {
         return Err(bad_request("text is required"));
