@@ -357,7 +357,8 @@ fn plan_auto_policy(tool_name: &str, tool_input: &Value) -> Option<PermissionDec
 /// `request_permission` — answered, timed out, or the handler future dropped
 /// mid-await (the HTTP connection died with the claude child). Removes the
 /// pending entry and resolves the card so it can't be answered into the void.
-/// Resolving an already-resolved card is an idempotent re-persist.
+/// Re-resolving an already-answered card is a no-op (`mark_prompt_resolved`
+/// skips it) so this late pass can't shadow an echo-stamped broadcast.
 struct PendingGuard {
     host: Arc<ChatHost>,
     session_id: String,
@@ -1014,6 +1015,7 @@ impl ChatHost {
         // the answer was dropped, leaving no recourse but an interrupt.
         // Resolving after a successful delivery keeps a failed answer
         // retryable: nothing has been mutated, the card is still actionable.
+        // (The resolve itself is best-effort — see `resolve_prompt_card`.)
         match action {
             ResumeAction::SendMessage { text, mode } => {
                 // A native (mid-turn) card may resume while its turn is still
@@ -1033,23 +1035,19 @@ impl ChatHost {
                 };
                 self.send_message(&req.session_id, text, overrides, Vec::new())
                     .await?;
-                // Best-effort: the answer is already delivered, so a (store-
-                // only) resolve failure must not surface as an Err — the UI's
-                // catch would clear `busy` on the turn we just spawned.
-                if let Err(e) = self.resolve_prompt_card(&req) {
-                    eprintln!("orx up: answered prompt not marked resolved: {e}");
-                }
+                self.resolve_prompt_card(&req);
                 Ok(())
             }
             ResumeAction::Handled => {
                 // The inline reply unblocked the still-running turn; it keeps
                 // streaming and will `finish_turn` itself. Leave `busy` alone.
-                self.resolve_prompt_card(&req)
+                self.resolve_prompt_card(&req);
+                Ok(())
             }
             ResumeAction::Nothing => {
                 // Card closed with no resume (e.g. a denied Claude permission);
                 // broadcast idle so `busy` clears in the UI.
-                self.resolve_prompt_card(&req)?;
+                self.resolve_prompt_card(&req);
                 if let Ok(Some(session)) = Store::open()?.get_chat_session(&req.session_id) {
                     self.emit(
                         "chat.session",
@@ -1064,13 +1062,18 @@ impl ChatHost {
     /// Mark an answered card resolved (stamping the answer echo) and broadcast
     /// the updated message so it re-renders collapsed on every client
     /// immediately (send_message only emits the new user message, never the
-    /// mutated assistant one).
-    fn resolve_prompt_card(&self, req: &PromptAnswer) -> Result<()> {
-        let resolved_msg =
-            mark_prompt_resolved(&self.msg_write, &req.session_id, &req.prompt_id, Some(req))?
-                .ok_or_else(|| anyhow!("prompt not found"))?;
-        self.emit("chat.message", message_json(&resolved_msg, &req.session_id));
-        Ok(())
+    /// mutated assistant one). Best-effort: by the time this runs the answer
+    /// has already been delivered, so a (store-only) failure is logged rather
+    /// than surfaced — an Err from `respond` would make the UI's catch clear
+    /// `busy` on a turn that is actually still streaming.
+    fn resolve_prompt_card(&self, req: &PromptAnswer) {
+        let resolved =
+            mark_prompt_resolved(&self.msg_write, &req.session_id, &req.prompt_id, Some(req))
+                .and_then(|m| m.ok_or_else(|| anyhow!("prompt not found")));
+        match resolved {
+            Ok(msg) => self.emit("chat.message", message_json(&msg, &req.session_id)),
+            Err(e) => eprintln!("orx up: answered prompt not marked resolved: {e}"),
+        }
     }
 
     /// Archive/unarchive a session and broadcast the updated row so every open
@@ -1753,9 +1756,7 @@ mod bridge_tests {
         )));
         assert!(allow(plan_auto_policy("WebSearch", &json!({"query": "x"}))));
         // AskUserQuestion: asking IS the user interaction — never gate it
-        // behind a permission card (the double-card also deadlocked the turn:
-        // the held bridge card kept the session busy while the question card's
-        // end-turn resume was rejected as busy).
+        // behind a permission card (rationale on the policy arm).
         assert!(allow(plan_auto_policy(
             "AskUserQuestion",
             &json!({"questions": [{"question": "Which?", "options": []}]})

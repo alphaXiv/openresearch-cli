@@ -358,13 +358,14 @@ function PromptCard({
         </details>
       );
     }
-    // question — one line: header/question + what was chosen.
+    // question — one line: header/question + what was chosen. No echo
+    // (stale-resolved): neutral "Resolved", matching the plan row.
     const chosen = (p.answers ?? []).join(", ");
     return (
       <details className="prompt-collapsed">
         <summary>
           <span className="prompt-collapsed-title">{p.header || p.question || "Question"}</span>
-          {chosen && <span className="prompt-outcome approved">{chosen}</span>}
+          <span className={`prompt-outcome ${chosen ? "chosen" : ""}`}>{chosen || "Resolved"}</span>
         </summary>
         <div className="prompt-collapsed-body">
           {p.question && <div className="prompt-q">{p.question}</div>}

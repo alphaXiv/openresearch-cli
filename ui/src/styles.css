@@ -3607,10 +3607,12 @@ button.files-pill-link:hover {
   font-size: 12px;
   color: var(--subtext);
 }
-.prompt-outcome.approved {
+.prompt-outcome.approved,
+.prompt-outcome.chosen {
   color: var(--accent-green);
 }
-.prompt-outcome.approved::before {
+.prompt-outcome.approved::before,
+.prompt-outcome.chosen::before {
   content: "✓ ";
 }
 .prompt-outcome.revised {
