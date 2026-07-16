@@ -116,18 +116,25 @@ impl Harness for ClaudeCode {
     }
 
     fn options(&self) -> HarnessOptions {
-        // Only Auto + Bypass. Headless `claude --print` has no interactive
+        // Plan + Auto + Bypass. Headless `claude --print` has no interactive
         // approval, so `ask`/`accept-edits` can't grant a blocked tool (they just
-        // deny). And `plan` — a hard read-only gate — fights the orx workflow:
-        // it blocks the read-only `orx` inspection the agent needs to plan *and*
-        // the launches that are the whole point, so "propose then approve"
-        // happens better in conversation (the agent describes its plan and asks
-        // before running `orx exp run`) than via a mode that can't run orx.
+        // deny) — those stay out.
+        //   * Plan  — read/propose only: file edits stay blocked until the user
+        //     approves the plan (via the ExitPlanMode card). Plan mode would
+        //     normally also gate `Bash(orx …)`, which would break planning — the
+        //     agent plans by *inspecting* prior runs/logs/evidence via read-only
+        //     `orx`. A `PreToolUse` hook (wired in `run_turn` only for this mode,
+        //     via `write_plan_settings`) lets read-only `orx` verbs through while
+        //     launches (`orx exp run`, `instance`, …) stay gated. See `plan_gate`.
         //   * Auto  — the balanced default; runs tools without prompting.
         //   * Bypass— runs everything, no sandbox.
         HarnessOptions::none()
             .with_permission_modes(
-                &[PermissionMode::Auto, PermissionMode::Bypass],
+                &[
+                    PermissionMode::Plan,
+                    PermissionMode::Auto,
+                    PermissionMode::Bypass,
+                ],
                 PermissionMode::Auto,
             )
             // Claude Code's `--effort` tiers (default `high` on current models).
@@ -187,6 +194,45 @@ fn claude_permission_mode(mode: Option<PermissionMode>) -> &'static str {
         PermissionMode::Auto => "auto",
         PermissionMode::Bypass => "bypassPermissions",
     }
+}
+
+/// Path (relative to the worktree) of the plan-mode settings file we write and
+/// pass via `--settings`. Lives under the same agent dir as the playbook, which
+/// is already git-excluded.
+const PLAN_SETTINGS_REL: &str = ".openresearch/agent/claude-plan-settings.json";
+
+/// Write the plan-mode `--settings` file into `repo` and return its path. The
+/// file registers a `PreToolUse` hook on `Bash` that runs `orx plan-gate`
+/// (this same binary), which allows read-only `orx` inspection through plan
+/// mode's gate while leaving launches/edits blocked. See `plan_gate`.
+///
+/// The hook command is this executable's absolute path, so it resolves without
+/// depending on `orx` being on Claude's `PATH`.
+fn write_plan_settings(repo: &std::path::Path) -> Result<PathBuf> {
+    let orx = std::env::current_exe()
+        .map_err(|e| anyhow!("cannot resolve orx binary path for plan-mode hook: {e}"))?;
+    let settings = serde_json::json!({
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "Bash",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!(
+                        "{} plan-gate",
+                        crate::jobs::ssh::sh_quote(&orx.to_string_lossy())
+                    ),
+                }],
+            }],
+        }
+    });
+    let path = repo.join(PLAN_SETTINGS_REL);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow!("cannot create {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&path, serde_json::to_vec_pretty(&settings).unwrap())
+        .map_err(|e| anyhow!("cannot write {}: {e}", path.display()))?;
+    Ok(path)
 }
 
 /// Session reasoning id → Claude Code `--effort` value. The composer only
@@ -375,6 +421,24 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     }
     if let Some(native_id) = &ctx.native_session_id {
         cmd.args(["--resume", native_id]);
+    }
+    // In plan mode, a `PreToolUse` hook lets read-only `orx` inspection through
+    // (plan mode would otherwise gate `Bash(orx …)`); launches stay blocked. The
+    // settings file is written into the worktree and passed for this invocation.
+    if ctx.permission_mode == Some(PermissionMode::Plan) {
+        match write_plan_settings(&repo) {
+            Ok(path) => {
+                cmd.arg("--settings").arg(path);
+            }
+            // Non-fatal: without the hook, plan mode still runs — read-only orx
+            // just gets gated (no headless approval), so inspection is degraded
+            // but the turn proceeds rather than failing to spawn.
+            Err(e) => {
+                eprintln!(
+                    "orx up: plan-mode settings not written, orx inspection will be gated: {e}"
+                );
+            }
+        }
     }
     prepare_env(&mut cmd);
 
