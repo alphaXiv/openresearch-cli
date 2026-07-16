@@ -155,54 +155,51 @@ impl SshSession {
         // fill-in-the-blank), and prose dimmed so it frames rather than competes.
         //
         // Adaptive target: many boxes (RunPod / openresearch dev nodes) are
-        // reached by raw `user@host -p PORT`, with no `~/.ssh/config` alias — so
+        // reached by raw `user@host:PORT`, with no `~/.ssh/config` alias — so
         // "<ssh-alias>" is a dead end there. We anchor on the one thing every
-        // reader has: the `user@host` (and any `-p PORT`) they just typed to get
-        // in. When `SSH_CONNECTION` hands us a usable *public* server IP we splice
-        // it straight in so the command is nearly copy-paste; otherwise we show a
-        // `<user@host>` placeholder and point at their own `ssh` line.
+        // reader has: the `user@host` (and any custom port) they just typed to
+        // get in. `orx up --remote` accepts a trailing `:PORT` (see
+        // `commands::up_remote`), so option 1 is a genuine one-command path even
+        // on a non-standard port. When `SSH_CONNECTION` hands us a usable
+        // *public* server IP we splice it straight in; otherwise we show the
+        // `<user@host>` placeholder and point at the reader's own `ssh` line.
         let prompt = dim("$", ansi);
-        let hosted_ip = self.server_ip_hint();
-        // What goes in the connection-target slot of each command: the box's own
-        // public IP when `SSH_CONNECTION` gives us a usable one (nearly
-        // copy-paste), else a `<user@host>` placeholder — the one thing every
-        // reader has, alias or not.
-        let target = match hosted_ip {
-            Some(ip) => cyan(ip, ansi),
-            None => cyan("<user@host>", ansi),
-        };
-        // Custom SSH ports (RunPod / openresearch dev nodes connect on e.g.
-        // :38455) can't be recovered here: `SSH_CONNECTION`'s port field is
-        // sshd's own listen port, not the one the client dialed. Only the manual
-        // `ssh` command can carry `-p PORT`; `orx up --remote` has no port flag,
-        // so we deliberately keep the port slot OFF the option-1 line.
-        let port_slot = cyan("[-p PORT]", ansi);
+        let server_ip = self.server_ip_hint();
+        // The connection target both commands share. `[:PORT]` is a cyan optional
+        // slot: the client-dialed port can't be recovered from `SSH_CONNECTION`
+        // (its port field is sshd's own listen port, e.g. :22, not RunPod's
+        // :38455), so the reader supplies it from the ssh command they ran.
+        let host_part = server_ip.unwrap_or("<user@host>");
+        let target = format!("{}{}", cyan(host_part, ansi), cyan("[:PORT]", ansi));
 
         // Each command: bold command-text + cyan target + dim trailing comment,
         // so within a line the part you type stays bright and asides recede.
         let primary = format!("{} {target}", bold("orx up --remote", ansi));
         let manual = format!(
-            "{} {port_slot} {target}   {}",
+            "{} {target}   {}",
             bold(&format!("ssh -N -L {port}:localhost:{port}"), ansi),
             dim(&format!("# then open http://localhost:{port}"), ansi),
         );
 
-        // Point the reader at where the target comes from — their own `ssh`
-        // line — and flag the custom-port caveat that bites RunPod users:
-        // option 1 only works on the default port 22 / a config alias, so on a
-        // non-standard port option 2 is the one to use.
-        let target_note = match hosted_ip {
+        // Point the reader at where the target comes from — their own `ssh` line
+        // — and be honest about option 1's limit: `orx up --remote` reconstructs
+        // only user@host + port, so a connection that needs `-i key` / a jump
+        // host (and isn't in ~/.ssh/config) has to use option 2 or a config entry.
+        let target_note = match server_ip {
             Some(ip) => format!(
-                "{ip} is this box's address. If it doesn't connect, use the same \
-                 user@host (and -p PORT) from the ssh command you ran to get here."
+                "{ip} is this box's address. If it doesn't connect, use the \
+                 user@host and port from the ssh command you ran to get here."
             ),
-            None => "<user@host> = whatever you typed to ssh into this box \
-                     (e.g. root@203.0.113.5), no ~/.ssh/config alias needed. \
-                     [-p PORT] = the port you connect on; drop it if that's 22."
+            None => "<user@host>[:PORT] = the user, host, and -p port from the ssh \
+                     command you ran to get here (e.g. root@203.0.113.5:2222). \
+                     No ~/.ssh/config alias needed."
                 .to_string(),
         };
-        let port_caveat = "On a non-default SSH port, use option 2 — orx up --remote \
-                           can't pass -p yet.";
+        // Only surfaced with option 1, since option 2 is a plain ssh you can add
+        // flags to yourself.
+        let key_caveat = "If you ssh in with a custom key or jump host that isn't in \
+                          ~/.ssh/config, option 1 can't see it — use option 2, or add \
+                          an ~/.ssh/config entry.";
 
         format!(
             "{header}\n\n\
@@ -212,7 +209,7 @@ impl SshSession {
              {opt2}\n\
              \x20 {prompt} {manual}\n\n\
              {target_note}\n\
-             {port_caveat}\n",
+             {key_caveat}\n",
             header = bold(
                 &format!("orx up: serving on http://127.0.0.1:{port} (this remote host)"),
                 ansi,
@@ -222,13 +219,10 @@ impl SshSession {
                  run one of these in a laptop terminal — not in this SSH session:",
                 ansi,
             ),
-            opt1 = bold(
-                "1) Let orx forward it for you (default port 22 / an alias):",
-                ansi
-            ),
-            opt2 = bold("2) Or forward it yourself (works on any port):", ansi),
+            opt1 = bold("1) Let orx forward it for you (easiest):", ansi),
+            opt2 = bold("2) Or forward it yourself:", ansi),
             target_note = dim(&target_note, ansi),
-            port_caveat = dim(port_caveat, ansi),
+            key_caveat = dim(key_caveat, ansi),
         )
     }
 }
@@ -302,13 +296,16 @@ mod tests {
         // We anchor on `user@host` (works with no ~/.ssh/config alias), not on a
         // bare "alias" the reader may not have.
         assert!(msg.contains("<user@host>"));
-        assert!(msg.contains("no ~/.ssh/config alias needed"));
+        assert!(msg.contains("No ~/.ssh/config alias needed"));
+        // And the note is honest about option 1's key/jump-host limit.
+        assert!(msg.contains("custom key or jump host"));
     }
 
     #[test]
-    fn custom_port_slot_is_only_on_the_manual_command() {
-        // `orx up --remote` has no `-p` flag, so the port slot must NOT appear on
-        // option 1 — only on the manual `ssh` line, which does accept `-p`.
+    fn both_commands_carry_the_optional_port_slot() {
+        // `orx up --remote` now accepts a trailing `:PORT`, so the `[:PORT]` slot
+        // rides on the shared target and appears on BOTH commands — option 1 is a
+        // real one-command path even on a non-standard SSH port.
         let msg = detect_from(Some("203.0.113.7 51344 10.0.0.5 22"), false)
             .unwrap()
             .render_instructions(4791, false);
@@ -316,14 +313,12 @@ mod tests {
             .lines()
             .find(|l| l.contains("$ orx up --remote"))
             .expect("option-1 command line present");
-        assert!(!primary_line.contains("-p PORT"));
+        assert!(primary_line.contains("<user@host>[:PORT]"));
         let manual_line = msg
             .lines()
             .find(|l| l.contains("$ ssh -N -L"))
             .expect("option-2 command line present");
-        assert!(manual_line.contains("[-p PORT]"));
-        // And the caveat spells out why option 1 can't do custom ports.
-        assert!(msg.contains("orx up --remote can't pass -p yet"));
+        assert!(manual_line.contains("<user@host>[:PORT]"));
     }
 
     #[test]
@@ -333,8 +328,17 @@ mod tests {
         let msg = detect_from(Some("203.0.113.7 51344 198.51.100.5 22"), false)
             .unwrap()
             .render_instructions(4791, false);
-        assert!(msg.contains("orx up --remote 198.51.100.5"));
-        assert!(msg.contains("198.51.100.5   # then open"));
+        assert!(msg.contains("orx up --remote 198.51.100.5[:PORT]"));
+        // The manual command carries the same target; assert the two facts
+        // separately rather than pinning the whitespace/comment glue between them.
+        let manual_line = msg
+            .lines()
+            .find(|l| l.contains("$ ssh -N -L"))
+            .expect("manual command line present");
+        assert!(manual_line.contains("198.51.100.5[:PORT]"));
+        assert!(manual_line.contains("http://localhost:4791"));
+        // The accompanying note names the IP (its dedicated branch).
+        assert!(msg.contains("198.51.100.5 is this box's address"));
         // No leftover placeholder when we filled the IP in.
         assert!(!msg.contains("<user@host>"));
     }
