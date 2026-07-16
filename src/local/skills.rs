@@ -84,6 +84,14 @@ Workflow:
 2. Reproduce claim by claim on the agreed compute. Simplified setups and toy-scale runs are fine when full scale is out of budget — say so explicitly when you downscale.
 3. For each claim record an honest verdict (reproduced / partially / not reproduced / not attempted), the evidence (numbers vs. paper's numbers), and the compute cost.
 4. Finish with a summary: per-claim verdicts, where results diverged and why, and what a full-scale reproduction would still need.
+
+Publish a polished GitHub artifact:
+- Treat the repository README as the public landing page, not as an afterthought. Add a project-specific reproduction section at the very top, before any upstream README content. It must state which paper claim was tested, what was done, the verdict, the paper number versus the reproduced number, the downscaling/substitutions, the agreed compute, and links to the detailed report or notebook when present.
+- In that top section, add a compact `Experiment log` or provenance table covering the important branches only. Use descriptive links to each branch and include columns for branch/experiment, purpose or change, **exact run command**, verdict/outcome, and compute. Copy the command verbatim from `orx exp status`; do not abbreviate it, replace it with pseudocode, or show only the entrypoint.
+- Account for `main` explicitly. If a formal experiment was ever launched from `main`, include `main` in the table with the exact command and result. If `main` is presentation-only, say `Not run as an experiment (publication surface)` rather than inventing a command.
+- Publish every reader-facing report on `main`, alongside the README and other small presentation artifacts. A report is not considered published if it exists only in the dashboard Files directory, a local artifact directory, an `orx/*` experiment branch, or an internal run log. Copy or recreate the final report under a clear repository path such as `reports/<topic>/report.md` or `artifacts/<topic>/report.md`, then add a descriptive link to it in the README's top reproduction section. If several reports are produced, link every important one and briefly say what each contains.
+- Include failed branches only when they explain the lineage to the successful result. Keep raw experiment and run IDs in `orx exp desc`, not in the README.
+- Keep the README current whenever another important branch is run or its verdict changes. A reader landing on GitHub should be able to understand what was tried and reproduce the command without inspecting the internal experiment database.
 "#;
 
 const PAPER_TO_MARIMO_TEMPLATE: &str = r#"Reproduce a research paper's main illustrative claim and publish it as a self-contained, tutorial-style marimo notebook that opens in molab.
@@ -176,7 +184,13 @@ Publish on GitHub:
 Publish the notebook and README on `main`, provided `main` is not an experiment root. Add this single-line README badge, replacing the placeholders:
 `[![Open in molab](https://marimo.io/molab-shield.svg)](https://molab.marimo.io/github/<owner>/<repo>/blob/main/<notebook.py>)`
 
-Also add a short `Experiment log` to the README so a reader landing in the repository can understand what was tried. Include only the important branches, link each branch descriptively, and summarize its change and outcome; omit raw experiment and run IDs, and include failed attempts only when they explain the experimental lineage.
+Treat the README as the polished public landing page. At the very top, before any upstream README content, add a concise reproduction overview explaining the selected claim, what was done, the verdict, the paper number versus the reproduced number, the main substitutions/downscaling, the compute used, and links to the molab tutorial and detailed report.
+
+Immediately below that overview, add a compact `Experiment log` or provenance table so a reader can understand what was tried without consulting `orx`. Include only the important branches, link each branch descriptively, and use columns for branch/experiment, purpose or change, **exact run command**, verdict/outcome, and compute. Copy each command verbatim from `orx exp status`; do not abbreviate it, replace it with pseudocode, or show only the entrypoint. Include failed attempts only when they explain the experimental lineage, and omit raw experiment and run IDs.
+
+Account for `main` explicitly in this top section. If any formal experiment was launched from `main`, list `main` with the exact command and result. If `main` is only the maintained publication surface, state `Not run as an experiment (publication surface)` rather than inventing a command. Keep this table current whenever another important branch is run or its verdict changes.
+
+Publish every reader-facing report on `main`, alongside the README, notebook, and other small presentation artifacts. A report is not considered published if it exists only in the dashboard Files directory, a local artifact directory, an `orx/*` experiment branch, or an internal run log. Copy or recreate each final report under a clear repository path such as `reports/<topic>/report.md` or `artifacts/<topic>/report.md`, and add a descriptive link to every important report in the README's top reproduction section with a short explanation of what it contains.
 
 After pushing:
 1. Verify the repository is public. If it is still private and permission has not been granted, explain that the molab link cannot work anonymously, ask permission to make the repository public, and stop. Once permission is granted, make it public with `gh` and verify the new visibility before continuing.
@@ -289,6 +303,11 @@ mod tests {
         let out = expand("/reproduce-paper Maximum Likelihood RL on ssh host lambda-a100").unwrap();
         assert!(out.contains("Paper and compute: Maximum Likelihood RL on ssh host lambda-a100"));
         assert!(out.contains("Confirm the compute"));
+        assert!(out.contains("before any upstream README content"));
+        assert!(out.contains("exact run command"));
+        assert!(out.contains("Not run as an experiment (publication surface)"));
+        assert!(out.contains("every reader-facing report on `main`"));
+        assert!(out.contains("not considered published"));
         assert!(!out.contains("trackio"));
         assert!(expand("/reproduce-paper").unwrap().contains("ask the user"));
     }
@@ -312,7 +331,11 @@ mod tests {
         assert!(out.contains("do not make the user perform the change manually"));
         assert!(out.contains("Do not publish raw experiment or run IDs"));
         assert!(out.contains("Confirmatory reproduction code"));
-        assert!(out.contains("short `Experiment log`"));
+        assert!(out.contains("before any upstream README content"));
+        assert!(out.contains("exact run command"));
+        assert!(out.contains("Not run as an experiment (publication surface)"));
+        assert!(out.contains("every reader-facing report on `main`"));
+        assert!(out.contains("not considered published"));
         assert!(expand("/paper-to-marimo").unwrap().contains("ask the user"));
     }
 
