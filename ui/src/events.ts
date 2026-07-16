@@ -52,6 +52,27 @@ function emitChat(ev: ChatEvent) {
   chatListeners.forEach((fn) => fn(ev));
 }
 
+// Data-dir move progress fans out the same way so the Storage settings card can
+// subscribe without touching the shared useOrxEvents handler set.
+export type DataDirMoveEvent =
+  | { type: "progress"; phase: string; copiedBytes: number; totalBytes: number }
+  | { type: "done"; path: string; oldPathLeft?: string }
+  | { type: "error"; error: string };
+
+type DataDirMoveListener = (ev: DataDirMoveEvent) => void;
+const dataDirMoveListeners = new Set<DataDirMoveListener>();
+
+export function onDataDirMove(fn: DataDirMoveListener): () => void {
+  dataDirMoveListeners.add(fn);
+  return () => {
+    dataDirMoveListeners.delete(fn);
+  };
+}
+
+function emitDataDirMove(ev: DataDirMoveEvent) {
+  dataDirMoveListeners.forEach((fn) => fn(ev));
+}
+
 export interface OrxEventHandlers {
   onRun: (run: Run) => void;
   onExperiment: (experiment: Experiment) => void;
@@ -108,6 +129,20 @@ export function useOrxEvents(handlers: OrxEventHandlers) {
     es.addEventListener("chat.busy", (e) => {
       const d = parse<{ sessionId: string; busy: boolean }>(e as MessageEvent);
       if (d?.sessionId) emitChat({ type: "busy", sessionId: d.sessionId, busy: d.busy });
+    });
+    es.addEventListener("datadir.move.progress", (e) => {
+      const d = parse<{ phase: string; copiedBytes: number; totalBytes: number }>(
+        e as MessageEvent,
+      );
+      if (d) emitDataDirMove({ type: "progress", ...d });
+    });
+    es.addEventListener("datadir.move.done", (e) => {
+      const d = parse<{ path: string; oldPathLeft?: string }>(e as MessageEvent);
+      if (d) emitDataDirMove({ type: "done", path: d.path, oldPathLeft: d.oldPathLeft });
+    });
+    es.addEventListener("datadir.move.error", (e) => {
+      const d = parse<{ error: string }>(e as MessageEvent);
+      if (d) emitDataDirMove({ type: "error", error: d.error });
     });
     return () => es.close();
   }, []);

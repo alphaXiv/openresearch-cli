@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import {
   deleteFile,
   fileUrl,
+  fmtBytes,
   getFileReport,
   type FileEntry,
   type Project,
@@ -26,12 +27,6 @@ function stripFrontmatter(md: string): string {
   if (!md.startsWith("---")) return md;
   const end = md.indexOf("\n---", 3);
   return end === -1 ? md : md.slice(end + 4).replace(/^\r?\n/, "");
-}
-
-function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|svg)$/i;
@@ -329,10 +324,13 @@ export function FilesTab({
   project,
   files,
   onChanged,
+  onOpenStorage,
 }: {
   project: Project;
   files: ProjectFiles | null;
   onChanged: () => void;
+  /** Navigate to Settings → Storage (where the data dir can be changed). */
+  onOpenStorage: () => void;
 }) {
   const [openPath, setOpenPath] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -409,6 +407,9 @@ export function FilesTab({
             <ExternalLink size={12} />
           </a>
           <DirPath dir={files.dir} />
+          <button type="button" className="files-pill files-pill-link" onClick={onOpenStorage}>
+            Change storage location →
+          </button>
         </div>
         <p className="files-hint">
           An explorer over this folder — the agent writes each experiment's reports and figures
