@@ -345,7 +345,9 @@ function PromptCard({
   if (p.kind === "plan") {
     return (
       <div className={`prompt-card plan ${done ? "resolved" : ""}`}>
-        <div className="prompt-head">Proposed plan</div>
+        <div className="prompt-head">
+          {p.synthesized ? "Plan mode — ready to proceed?" : "Proposed plan"}
+        </div>
         <div className="prompt-plan">
           <Md text={p.plan ?? ""} onOpenFile={onOpenFile} />
         </div>
@@ -353,12 +355,16 @@ function PromptCard({
           <div className="prompt-resolved">Resolved</div>
         ) : (
           // Plan prompts are Claude-only. Approving leaves plan mode to actually
-          // run the work, so the two modes offered are the ones headless honors
-          // for that: Auto (balanced — runs tools) and Bypass (no sandbox).
+          // run the work under the chosen mode: Auto (balanced — runs tools),
+          // Accept edits (auto-approves file edits, asks for the rest), or
+          // Bypass (no sandbox).
           // resumeMode values are harness-agnostic permission-mode wire ids.
           <div className="prompt-actions">
             <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "auto" })}>
               Approve &amp; run
+            </button>
+            <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "accept-edits" })}>
+              Approve &amp; accept edits
             </button>
             <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "bypass" })}>
               Approve &amp; bypass all
