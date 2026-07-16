@@ -1,113 +1,143 @@
 # OpenResearch CLI (`orx`)
 
-A small command-line interface for OpenResearch. Log in via the browser, then
-query your projects from the terminal.
+**Run autoresearch on your machine.**
 
-## Requirements
+`orx up` starts a local dashboard where you give each research direction its
+own agent. Agents work in parallel in isolated git worktrees, propose and edit
+experiments, launch runs on GPU compute, and analyze the results — using your
+existing tools, accounts, and compute.
 
-- Rust (stable) with Cargo. Install via [rustup](https://rustup.rs):
+Built by [alphaXiv](https://alphaxiv.org). The same harness powers the
+Autoresearch tab on alphaXiv paper pages and [openresearch.sh](https://openresearch.sh).
 
-  ```sh
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  ```
-
-## Build & run
+## Quick start
 
 ```sh
-# Build (debug):
-cargo build
+curl -LsSf https://openresearch.sh/install.sh | sh
+orx up
+```
 
-# Run during development:
-cargo run -- login
-cargo run -- projects
+The dashboard opens at `http://127.0.0.1:4791`. Give the agent a goal — for
+example, ask it to reproduce a paper:
 
-# Build an optimized release binary at target/release/orx:
-cargo build --release
-./target/release/orx login
+```
+/reproduce-paper <paper URL or title> on <compute>
+```
 
-# Or install `orx` onto your PATH (~/.cargo/bin):
-cargo install --path .
-orx login
-orx projects
+or turn one into an interactive marimo notebook:
+
+```
+/paper-to-marimo <paper URL or title> on <compute>
+```
+
+## The dashboard
+
+`orx up` runs a single local process on `127.0.0.1` — an embedded web UI plus a
+JSON/SSE API over a local SQLite store. From there you get:
+
+- **Agent chat** — a research assistant with full project context, backed by
+  your locally installed harness: Claude Code, Codex, or OpenCode (pick the
+  harness and model in the UI). Ask it to analyze runs, dig into results, edit
+  code, and spin up new experiments.
+- **The experiment tree** — every experiment is a git branch: a runnable
+  snapshot of your code. The root is your baseline; children are variants
+  measured against it, so lineage stays explicit.
+- **Runs** — launch on your compute (Modal, Hugging Face Jobs, Kubernetes,
+  Slurm, any SSH box, your own machine) or OpenResearch managed GPUs, and watch
+  live logs, statuses, git diffs, files, and linked W&B runs stream in.
+- **Autoresearch** — describe a goal and let the agent run autonomously toward
+  it: proposing, launching, and analyzing experiments.
+
+Everything binds to loopback only; nothing on the dashboard's paths leaves your
+machine except the compute and paper-search calls you initiate.
+
+### On a remote machine
+
+Develop from your laptop while the dashboard runs next to your GPUs:
+
+```sh
+orx up --remote user@host        # or an ~/.ssh/config alias; append :PORT for a custom SSH port
+```
+
+This starts `orx up` on the remote box over SSH, tunnels the port back, and
+opens your browser locally. Note the remote server is unauthenticated on that
+host's loopback, so other users on the same box can reach it.
+
+## Commands
+
+Run `orx --help` (or `orx <command> --help`) for full usage. The highlights:
+
+| Area | Commands |
+|---|---|
+| Dashboard | `up` |
+| Auth | `login`, `logout` |
+| Projects | `projects`, `explore`, `project`, `create-project`, `env` |
+| Experiments | `experiments`, `create-experiment`, `exp status/cmd/run/cancel` |
+| Runs & evidence | `runs`, `logs`, `search-logs`, `artifacts`, `artifact`, `wandb`, `query`, `chart`, `report` |
+| Compute | `compute`, `instance create` |
+| Literature | `lit`, `paper` (alphaXiv full-text search — no login required) |
+| Agent integration | `install-skills`, `skill` |
+| Maintenance | `version`, `update`, `telemetry` |
+
+`orx install-skills` drops the OpenResearch skill into your local coding agents
+(Claude Code, Codex, OpenCode, Cursor) so they can drive `orx` themselves —
+`orx login` offers this too.
+
+## Installing
+
+The install script above fetches the latest prebuilt release (macOS and Linux,
+x86_64 and arm64) and is the same as:
+
+```sh
+curl -LsSf https://github.com/alphaXiv/openresearch-cli/releases/latest/download/openresearch-cli-installer.sh | sh
+```
+
+`orx update` keeps script-installed binaries current; interactive terminals
+also get a once-a-day background check with a one-line stderr notice (silence
+it with `ORX_NO_UPDATE_CHECK=1`).
+
+### From source
+
+Requires Rust (stable) via [rustup](https://rustup.rs). The prebuilt dashboard
+UI is committed at `ui/dist`, so a plain build works:
+
+```sh
+cargo build --release          # binary at target/release/orx
+cargo install --path .         # or install onto your PATH (~/.cargo/bin)
+```
+
+To hack on the dashboard UI itself (Vite + React, embedded into the binary at
+build time):
+
+```sh
+cd ui && pnpm install && pnpm build
 ```
 
 Run the tests with `cargo test`.
 
-### Commands
+## Configuration
 
-| Command | Description |
-|---|---|
-| `orx login [--api-url <url>]` | Opens your browser, authenticates, and stores a personal access token. |
-| `orx logout` | Removes the stored token. |
-| `orx install-skills [--agent claude\|codex\|opencode\|cursor\|all]` | Installs the `orx` skill shim into local coding agents (Claude Code, Codex, OpenCode, Cursor) so they auto-discover the CLI (`orx login` also offers this). |
-| `orx projects [--all]` | Lists your projects, grouped by organization. `--all` includes archived. |
-| `orx compute [--gpu <id>] [--count <n>] [--provider <name>] \| --cpu]` | Lists the GPU compute catalog across all providers and regions, or CPU-only offers with `--cpu`, sorted by price. |
-| `orx instance create <orgId> (--gpu <id> [--count <n>] [--disk <gb>] [--provider <name>] \| --cpu <flavor> [--vcpus <n>])` | Spins up a standalone instance in an organization (not tied to an experiment), like the dashboard's "Spin up". |
-| `orx exp status <expId>` | Shows an experiment's status, branch, parent, run command, and latest run, plus a local `git diff` recipe for what the run changed. |
-| `orx exp cmd <expId> [--set <command>]` | Views or sets the experiment's run command. |
-| `orx exp run <expId> (--gpu <id> [--count <n>] [--disk <gb>] [--provider <name>] \| --cpu <flavor> [--vcpus <n>] \| --sandbox <id>)` | Launches a run on new GPU, new CPU-only, or existing compute. |
-| `orx exp cancel <expId>` | Cancels the in-flight run. |
-| `orx lit "<query>" [--limit <n>] [--json]` | Full-text search alphaXiv's paper corpus (no login required). |
-| `orx paper <id\|url> [--full]` | Fetch a paper's machine-readable report, or its full text with `--full`. |
-| `orx version [--check] [--json]` | Prints the CLI version; `--check` compares it to the latest release. |
-| `orx update [--dry-run] [--force]` | Updates orx by re-running the release installer (installer installs only). |
-
-### Updating
-
-`orx update` only manages binaries installed by the release installer script
-(it checks the cargo-dist install receipt at
-`${XDG_CONFIG_HOME:-~/.config}/openresearch-cli/`). If you installed with
-`cargo install`, update the same way instead. In interactive terminals orx
-also checks for new releases in the background at most once a day and prints
-a one-line notice to stderr; set `ORX_NO_UPDATE_CHECK=1` (or
-`OPENRESEARCH_CLI_DISABLE_UPDATE=1`) to turn that off. Agents, scripts, pipes,
-and CI never see the notice.
-
-### Configuration
-
-- **API URL** resolves from `--api-url` → `OPENRESEARCH_API_URL` → the built-in
-  default (`http://localhost:4000`). Point it at the production API host for
-  real use:
-
-  ```sh
-  export OPENRESEARCH_API_URL=https://api.openresearch.sh
-  ```
-
-- **Credentials** are stored at
-  `${XDG_CONFIG_HOME:-~/.config}/openresearch/credentials.json` (mode `0600`).
-
-## How login works
-
-`orx login` starts a temporary HTTP listener on a random `127.0.0.1` port, opens
-`{api}/auth/cli/login` in your browser, and waits for the API to redirect back
-with a freshly minted personal access token after you authenticate. The token is
-sent as `Authorization: Bearer …` on every subsequent request.
+- **API URL** — defaults to production (`https://api.openresearch.sh`);
+  override with `--api-url` or `OPENRESEARCH_API_URL`.
+- **Credentials** — `orx login` opens your browser, mints a personal access
+  token, and stores it at `${XDG_CONFIG_HOME:-~/.config}/openresearch/credentials.json`
+  (mode `0600`). Sent as `Authorization: Bearer …` on every request.
 
 ## Usage analytics
 
-`orx` sends **anonymous** usage analytics to help us understand which features
-are used and prioritize accordingly. This is **opt-out**; the `orx up` dashboard
-surfaces the choice as a step in first-run onboarding.
+`orx` sends **anonymous** usage analytics to help prioritize features. It's
+opt-out, and the `orx up` onboarding surfaces the choice on first run.
 
-**What is collected** — the command name that was run, a random per-install UUID,
-the CLI version, your OS/architecture, whether the run is in CI, and a small set
-of coarse labels for key events (e.g. an experiment was created or a run was
-launched, and a broad compute target like `modal`/`k8s`/`local`).
+- **Collected:** command name, a random per-install UUID, CLI version, OS/arch,
+  a CI flag, and coarse event labels (e.g. "a run launched on `modal`").
+- **Never collected:** code, prompts, file contents or paths, project or
+  experiment ids/names, repo names, tokens, emails — nothing identifying. The
+  install UUID is not tied to your account.
 
-**What is never collected** — no code, prompt text, file contents, file paths,
-project/experiment ids or names, repo names, tokens, emails, or any other
-personal or identifying data. The install UUID is random and not tied to your
-account.
-
-**How to opt out** — either:
-
-```bash
-orx telemetry off          # persistent, per-machine
-orx telemetry status       # see current state + the anonymous install id
-orx <cmd> --no-telemetry    # per-run
+```sh
+orx telemetry off        # persistent, per-machine
+orx telemetry status     # current state + the anonymous install id
+orx <cmd> --no-telemetry # per-run
 ```
 
-Events are sent fire-and-forget on a background task with a short timeout, so
-they never meaningfully block or fail a command (at most a brief flush window on
-exit). Every event carries a `ci` property, so automated runs can be filtered in
-analytics without being dropped up front.
+Events are fire-and-forget on a background task and never block a command.
