@@ -10,7 +10,7 @@ import {
   SlidersHorizontal,
   X,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   chatAttachmentUrl,
   createChatSession,
@@ -34,6 +34,7 @@ import {
 } from "../api";
 import { onChatEvent } from "../events";
 import { Md } from "./Md";
+import { PlanStrip } from "./PlanStrip";
 import { SETTINGS_NAV, type SettingsTab } from "./SettingsPage";
 import { SkillMenu } from "./SkillMenu";
 import {
@@ -313,10 +314,12 @@ function PromptCard({
   part,
   onRespond,
   onOpenFile,
+  onOpenPlan,
 }: {
   part: ChatPart;
   onRespond?: (answer: PromptAnswer) => void;
   onOpenFile?: (path: string) => void;
+  onOpenPlan?: (plan: string, promptId: string) => void;
 }) {
   const p = part.prompt as ChatPrompt;
   const [picked, setPicked] = useState<string[]>([]);
@@ -326,36 +329,44 @@ function PromptCard({
     onRespond?.({ promptId: part.id, ...answer });
 
   if (p.kind === "plan") {
+    // With a plan-strip host (onOpenPlan), the docked strip owns the approval
+    // actions and the full plan lives in the right pane — the inline card is a
+    // compact, clamped in-transcript record. Without one, it keeps its own
+    // buttons (approving leaves plan mode; resumeMode values are
+    // harness-agnostic permission-mode wire ids).
+    const docked = !!onOpenPlan;
     return (
       <div className={`prompt-card plan ${done ? "resolved" : ""}`}>
         <div className="prompt-head">
           {p.synthesized ? "Plan mode — ready to proceed?" : "Proposed plan"}
         </div>
-        <div className="prompt-plan">
+        <div className={`prompt-plan ${docked ? "clamped" : ""}`}>
           <Md text={p.plan ?? ""} onOpenFile={onOpenFile} />
         </div>
+        {docked && (
+          <button className="prompt-plan-open" onClick={() => onOpenPlan(p.plan ?? "", part.id)}>
+            View full plan
+          </button>
+        )}
         {done ? (
           <div className="prompt-resolved">Resolved</div>
         ) : (
-          // Plan prompts are Claude-only. Approving leaves plan mode to actually
-          // run the work under the chosen mode: Auto (balanced — runs tools),
-          // Accept edits (auto-approves file edits, asks for the rest), or
-          // Bypass (no sandbox).
-          // resumeMode values are harness-agnostic permission-mode wire ids.
-          <div className="prompt-actions">
-            <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "auto" })}>
-              Approve &amp; run
-            </button>
-            <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "accept-edits" })}>
-              Approve &amp; accept edits
-            </button>
-            <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "bypass" })}>
-              Approve &amp; bypass all
-            </button>
-            <button className="btn-ghost" onClick={() => respond({ approve: false })}>
-              Keep planning
-            </button>
-          </div>
+          !docked && (
+            <div className="prompt-actions">
+              <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "auto" })}>
+                Approve &amp; run
+              </button>
+              <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "accept-edits" })}>
+                Approve &amp; accept edits
+              </button>
+              <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "bypass" })}>
+                Approve &amp; bypass all
+              </button>
+              <button className="btn-ghost" onClick={() => respond({ approve: false })}>
+                Keep planning
+              </button>
+            </div>
+          )
         )}
       </div>
     );
@@ -446,10 +457,13 @@ function Message({
   message,
   onOpenFile,
   onRespond,
+  onOpenPlan,
 }: {
   message: ChatMessage;
   onOpenFile?: (path: string) => void;
   onRespond?: (answer: PromptAnswer) => void;
+  /** Open a plan's full markdown in the right pane (plan cards/strip). */
+  onOpenPlan?: (plan: string, promptId: string) => void;
 }) {
   if (message.role === "user") {
     const text = message.parts
@@ -503,7 +517,13 @@ function Message({
       );
     else if (part.type === "prompt" && part.prompt)
       rendered.push(
-        <PromptCard key={part.id} part={part} onRespond={onRespond} onOpenFile={onOpenFile} />,
+        <PromptCard
+          key={part.id}
+          part={part}
+          onRespond={onRespond}
+          onOpenFile={onOpenFile}
+          onOpenPlan={onOpenPlan}
+        />,
       );
   }
   flushTools();
@@ -727,6 +747,7 @@ export function ChatPanel({
   panelOpen,
   onTogglePanel,
   onOpenFile,
+  onOpenPlan,
   children,
 }: {
   projectId: string;
@@ -748,6 +769,8 @@ export function ChatPanel({
    * `sessionId` is the chat session the click came from, so relative paths
    * can resolve against that session's worktree. */
   onOpenFile?: (path: string, sessionId?: string) => void;
+  /** Open a plan's markdown as a right-pane tab (plan strip / plan cards). */
+  onOpenPlan?: (plan: string, sessionId: string, promptId: string) => void;
   /** Middle-pane content when a settings section is active (the SettingsView). */
   children?: React.ReactNode;
 }) {
@@ -928,6 +951,30 @@ export function ChatPanel({
   const messages = activeId ? (state.messagesBySession[activeId] ?? []) : [];
   const busy = activeId ? state.busySessions.has(activeId) : false;
   const activeSession = openSession;
+
+  // The newest unresolved plan prompt, if any — it drives the docked strip
+  // above the composer. Resolution re-emits the message over SSE, so this
+  // recomputes to null and the strip disappears on its own.
+  const pendingPlan = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      for (const part of messages[i].parts) {
+        if (part.type === "prompt" && part.prompt?.kind === "plan" && !part.prompt.resolved) {
+          return {
+            promptId: part.id,
+            plan: part.prompt.plan ?? "",
+            synthesized: !!part.prompt.synthesized,
+          };
+        }
+      }
+    }
+    return null;
+  }, [messages]);
+
+  // Plan opens are stamped with the session like file opens are.
+  const openPlan =
+    onOpenPlan && activeId
+      ? (plan: string, promptId: string) => onOpenPlan(plan, activeId, promptId)
+      : undefined;
 
   // Drop any unsent composer tweak when switching sessions, so it never bleeds
   // from one session's pickers onto another's.
@@ -1280,6 +1327,7 @@ export function ChatPanel({
                 message={m}
                 onOpenFile={onOpenFile && ((p) => onOpenFile(p, activeId ?? undefined))}
                 onRespond={respond}
+                onOpenPlan={openPlan}
               />
             ))}
             {busy && (
@@ -1289,6 +1337,26 @@ export function ChatPanel({
             )}
           </div>
         </div>
+      )}
+
+      {/* Docked while a plan awaits a decision, so the approval controls never
+          scroll away. Actions mirror the (now compact) inline card's wire. */}
+      {pendingPlan && (
+        <PlanStrip
+          plan={pendingPlan.plan}
+          synthesized={pendingPlan.synthesized}
+          onView={() => openPlan?.(pendingPlan.plan, pendingPlan.promptId)}
+          onApprove={(resumeMode) =>
+            respond({ promptId: pendingPlan.promptId, approve: true, resumeMode })
+          }
+          onKeepPlanning={() => {
+            // The composer draft rides along as the refinement note — typing
+            // feedback then clicking "Keep planning" is the natural gesture.
+            const note = draft.trim();
+            respond({ promptId: pendingPlan.promptId, approve: false, note: note || undefined });
+            if (note) setDraft("");
+          }}
+        />
       )}
 
       <div className="composer">

@@ -1,4 +1,4 @@
-import { FileCode, GitBranch, Maximize2, Minimize2, Terminal, X } from "lucide-react";
+import { FileCode, GitBranch, Maximize2, Minimize2, ScrollText, Terminal, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   cancelRun,
@@ -21,6 +21,7 @@ import { RailHeader } from "./components/Header";
 import { Onboarding } from "./components/Onboarding";
 import { ProjectsHome } from "./components/ProjectsHome";
 import { RunsTable } from "./components/RunsTable";
+import { Md } from "./components/Md";
 import { SettingsView, type SettingsTab } from "./components/SettingsPage";
 import { TreeView } from "./components/TreeView";
 import { useOrxEvents } from "./events";
@@ -44,6 +45,18 @@ const sameFileTab = (a: FileViewDef, b: FileViewDef) =>
   a.path === b.path && a.sessionId === b.sessionId;
 
 const fileTabKey = (t: FileViewDef) => `${t.sessionId ?? ""}:${t.path}`;
+
+/** A proposed plan open as a right-panel tab (from the chat plan strip/card).
+ * The markdown is already client-side (it rode the prompt part), so the tab
+ * renders it directly — no fetch. Deliberately has neither a `view` nor a
+ * `path` field: the other tab kinds discriminate on those. */
+interface PlanViewDef {
+  kind: "plan";
+  sessionId: string;
+  /** The prompt part the plan came from — one tab per plan card. */
+  promptId: string;
+  plan: string;
+}
 
 // Map a path an agent reported to a repo-relative one — keeping the session
 // id when it points into a per-session worktree, so the file is read from the
@@ -128,9 +141,12 @@ export default function App() {
   // Right-panel tab strip: the pinned Experiments tab plus a closable tab per
   // opened experiment view / project file. Views are single-purpose, so the
   // same experiment can hold both a terminal tab and a changes tab.
-  const [rightTab, setRightTab] = useState<"experiments" | ExpViewDef | FileViewDef>("experiments");
+  const [rightTab, setRightTab] = useState<
+    "experiments" | ExpViewDef | FileViewDef | PlanViewDef
+  >("experiments");
   const [expTabs, setExpTabs] = useState<ExpViewDef[]>([]);
   const [fileTabs, setFileTabs] = useState<FileViewDef[]>([]);
+  const [planTabs, setPlanTabs] = useState<PlanViewDef[]>([]);
   // The right pane is a floating panel: closable, edge-resizable, expandable
   // to (nearly) full screen. Width persists across sessions.
   const [panelOpen, setPanelOpen] = useState(true);
@@ -184,6 +200,7 @@ export default function App() {
     setSelectedRunId(null);
     setExpTabs([]);
     setFileTabs([]);
+    setPlanTabs([]);
     setRightTab("experiments");
     listExperiments(projectId).then(setExperiments).catch(() => {});
     listRuns(projectId).then(setRuns).catch(() => {});
@@ -263,6 +280,34 @@ export default function App() {
     [fileTabs, rightTab],
   );
 
+  // Open a proposed plan as a right-panel tab (the chat plan strip's "View
+  // plan"). One tab per plan card; re-opening the same card refreshes its
+  // text (a revised plan re-uses the strip but is a new promptId → new tab).
+  const openPlanTab = useCallback((plan: string, sessionId: string, promptId: string) => {
+    const tab: PlanViewDef = { kind: "plan", sessionId, promptId, plan };
+    setPlanTabs((prev) => {
+      const idx = prev.findIndex((t) => t.promptId === promptId);
+      if (idx === -1) return [...prev, tab];
+      const next = prev.slice();
+      next[idx] = tab;
+      return next;
+    });
+    setRightTab(tab);
+    setPanelOpen(true);
+  }, []);
+
+  const closePlanTab = useCallback(
+    (tab: PlanViewDef) => {
+      const idx = planTabs.findIndex((t) => t.promptId === tab.promptId);
+      if (idx === -1) return;
+      const next = planTabs.filter((_, i) => i !== idx);
+      setPlanTabs(next);
+      if (typeof rightTab === "object" && "kind" in rightTab && rightTab.promptId === tab.promptId)
+        setRightTab(next[Math.min(idx, next.length - 1)] ?? "experiments");
+    },
+    [planTabs, rightTab],
+  );
+
   // Drag the panel's left edge to resize; width persists across reloads.
   const resizePanel = (e: React.PointerEvent) => {
     e.preventDefault();
@@ -313,6 +358,7 @@ export default function App() {
 
   const expTab = typeof rightTab === "object" && "view" in rightTab ? rightTab : null;
   const fileTab = typeof rightTab === "object" && "path" in rightTab ? rightTab : null;
+  const planTab = typeof rightTab === "object" && "kind" in rightTab ? rightTab : null;
   const tabExperiment = expTab ? (experiments.find((e) => e.id === expTab.id) ?? null) : null;
 
   if (projects === null) {
@@ -390,6 +436,7 @@ export default function App() {
               setPanelOpen(!panelOpen);
             }}
             onOpenFile={openFileTab}
+            onOpenPlan={openPlanTab}
           >
             {mainView === "files" ? (
               (() => {
@@ -447,6 +494,16 @@ export default function App() {
                   icon={<FileCode size={12} style={{ flexShrink: 0 }} />}
                   onSelect={() => setRightTab(t)}
                   onClose={() => closeFileTab(t)}
+                />
+              ))}
+              {planTabs.map((t) => (
+                <ClosableTab
+                  key={`plan:${t.promptId}`}
+                  active={planTab !== null && planTab.promptId === t.promptId}
+                  label="Plan"
+                  icon={<ScrollText size={12} style={{ flexShrink: 0 }} />}
+                  onSelect={() => setRightTab(t)}
+                  onClose={() => closePlanTab(t)}
                 />
               ))}
             </div>
@@ -527,6 +584,17 @@ export default function App() {
                   onOpenFile={openFileTab}
                 />
               )}
+            </div>
+          ) : planTab ? (
+            <div className="tab-body">
+              {/* The plan markdown is already client-side — render directly,
+                  file links resolve against the plan's session worktree. */}
+              <div className="pane-content plan-tab-content">
+                <Md
+                  text={planTab.plan}
+                  onOpenFile={(path) => openFileTab(path, planTab.sessionId)}
+                />
+              </div>
             </div>
           ) : (
             <div className="tab-body">

@@ -3539,3 +3539,128 @@ a.files-pill:hover {
   font-weight: 600;
   color: var(--muted);
 }
+
+/* --- plan strip (docked above the composer while a plan awaits a decision) --- */
+
+.plan-strip {
+  /* Solid card floating over the composer's ::before fade. */
+  position: relative;
+  z-index: 5;
+  max-width: var(--readable-col);
+  width: calc(100% - 32px);
+  margin: 0 auto 6px;
+  padding: 9px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent-blue);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 6%);
+}
+.plan-strip-info {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  flex: 1;
+}
+.plan-strip-icon {
+  color: var(--accent-blue);
+  flex-shrink: 0;
+}
+.plan-strip-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.plan-strip-title {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.plan-strip-excerpt {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.plan-strip-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.plan-strip-approve {
+  position: relative;
+  display: flex;
+}
+.plan-strip-approve .btn-primary:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.plan-strip-caret {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  padding: 0 5px;
+  margin-left: 1px;
+  display: flex;
+  align-items: center;
+}
+.plan-strip-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  display: flex;
+  flex-direction: column;
+  min-width: 190px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
+  z-index: 6;
+}
+.plan-strip-menu button {
+  text-align: left;
+  padding: 7px 9px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.plan-strip-menu button:hover {
+  background: var(--surface-2, rgb(0 0 0 / 5%));
+}
+
+/* Compact in-transcript plan card while the strip owns the actions. */
+.prompt-plan.clamped {
+  max-height: 9.5em;
+  overflow: hidden;
+  position: relative;
+}
+.prompt-plan.clamped::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 34px;
+  background: linear-gradient(to bottom, transparent, var(--surface));
+  pointer-events: none;
+}
+.prompt-plan-open {
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  color: var(--accent-blue);
+  font-size: 12px;
+  padding: 0;
+  cursor: pointer;
+}
+.prompt-plan-open:hover {
+  text-decoration: underline;
+}
