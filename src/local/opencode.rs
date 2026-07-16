@@ -384,10 +384,15 @@ summary, key config — and read it back with `orx logs <runId>` (use `--head` /
 
 ## Asking the user
 
-This is a plain chat interface — there are **no** interactive prompts. If you
-need a decision or clarification, ask in normal text and **end your turn**;
-the user replies in their next message. Never call an interactive
-question/elicitation tool — it will hang.
+Interactive prompt tools surface as cards in the chat UI — they do not hang.
+If your harness provides a question tool (e.g. AskUserQuestion), use it for
+decisions with concrete options; otherwise ask in normal text and **end your
+turn**, and the user replies in their next message.
+
+**Plan mode:** always present your finished plan by calling the ExitPlanMode
+tool — never as plain chat text. The plan card is how the user approves the
+plan and unlocks execution; a plan left in chat text strands the session in
+plan mode.
 "#
     )
 }
