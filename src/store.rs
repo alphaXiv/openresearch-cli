@@ -19,18 +19,98 @@ use crate::error::{anyhow, Result};
 use crate::local::model::{LocalExperiment, LocalProject};
 
 pub fn data_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("ORX_DATA_DIR") {
-        return PathBuf::from(dir);
+    // Resolution order (most to least authoritative):
+    //   1. $ORX_DATA_DIR — explicit imperative override (launch.json, tests,
+    //      the Codex sandbox pin). Stays on top so a forced path always wins.
+    //   2. persisted user choice (config_dir()/settings.json `dataDir`) — set
+    //      from the UI's Storage settings. Read fresh every call (no cache) so a
+    //      just-completed data-dir move is picked up by the next Store::open().
+    //   3. $XDG_DATA_HOME/openresearch — ambient system default *base*; an
+    //      explicit UI choice rightly beats it, so it sits below (2).
+    //   4. ~/.local/share/openresearch — hardcoded default.
+    if let Some(dir) = env_path("ORX_DATA_DIR") {
+        return dir;
     }
-    let base = std::env::var_os("XDG_DATA_HOME")
+    if let Some(dir) = crate::config::settings_data_dir() {
+        return dir;
+    }
+    xdg_default_data_dir()
+}
+
+/// Read an env var as a path, treating unset **and empty** the same (an empty
+/// `export ORX_DATA_DIR=` is a shell footgun that must not resolve to `""`).
+fn env_path(key: &str) -> Option<PathBuf> {
+    std::env::var_os(key)
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".local")
-                .join("share")
-        });
+}
+
+/// `$XDG_DATA_HOME/openresearch` else `~/.local/share/openresearch` — the tail
+/// of the resolution chain, shared by `data_dir()` and `default_data_dir()`.
+fn xdg_default_data_dir() -> PathBuf {
+    let base = env_path("XDG_DATA_HOME").unwrap_or_else(|| {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".local")
+            .join("share")
+    });
     base.join("openresearch")
+}
+
+/// The data dir ignoring any persisted user choice — where resolution would
+/// land if `settings.json` had no `dataDir`. Used by the Storage UI to show the
+/// "(default)" path and offer resetting to it. `$ORX_DATA_DIR` still wins, since
+/// it's a forced override.
+pub fn default_data_dir() -> PathBuf {
+    if let Some(dir) = env_path("ORX_DATA_DIR") {
+        return dir;
+    }
+    xdg_default_data_dir()
+}
+
+/// Where `data_dir()`'s answer came from — surfaced by the Storage settings API
+/// so the UI can explain a forced env override (read-only) vs. a user choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DataDirSource {
+    /// `$ORX_DATA_DIR` is set — forces the path, UI field is read-only.
+    Env,
+    /// Persisted user choice in `settings.json`.
+    Config,
+    /// Derived from `$XDG_DATA_HOME` (no user choice).
+    Xdg,
+    /// Hardcoded `~/.local/share/openresearch`.
+    Default,
+}
+
+/// Classify the current `data_dir()` resolution for the Storage settings UI.
+pub fn data_dir_source() -> DataDirSource {
+    if env_path("ORX_DATA_DIR").is_some() {
+        return DataDirSource::Env;
+    }
+    if crate::config::settings_data_dir().is_some() {
+        return DataDirSource::Config;
+    }
+    if env_path("XDG_DATA_HOME").is_some() {
+        return DataDirSource::Xdg;
+    }
+    DataDirSource::Default
+}
+
+/// Compact human-readable byte size (e.g. `1.2 KB`, `3.4 MB`). Shared by the
+/// artifacts listing and the data-dir move so the two don't drift.
+pub fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    if n < 1024 {
+        return format!("{n} B");
+    }
+    let mut size = n as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    format!("{:.1} {}", size, UNITS[unit])
 }
 
 pub fn log_path(run_id: &str) -> PathBuf {
@@ -211,6 +291,17 @@ impl Store {
         Ok(self.conn.unchecked_transaction()?)
     }
 
+    /// Coalesce the WAL back into the main `orx.db` file and truncate it, so a
+    /// filesystem-level copy of `orx.db` alone captures all committed data.
+    /// Best-effort — used before relocating the data dir. Errors are returned so
+    /// the caller can decide, but a busy checkpoint is non-fatal (the WAL sidecar
+    /// gets copied too when present).
+    pub fn checkpoint(&self) -> Result<()> {
+        self.conn
+            .pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
+        Ok(())
+    }
+
     pub fn upsert_run(&self, run: &StoredRun) -> Result<()> {
         self.conn.execute(
             "INSERT INTO runs (id, experiment_id, project_id, status, backend_json, command,
@@ -279,6 +370,18 @@ impl Store {
             .prepare(&format!("{SELECT_RUN} ORDER BY created_at DESC LIMIT ?1"))?;
         let rows = stmt.query_map(params![limit as i64], row_to_run)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Count runs in an active state (`starting`/`running`) — SQL-side and
+    /// unbounded, so a long-running job older than the newest N rows still
+    /// counts. Used by the data-dir move's in-flight guard.
+    pub fn count_active_runs(&self) -> Result<usize> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM runs WHERE status IN ('starting', 'running')",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(n as usize)
     }
 
     pub fn list_runs_by_project(&self, project_id: &str) -> Result<Vec<StoredRun>> {
@@ -797,4 +900,16 @@ pub fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::human_bytes;
+
+    #[test]
+    fn human_bytes_scales() {
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(2048), "2.0 KB");
+        assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MB");
+    }
 }

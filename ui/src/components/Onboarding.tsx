@@ -1,12 +1,15 @@
 import { ArrowLeft, ArrowRight, Check, Copy, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
+  getDataDir,
   getGitSettings,
   getHarnesses,
   getTelemetry,
   modelLabel,
+  setDataDir,
   recordTelemetryConsent,
   setTelemetry,
+  type DataDirSettings,
   type GitSettings,
   type Harness,
   type TelemetrySettings,
@@ -17,9 +20,10 @@ import { GitTokenForm } from "./GitTokenForm";
  * model, then the usage-analytics choice, then hand off to the (empty)
  * projects page. Purely informative — nothing here gates anything. */
 export function Onboarding({ onDone }: { onDone: () => void }) {
-  const [step, setStep] = useState<0 | 1 | 2>(0);
+  const [step, setStep] = useState<0 | 1 | 2 | 3>(0);
   const [harnesses, setHarnesses] = useState<Harness[] | null>(null);
   const [git, setGit] = useState<GitSettings | null>(null);
+  const [dataDir, setDataDirState] = useState<DataDirSettings | null>(null);
   const [telemetry, setTelemetryState] = useState<TelemetrySettings | null>(null);
   const [checking, setChecking] = useState(false);
 
@@ -28,6 +32,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     void Promise.allSettled([
       getHarnesses(refresh).then(setHarnesses),
       getGitSettings().then(setGit),
+      getDataDir().then(setDataDirState),
       getTelemetry().then(setTelemetryState),
     ]).finally(() => setChecking(false));
   };
@@ -48,7 +53,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         {step === 0 ? (
           <>
             <div className="onb-eyebrow">
-              Open<span>Research</span> · step 1 of 3
+              Open<span>Research</span> · step 1 of 4
             </div>
             <h2 className="onb-title">Your coding agents</h2>
             <p className="onb-sub">
@@ -77,7 +82,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         ) : step === 1 ? (
           <>
             <div className="onb-eyebrow">
-              Open<span>Research</span> · step 2 of 3
+              Open<span>Research</span> · step 2 of 4
             </div>
             <h2 className="onb-title">Git &amp; GitHub</h2>
             <p className="onb-sub">
@@ -101,10 +106,34 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               </button>
             </div>
           </>
+        ) : step === 2 ? (
+          <>
+            <div className="onb-eyebrow">
+              Open<span>Research</span> · step 3 of 4
+            </div>
+            <h2 className="onb-title">Where orx keeps your data</h2>
+            <p className="onb-sub">
+              Your local database, run logs, artifacts, and chat attachments live in one folder on
+              this machine. The default works for most people — change it if you&apos;d rather keep
+              it on another disk.
+            </p>
+            <div className="onb-cards">
+              <StorageCard dataDir={dataDir} onUpdate={setDataDirState} />
+            </div>
+            <div className="onb-actions">
+              <button className="btn ghost" onClick={() => setStep(1)}>
+                <ArrowLeft size={12} /> Back
+              </button>
+              <div style={{ flex: 1 }} />
+              <button className="btn primary" onClick={() => setStep(3)}>
+                Continue <ArrowRight size={13} />
+              </button>
+            </div>
+          </>
         ) : (
           <>
             <div className="onb-eyebrow">
-              Open<span>Research</span> · step 3 of 3
+              Open<span>Research</span> · step 4 of 4
             </div>
             <h2 className="onb-title">Usage analytics</h2>
             <p className="onb-sub">
@@ -116,7 +145,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               <TelemetryCard telemetry={telemetry} onUpdate={setTelemetryState} />
             </div>
             <div className="onb-actions">
-              <button className="btn ghost" onClick={() => setStep(1)}>
+              <button className="btn ghost" onClick={() => setStep(2)}>
                 <ArrowLeft size={12} /> Back
               </button>
               <div style={{ flex: 1 }} />
@@ -276,6 +305,118 @@ function GitCard({
             <span className="onb-gh-option-label">Paste a token</span>
             <GitTokenForm onSaved={onUpdate} />
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StorageCard({
+  dataDir,
+  onUpdate,
+}: {
+  dataDir: DataDirSettings | null;
+  onUpdate: (d: DataDirSettings) => void;
+}) {
+  const [path, setPath] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Seed the input once the current path loads.
+  useEffect(() => {
+    if (dataDir && !path) setPath(dataDir.current);
+  }, [dataDir, path]);
+
+  if (dataDir === null) {
+    return (
+      <div className="onb-loading">
+        <span className="spinner" /> Checking storage…
+      </div>
+    );
+  }
+
+  // $ORX_DATA_DIR forces the path — nothing to choose here.
+  if (dataDir.source === "env") {
+    return (
+      <div className="onb-card">
+        <div className="onb-card-row">
+          <span className="onb-card-name">Data folder</span>
+          <span className="onb-card-detail mono">{dataDir.current}</span>
+          <span className="status-badge st-done">
+            <Check size={12} strokeWidth={3} /> pinned
+          </span>
+        </div>
+        <div className="onb-card-meta">
+          Set by the <code>ORX_DATA_DIR</code> environment variable.
+        </div>
+      </div>
+    );
+  }
+
+  const trimmed = path.trim();
+  const changed = trimmed !== "" && trimmed !== dataDir.current;
+
+  async function save() {
+    if (saving || !changed) return;
+    setSaving(true);
+    setError(null);
+    try {
+      onUpdate(await setDataDir(trimmed));
+      setEditing(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="onb-card">
+      <div className="onb-card-row">
+        <span className="onb-card-name">Data folder</span>
+        <span className="onb-card-detail mono">{dataDir.current}</span>
+        <span className={`status-badge ${dataDir.isDefault ? "st-idle" : "st-done"}`}>
+          {dataDir.isDefault ? <span className="dot" /> : <Check size={12} strokeWidth={3} />}
+          {dataDir.isDefault ? "default" : "custom"}
+        </span>
+      </div>
+      {editing ? (
+        <>
+          <input
+            className="mono"
+            type="text"
+            value={path}
+            onChange={(e) => setPath(e.target.value)}
+            placeholder="/absolute/path/to/openresearch"
+            autoComplete="off"
+            spellCheck={false}
+            style={{ width: "100%", marginTop: 10 }}
+          />
+          {error && <div className="error" style={{ marginTop: 8 }}>{error}</div>}
+          <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+            <button className="btn primary" onClick={save} disabled={saving || !changed}>
+              {saving ? "Saving…" : "Use this folder"}
+            </button>
+            <button
+              className="btn ghost"
+              onClick={() => {
+                setEditing(false);
+                setPath(dataDir.current);
+                setError(null);
+              }}
+              disabled={saving}
+            >
+              Cancel
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="onb-card-meta" style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          The default is fine for most setups.
+          <button className="btn ghost" onClick={() => setEditing(true)}>
+            Change…
+          </button>
         </div>
       )}
     </div>
