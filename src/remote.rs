@@ -32,11 +32,23 @@ fn bold(text: &str, enabled: bool) -> String {
     }
 }
 
-/// Dim (faint) when `enabled`, else the text unchanged — used to push the
-/// secondary path and asides behind the one command that matters.
+/// Dim (faint) when `enabled`, else the text unchanged — used for the prose
+/// asides that explain the commands, so the commands themselves stand out.
 fn dim(text: &str, enabled: bool) -> String {
     if enabled {
         format!("\x1b[2m{text}\x1b[22m")
+    } else {
+        text.to_string()
+    }
+}
+
+/// Cyan when `enabled`, else the text unchanged. Used for the `<…>` fill-in-the-
+/// blank placeholders inside commands: they must read as "replace me" without
+/// fading out — dimming them (the old behavior) buried the one word the reader
+/// most needs to see. `\x1b[39m` resets only the foreground color.
+fn cyan(text: &str, enabled: bool) -> String {
+    if enabled {
+        format!("\x1b[36m{text}\x1b[39m")
     } else {
         text.to_string()
     }
@@ -137,39 +149,48 @@ impl SshSession {
     /// Core of [`instructions`], with ANSI styling as an explicit arg so it's
     /// testable without touching the environment.
     fn render_instructions(&self, port: u16, ansi: bool) -> String {
-        // `<ssh-alias>` is the ~/.ssh/config alias / user@host the reader typed
-        // to connect — carried inline so the "not the box's IP" point lands next
-        // to the placeholder instead of in a separate paragraph.
-        let alias = dim("<ssh-alias>", ansi);
+        // The two commands are the whole point, so they're the brightest thing
+        // on screen: bold command text, a `$` prompt so they read as "type
+        // this", and the `<ssh-alias>` placeholder in cyan (readable, obviously
+        // a fill-in-the-blank) rather than dimmed into the background. Prose is
+        // dimmed so it frames the commands instead of competing with them.
+        let alias = cyan("<ssh-alias>", ansi);
+        let prompt = dim("$", ansi);
+
+        // Each command is built from bold command-text + cyan placeholder + a
+        // dim trailing comment, so within one line the part you type stays
+        // bright and the aside recedes. `<ssh-alias>` is the ~/.ssh/config alias
+        // / user@host the reader connected with; its note sits right below.
+        let primary = format!("{} {alias}", bold("orx up --remote", ansi));
+        let manual = format!(
+            "{} {alias}   {}",
+            bold(&format!("ssh -N -L {port}:localhost:{port}"), ansi),
+            dim(&format!("# then open http://localhost:{port}"), ansi),
+        );
+
         let mut out = format!(
             "{header}\n\n\
              {intro}\n\n\
-             {run_from_laptop}\n\
-             \x20 {primary} {alias}\n\n\
-             {alias_note}\n\n\
-             {or_line}\n\
-             \x20 {manual}\n",
+             {opt1}\n\
+             \x20 {prompt} {primary}\n\
+             \x20 {alias_note}\n\n\
+             {opt2}\n\
+             \x20 {prompt} {manual}\n",
             header = bold(
                 &format!("orx up: serving on http://127.0.0.1:{port} (this remote host)"),
                 ansi,
             ),
-            intro = "This URL only works here on the box. To open it on your laptop,\n\
-                     run one of these — from your laptop, not this SSH session:",
-            run_from_laptop = "Easiest — let orx forward it for you:",
-            primary = bold("orx up --remote", ansi),
+            intro = dim(
+                "This URL only works here on the box. To open it from your laptop,\n\
+                 run one of these in a laptop terminal — not in this SSH session:",
+                ansi,
+            ),
+            opt1 = bold("1) Let orx forward it for you (easiest):", ansi),
             alias_note = dim(
-                "<ssh-alias> is the name you gave ssh (~/.ssh/config alias or \
-                 user@host), not the box's IP.",
+                "<ssh-alias> = the ssh alias / user@host you connect with, not the box's IP.",
                 ansi,
             ),
-            or_line = dim("Or forward it yourself in a new laptop terminal:", ansi),
-            manual = dim(
-                &format!(
-                    "ssh -N -L {port}:localhost:{port} <ssh-alias>   \
-                     # then open http://localhost:{port}",
-                ),
-                ansi,
-            ),
+            opt2 = bold("2) Or forward it yourself:", ansi),
         );
         if let Some(ip) = self.server_ip_hint() {
             out.push('\n');
@@ -269,5 +290,21 @@ mod tests {
             .render_instructions(4791, true);
         // The primary command is bolded; the whole thing carries escape codes.
         assert!(msg.contains("\x1b[1morx up --remote\x1b[22m"));
+    }
+
+    #[test]
+    fn both_commands_are_bold_and_placeholders_are_cyan_not_dim() {
+        // Readability fix: the commands you type must be the brightest thing on
+        // screen, and the `<ssh-alias>` you fill in must be legible cyan — not
+        // dimmed into the background like it used to be.
+        let msg = detect_from(Some("203.0.113.7 51344 10.0.0.5 22"), false)
+            .unwrap()
+            .render_instructions(4791, true);
+        // Both commands bold.
+        assert!(msg.contains("\x1b[1morx up --remote\x1b[22m"));
+        assert!(msg.contains("\x1b[1mssh -N -L 4791:localhost:4791\x1b[22m"));
+        // The placeholder is cyan (\x1b[36m…\x1b[39m), and never dimmed.
+        assert!(msg.contains("\x1b[36m<ssh-alias>\x1b[39m"));
+        assert!(!msg.contains("\x1b[2m<ssh-alias>\x1b[22m"));
     }
 }
