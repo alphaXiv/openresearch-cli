@@ -337,17 +337,19 @@ function PromptCard({
   if (p.resolved) {
     if (p.kind === "permission") return null;
     if (p.kind === "plan") {
+      // No echo (`approved` absent — stale-card cleanup, pre-echo history):
+      // neutral "Resolved", not a checkmark implying approval.
       const outcome =
         p.approved === true ? "Plan approved" : p.approved === false ? "Revision requested" : "Resolved";
+      const outcomeClass =
+        p.approved === true ? "approved" : p.approved === false ? "revised" : "";
       return (
         <details className="prompt-collapsed">
           <summary>
             <span className="prompt-collapsed-title">
               {p.synthesized ? "Plan" : "Proposed plan"}
             </span>
-            <span className={`prompt-outcome ${p.approved === false ? "revised" : "approved"}`}>
-              {outcome}
-            </span>
+            <span className={`prompt-outcome ${outcomeClass}`}>{outcome}</span>
           </summary>
           <div className="prompt-collapsed-body">
             <Md text={p.plan ?? ""} onOpenFile={onOpenFile} />
@@ -389,7 +391,7 @@ function PromptCard({
     // harness-agnostic permission-mode wire ids).
     const docked = !!onOpenPlan;
     return (
-      <div className={`prompt-card plan ${done ? "resolved" : ""}`}>
+      <div className={`prompt-card plan ${done ? "readonly" : ""}`}>
         <div className="prompt-head">
           {p.synthesized ? "Plan mode — ready to proceed?" : "Proposed plan"}
         </div>
@@ -431,7 +433,7 @@ function PromptCard({
     const reason =
       (typeof p.toolInput?.reason === "string" && p.toolInput.reason) || "";
     return (
-      <div className={`prompt-card permission ${done ? "resolved" : ""}`}>
+      <div className={`prompt-card permission ${done ? "readonly" : ""}`}>
         <div className="prompt-head">
           Permission needed: <code>{p.tool}</code>
         </div>
@@ -465,7 +467,7 @@ function PromptCard({
         : [label],
     );
   return (
-    <div className={`prompt-card question ${done ? "resolved" : ""}`}>
+    <div className={`prompt-card question ${done ? "readonly" : ""}`}>
       {p.header && <div className="prompt-head">{p.header}</div>}
       {p.question && <div className="prompt-q">{p.question}</div>}
       <div className="prompt-options">

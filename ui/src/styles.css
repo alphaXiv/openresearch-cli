@@ -3440,8 +3440,10 @@ button.files-pill-link:hover {
 .prompt-card.question {
   border-left-color: var(--accent-purple);
 }
-/* A resolved card is read-only history: mute it further. */
-.prompt-card.resolved {
+/* A card in a read-only host (no respond handler): muted, buttons disabled.
+   Resolved cards never render as .prompt-card at all — permission cards
+   vanish, plan/question cards collapse to .prompt-collapsed rows. */
+.prompt-card.readonly {
   opacity: 0.6;
 }
 
@@ -3586,6 +3588,9 @@ button.files-pill-link:hover {
   cursor: pointer;
   list-style: none;
   user-select: none;
+}
+.prompt-collapsed summary::-webkit-details-marker {
+  display: none;
 }
 .prompt-collapsed summary::after {
   content: "›";

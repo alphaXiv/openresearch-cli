@@ -74,7 +74,8 @@ pub struct WireQuestionOption {
 pub struct WirePrompt {
     /// `plan` | `permission` | `question`.
     pub kind: String,
-    /// Whether this prompt has been answered (answered cards render read-only).
+    /// Whether this prompt has been answered (resolved permission cards
+    /// vanish; resolved plan/question cards collapse to a one-line row).
     #[serde(default)]
     pub resolved: bool,
     /// plan: the proposed plan markdown.
@@ -1032,7 +1033,13 @@ impl ChatHost {
                 };
                 self.send_message(&req.session_id, text, overrides, Vec::new())
                     .await?;
-                self.resolve_prompt_card(&req)
+                // Best-effort: the answer is already delivered, so a (store-
+                // only) resolve failure must not surface as an Err — the UI's
+                // catch would clear `busy` on the turn we just spawned.
+                if let Err(e) = self.resolve_prompt_card(&req) {
+                    eprintln!("orx up: answered prompt not marked resolved: {e}");
+                }
+                Ok(())
             }
             ResumeAction::Handled => {
                 // The inline reply unblocked the still-running turn; it keeps
@@ -1229,14 +1236,6 @@ fn unresolved_prompt(session_id: &str, prompt_id: &str) -> Result<Option<WirePro
     Ok(None)
 }
 
-/// Flip the `resolved` flag on the prompt part with `prompt_id` in the session's
-/// last assistant message that carries it, persist it, and return the mutated
-/// message (so the caller can broadcast a `chat.message` and the card renders
-/// read-only). `None` if no such prompt part exists.
-///
-/// The read→modify→write runs under `msg_write` so it's atomic against a
-/// still-running turn's `flush` reconcile-and-persist of the same message (see
-/// `TurnCtx::flush`) — otherwise the flush could clobber this resolve.
 /// Flip a prompt to resolved and stamp the answer echo (see
 /// [`WirePrompt::answers`]) so the collapsed card can show the outcome.
 /// `None` (stale-card cleanup, cancelled bridge requests) leaves any earlier
@@ -1250,6 +1249,18 @@ fn stamp_resolved(prompt: &mut WirePrompt, answer: Option<&PromptAnswer>) {
     }
 }
 
+/// Resolve the prompt part with `prompt_id` in the session's last assistant
+/// message that carries it ([`stamp_resolved`] with `answer`), persist it, and
+/// return the mutated message (so the caller can broadcast a `chat.message`
+/// and the card re-renders collapsed). `None` if no such prompt part exists,
+/// or if it was already resolved and there's no answer to stamp — an
+/// answerless re-resolve (stale-card cleanup) has nothing to change, and
+/// skipping the write keeps its late broadcast from shadowing an echo-stamped
+/// one a client already received.
+///
+/// The read→modify→write runs under `msg_write` so it's atomic against a
+/// still-running turn's `flush` reconcile-and-persist of the same message (see
+/// `TurnCtx::flush`) — otherwise the flush could clobber this resolve.
 fn mark_prompt_resolved(
     msg_write: &std::sync::Mutex<()>,
     session_id: &str,
@@ -1268,6 +1279,9 @@ fn mark_prompt_resolved(
             .find(|p| p.id == prompt_id && p.prompt.is_some())
         {
             if let Some(prompt) = part.prompt.as_mut() {
+                if prompt.resolved && answer.is_none() {
+                    return Ok(None);
+                }
                 stamp_resolved(prompt, answer);
             }
             store.upsert_chat_message(&StoredChatMessage {
@@ -1316,7 +1330,7 @@ fn resolve_stale_prompts(
         for part in parts.iter_mut() {
             if let Some(prompt) = part.prompt.as_mut() {
                 if !prompt.resolved {
-                    prompt.resolved = true;
+                    stamp_resolved(prompt, None);
                     changed = true;
                 }
             }
@@ -1541,11 +1555,11 @@ impl TurnCtx {
 
     /// Merge the persisted resolution state of prompt parts into the in-memory
     /// assistant message, so a concurrent `respond` that resolved a card isn't
-    /// clobbered by this turn's next flush. Only ever flips `false`→`true`
-    /// (a card never un-resolves), so it's safe regardless of ordering. The
-    /// answer echo (`answers`/`approved`/`note`) rides along: the in-memory
-    /// copy never has one, so dropping it here would erase the stamped outcome
-    /// on the next flush.
+    /// clobbered by this turn's next flush. Only ever flips `false`→`true` and
+    /// fills an empty echo (`answers`/`approved`/`note`) — never the reverse —
+    /// so it's safe regardless of ordering: the in-memory copy never carries
+    /// an echo of its own, and dropping the stored one here would erase the
+    /// stamped outcome on the next flush.
     fn adopt_resolved_prompts(&mut self, store: &Store) {
         let Ok(Some(stored)) = store.get_chat_message(&self.assistant.id) else {
             return;
@@ -1555,15 +1569,19 @@ impl TurnCtx {
             let Some(prompt) = part.prompt.as_mut() else {
                 continue;
             };
-            if prompt.resolved {
-                continue;
-            }
             let stored_prompt = persisted
                 .iter()
                 .find(|p| p.id == part.id)
                 .and_then(|p| p.prompt.as_ref());
-            if let Some(stored_prompt) = stored_prompt.filter(|p| p.resolved) {
-                prompt.resolved = true;
+            let Some(stored_prompt) = stored_prompt.filter(|p| p.resolved) else {
+                continue;
+            };
+            prompt.resolved = true;
+            // Adopt the echo even when this copy is already resolved but
+            // echo-less (codex's turn loop resolves its in-memory card
+            // without one) — else this flush would persist the bare copy
+            // over the stamped outcome.
+            if prompt.answers.is_empty() && prompt.approved.is_none() && prompt.note.is_none() {
                 prompt.answers = stored_prompt.answers.clone();
                 prompt.approved = stored_prompt.approved;
                 prompt.note = stored_prompt.note.clone();
