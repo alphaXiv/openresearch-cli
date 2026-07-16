@@ -38,7 +38,9 @@ pub async fn run(host: &str, args: UpArgs) -> Result<()> {
     // and would be misreported as an unreachable host.
     match crate::jobs::ssh::ssh_run(
         &target,
-        "if command -v orx >/dev/null 2>&1; then echo ORX_OK; else echo ORX_MISSING; fi",
+        &remote_shell(
+            "if command -v orx >/dev/null 2>&1; then echo ORX_OK; else echo ORX_MISSING; fi",
+        ),
         None,
     )
     .await
@@ -55,8 +57,10 @@ pub async fn run(host: &str, args: UpArgs) -> Result<()> {
         }
         Ok(out) if !out.contains("ORX_OK") => {
             return Err(anyhow!(
-                "`orx` isn't installed on '{host}' (or not on its non-interactive \
-                 PATH). Install it there, then re-run `orx up --remote {host}`."
+                "`orx` isn't installed on '{host}' (we look on PATH plus \
+                 ~/.cargo/bin and ~/.local/bin). Install it there \
+                 (curl -LsSf https://openresearch.sh/install.sh | sh), then \
+                 re-run `orx up --remote {host}`."
             ));
         }
         Ok(_) => {}
@@ -194,7 +198,20 @@ fn host_is_ip_literal(dest: &str) -> bool {
 /// The remote command: start `orx up` bound to the remote's loopback, no
 /// browser there (we open ours), on the port we forward.
 fn remote_up_cmd(port: u16) -> String {
-    format!("orx up --no-browser --port {port}")
+    remote_shell(&format!("orx up --no-browser --port {port}"))
+}
+
+/// Wrap a remote command so `orx` is found even though ssh runs it in a
+/// *non-interactive* shell that skips the box's `~/.bashrc`/`~/.profile`.
+///
+/// The near-universal installers put `orx` in `~/.cargo/bin` (the `cargo`
+/// install) or `~/.local/bin`, and on a minimal image (RunPod's Ubuntu, etc.)
+/// neither is on the default non-interactive `PATH` — so a bare `command -v orx`
+/// / `orx up` fails even when `which orx` works when you're logged in. We prepend
+/// those two dirs to `PATH` for the command. `$HOME` is left for the remote shell
+/// to expand, so it works whatever the remote user is (root or `runpod`).
+fn remote_shell(cmd: &str) -> String {
+    format!(r#"export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"; {cmd}"#)
 }
 
 /// The `-L` forward value. Local bind pinned to `127.0.0.1` (see the call site).
@@ -290,7 +307,21 @@ mod tests {
     #[test]
     fn forward_and_remote_cmd_use_the_same_port() {
         assert_eq!(forward_spec(4899), "127.0.0.1:4899:localhost:4899");
-        assert_eq!(remote_up_cmd(4899), "orx up --no-browser --port 4899");
+        // The remote command carries the port and starts orx headless…
+        assert!(remote_up_cmd(4899).contains("orx up --no-browser --port 4899"));
+        // …behind a PATH prelude so a non-interactive shell still finds orx in
+        // ~/.cargo/bin (the common installer target on minimal RunPod images).
+        assert!(remote_up_cmd(4899).contains(r#"PATH="$HOME/.cargo/bin"#));
+    }
+
+    #[test]
+    fn remote_shell_prepends_install_dirs_without_expanding_home_locally() {
+        let wrapped = remote_shell("orx up");
+        // Both common install dirs are on PATH, and $HOME stays literal for the
+        // remote shell to expand (so it works for root or the `runpod` user).
+        assert!(wrapped.contains("$HOME/.cargo/bin"));
+        assert!(wrapped.contains("$HOME/.local/bin"));
+        assert!(wrapped.ends_with("orx up"));
     }
 
     #[test]
