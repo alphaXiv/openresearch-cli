@@ -23,6 +23,7 @@ mod cursor;
 mod detect;
 mod opencode;
 mod options;
+mod plan_gate;
 
 use std::path::PathBuf;
 
@@ -33,6 +34,7 @@ use crate::local::chat::{PromptAnswer, ResumeCtx, TurnCtx, WirePrompt};
 
 pub use detect::{HarnessInfo, ModelInfo};
 pub use options::{HarnessOptions, PermissionMode};
+pub use plan_gate::decide as plan_gate_decide;
 
 /// How an answered interactive prompt flows back into the harness. The two axes
 /// a harness can live on:
@@ -301,10 +303,12 @@ mod tests {
     /// must be the neutralized (harness-agnostic) permission-mode spellings.
     #[test]
     fn advertised_options_per_harness() {
-        // Claude: only Auto + Bypass. `ask`/`accept-edits` aren't grantable
-        // headless, and `plan` fought the orx workflow — all three dropped.
+        // Claude: Plan + Auto + Bypass. `ask`/`accept-edits` aren't grantable
+        // headless (dropped). `plan` is back: a PreToolUse hook lets read-only
+        // `orx` inspection through while launches/edits stay gated (see
+        // `plan_gate`). Default stays `auto`.
         let claude = options_for("claude-code");
-        assert_eq!(mode_ids(&claude), ["auto", "bypass"]);
+        assert_eq!(mode_ids(&claude), ["plan", "auto", "bypass"]);
         assert_eq!(claude.default_permission_mode, Some("auto"));
         assert_eq!(
             reasoning_ids(&claude),

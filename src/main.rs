@@ -48,6 +48,10 @@ struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
+// NOTE: `local::harness::plan_gate` keeps a hand-maintained allowlist of the
+// read-only verbs here (what Claude plan mode may run without approval). When
+// you add a *read-only* subcommand, add it there too, or it stays gated in plan
+// mode. `readonly_verbs_are_real_commands` catches renames but not additions.
 enum Command {
     /// Log in via the browser and store a token.
     Login(LoginArgs),
@@ -149,6 +153,12 @@ enum Command {
 
     /// Turn anonymous usage analytics on or off, or show current status.
     Telemetry(TelemetryArgs),
+
+    /// Internal: the Claude plan-mode `PreToolUse` hook body. Reads the hook
+    /// payload on stdin and prints an allow decision for read-only `orx`
+    /// inspection; not a user command.
+    #[command(name = "plan-gate", hide = true)]
+    PlanGate,
 }
 
 #[derive(Args, Debug)]
@@ -732,6 +742,20 @@ async fn main() {
     // `std::process::exit` on their own (e.g. the "not logged in" path) instead
     // of returning here. Never touches stdout or the exit code. Silence it with
     // ORX_NO_UPDATE_CHECK / NO_UPDATE_NOTIFIER.
+    // `plan-gate` is a per-tool-call hook body (fires on every Bash call during
+    // plan mode): it must stay fast and touch neither stdout nor the network, so
+    // skip the update check and telemetry and run it directly.
+    if matches!(command, Command::PlanGate) {
+        // The hook fires on every Bash call during plan mode; it must NEVER
+        // block the turn. Swallow any error to stderr and still exit 0 — a
+        // non-zero exit here would fail every Bash tool call. (`run` is
+        // infallible today; this keeps the invariant if that ever changes.)
+        if let Err(err) = commands::plan_gate::run().await {
+            eprintln!("orx plan-gate: {err}");
+        }
+        return;
+    }
+
     let warning = (!matches!(command, Command::Version(_) | Command::Update(_)))
         .then(updates::UpdateWarning::start);
 
@@ -791,6 +815,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Supervise(_) => "supervise",
         Command::Up(_) => "up",
         Command::Telemetry(_) => "telemetry",
+        Command::PlanGate => "plan-gate",
     }
 }
 
@@ -830,5 +855,7 @@ async fn dispatch(command: Command) -> error::Result<()> {
             None => commands::up::run(args).await,
         },
         Command::Telemetry(args) => commands::telemetry::run(args).await,
+        // Handled before dispatch (fast path, no telemetry/update check).
+        Command::PlanGate => commands::plan_gate::run().await,
     }
 }

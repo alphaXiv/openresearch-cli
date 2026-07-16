@@ -31,8 +31,10 @@ use serde::{Deserialize, Serialize};
 ///
 /// Not every harness supports every mode — a harness advertises its supported
 /// subset via `options()` and the composer only offers those. `plan`, for
-/// instance, is Claude-only (Codex's sandbox has no read-only-with-proposals
-/// notion that maps to it, and opencode serve has no plan mode).
+/// instance, is Claude + OpenCode but not Codex (Codex's sandbox has no
+/// read-only-with-proposals notion that maps to it). Claude's plan mode pairs
+/// with a `PreToolUse` hook so read-only `orx` inspection still runs (see
+/// `plan_gate`); OpenCode has a native read-only `plan` agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PermissionMode {
