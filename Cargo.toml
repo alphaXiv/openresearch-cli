@@ -36,6 +36,11 @@ futures = "0.3"
 # async fns in the Harness trait (object-safe `dyn Harness` in the registry).
 async-trait = "0.1"
 
+[target.'cfg(unix)'.dependencies]
+# Free-space pre-check for the data-dir move (statvfs). Already in the tree
+# transitively; taken as a direct dep only on unix, where we call it.
+libc = "0.2"
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
