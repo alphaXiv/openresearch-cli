@@ -7,3 +7,11 @@ Claude.local.md
 # never be committed — they get recorded as orphan gitlinks with no .gitmodules
 # entry, which breaks `git checkout --recurse-submodules` in CI.
 .claude/worktrees/
+
+# Stray SQLite store if the binary is ever run from the repo root
+/orx.db
+/orx.db-wal
+/orx.db-shm
+
+# This repo uses pnpm; ignore an accidental npm lockfile
+ui/package-lock.json

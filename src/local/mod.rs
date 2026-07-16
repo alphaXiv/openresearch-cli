@@ -10,6 +10,7 @@
 
 pub mod chat;
 pub mod codex;
+pub mod datadir;
 pub mod experiments;
 pub mod files;
 pub mod git;

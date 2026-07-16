@@ -83,6 +83,30 @@ pub(crate) struct Settings {
     /// Set by `orx telemetry off`. `Some(true)` = user opted out persistently.
     #[serde(default)]
     pub telemetry_disabled: Option<bool>,
+    /// User-chosen data directory (Storage settings). Absent = fall back to the
+    /// env/XDG/default chain in `store::data_dir()`. Persisted here — in the one
+    /// `settings.json` — so a write can't clobber `install_id`/`telemetry_disabled`
+    /// (each mutation re-reads and patches only its own field via `mutate_settings`).
+    #[serde(default)]
+    pub data_dir: Option<String>,
+}
+
+/// The persisted data-dir choice, if any (non-empty). Read by `store::data_dir()`
+/// on every open — so it goes through the plain `load_settings` reader, not the
+/// locked RMW path. `crate::config` re-exports this as `settings_data_dir`.
+pub(crate) fn persisted_data_dir() -> Option<String> {
+    load_settings()
+        .and_then(|s| s.data_dir)
+        .filter(|s| !s.is_empty())
+}
+
+/// Set or clear the persisted data dir, preserving every other settings field.
+/// Routes through `mutate_settings` so it inherits the in-process mutex, the
+/// cross-process flock, the atomic temp+rename, and the corrupt-file refusal —
+/// the same guarantees `orx telemetry off` relies on. `crate::config` re-exports
+/// this as `set_settings_data_dir`.
+pub(crate) fn set_persisted_data_dir(data_dir: Option<String>) -> std::io::Result<()> {
+    mutate_settings(|s| s.data_dir = data_dir.filter(|v| !v.is_empty()))
 }
 
 fn settings_path() -> PathBuf {
@@ -686,6 +710,44 @@ mod tests {
             s.install_id.is_some(),
             "install id survived a separate opt-out mutation"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn data_dir_and_telemetry_fields_dont_clobber_each_other() {
+        // Regression: the Storage feature persists `data_dir` in the *same*
+        // settings.json telemetry owns. Both must go through mutate_settings so a
+        // data-dir write preserves install_id/telemetry_disabled and vice-versa —
+        // otherwise a completed data-dir move reverts on the next CLI run.
+        let _g = EnvGuard::new(OPT_VARS);
+        let dir = std::env::temp_dir().join(format!("orx-tel-datadir-{}", uuid::Uuid::new_v4()));
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+
+        set_persisted_disabled(true).unwrap(); // telemetry_disabled
+        let id = install_id().expect("install id"); // install_id
+        set_persisted_data_dir(Some("/tmp/orx-moved".into())).unwrap(); // data_dir
+
+        let s = load_settings().expect("settings present");
+        assert_eq!(s.data_dir.as_deref(), Some("/tmp/orx-moved"));
+        assert_eq!(
+            s.telemetry_disabled,
+            Some(true),
+            "opt-out survived data-dir write"
+        );
+        assert_eq!(
+            s.install_id.as_deref(),
+            Some(id.as_str()),
+            "install id survived"
+        );
+        assert_eq!(persisted_data_dir().as_deref(), Some("/tmp/orx-moved"));
+
+        // Clearing the data dir leaves the telemetry fields intact.
+        set_persisted_data_dir(None).unwrap();
+        let s = load_settings().expect("settings present");
+        assert!(s.data_dir.is_none(), "data_dir cleared");
+        assert_eq!(s.telemetry_disabled, Some(true), "opt-out still intact");
+        assert!(persisted_data_dir().is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

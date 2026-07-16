@@ -3,6 +3,7 @@ import {
   Cpu,
   ExternalLink,
   GitBranch,
+  HardDrive,
   Plus,
   RefreshCw,
   Server,
@@ -13,6 +14,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import {
   deleteEnvVar,
+  fmtBytes,
   fmtDuration,
   getEnvVars,
   getGitSettings,
@@ -30,6 +32,11 @@ import {
   saveK8sSettings,
   saveSlurmSettings,
   setEnvVar,
+  getDataDir,
+  validateDataDir,
+  moveDataDir,
+  type DataDirSettings,
+  type DataDirValidation,
   shortId,
   slurmPreflight,
   sshPreflight,
@@ -50,11 +57,18 @@ import {
   type SshPreflight,
   modelLabel,
 } from "../api";
+import { onDataDirMove } from "../events";
 import { GitTokenForm } from "./GitTokenForm";
 import { BackendBadge } from "./BackendLogos";
 import { StatusBadge } from "./StatusBadge";
 
-export type SettingsTab = "harnesses" | "compute" | "instances" | "environment" | "git";
+export type SettingsTab =
+  | "harnesses"
+  | "compute"
+  | "instances"
+  | "environment"
+  | "git"
+  | "storage";
 type Tab = SettingsTab;
 
 // --- harnesses ---------------------------------------------------------------
@@ -1308,6 +1322,251 @@ function GitTab() {
   );
 }
 
+// --- storage (data directory) ------------------------------------------------
+
+/** Determinate progress bar with a percent + optional byte caption. */
+function ProgressBar({ value, max, label }: { value: number; max: number; label?: string }) {
+  const pct = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : 0;
+  return (
+    <div className="progress" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+      <div className="progress-track">
+        <div className="progress-fill" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="progress-caption">
+        <span>{label ?? `${pct}%`}</span>
+        {max > 0 && (
+          <span className="mono">
+            {fmtBytes(value)} / {fmtBytes(max)}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const DATA_DIR_SOURCE_LABEL: Record<DataDirSettings["source"], string> = {
+  env: "ORX_DATA_DIR environment variable",
+  config: "your saved setting",
+  xdg: "XDG_DATA_HOME",
+  default: "default location",
+};
+
+type MoveState =
+  | { kind: "idle" }
+  | { kind: "moving"; phase: string; copied: number; total: number }
+  | { kind: "done"; oldPathLeft?: string }
+  | { kind: "error"; message: string };
+
+function StorageTab() {
+  const [settings, setSettings] = useState<DataDirSettings | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [path, setPath] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [validation, setValidation] = useState<DataDirValidation | null>(null);
+  const [move, setMove] = useState<MoveState>({ kind: "idle" });
+  const [error, setError] = useState<string | null>(null);
+
+  const load = () =>
+    getDataDir()
+      .then((s) => {
+        setSettings(s);
+        // Seed the input to the current path only when empty — preserves an
+        // in-progress edit, and (after a move clears it) re-seeds to the new path.
+        setPath((p) => (p ? p : s.current));
+      })
+      .catch((err) => setLoadError(err instanceof Error ? err.message : String(err)));
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  // Subscribe to move progress streamed over the shared SSE.
+  useEffect(() => {
+    return onDataDirMove((ev) => {
+      if (ev.type === "progress") {
+        // The "preparing" tick reports total 0 (sized after the checkpoint);
+        // keep the last known non-zero total so the bar doesn't flicker to 0.
+        setMove((m) => {
+          const prevTotal = m.kind === "moving" ? m.total : 0;
+          return {
+            kind: "moving",
+            phase: ev.phase,
+            copied: ev.copiedBytes,
+            total: ev.totalBytes || prevTotal,
+          };
+        });
+      } else if (ev.type === "done") {
+        setMove({ kind: "done", oldPathLeft: ev.oldPathLeft });
+        setValidation(null);
+        // Clear so load()'s empty-guard re-seeds the input to the new path.
+        setPath("");
+        void load();
+      } else if (ev.type === "error") {
+        setMove({ kind: "error", message: ev.error });
+      }
+    });
+  }, []);
+
+  const envForced = settings?.source === "env";
+  const trimmed = path.trim();
+  const unchanged = settings !== null && trimmed === settings.current;
+
+  async function check() {
+    if (checking || !trimmed) return;
+    setChecking(true);
+    setError(null);
+    setValidation(null);
+    try {
+      setValidation(await validateDataDir(trimmed));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function startMove(e: React.FormEvent) {
+    e.preventDefault();
+    if (move.kind === "moving" || !trimmed || unchanged) return;
+    setError(null);
+    // Confirm — this relocates all projects' data. Same-disk moves are atomic;
+    // cross-disk moves copy and leave the old folder for you to remove.
+    if (
+      !window.confirm(
+        `Move all orx data to:\n${trimmed}\n\nThe store is copied to the new location and ` +
+          `activated there. Active runs or chats will block the move.`,
+      )
+    )
+      return;
+    setMove({ kind: "moving", phase: "preparing", copied: 0, total: validation?.treeBytes ?? 0 });
+    try {
+      await moveDataDir(trimmed);
+      // 202 accepted — progress/done arrive over SSE. Nothing else to do here.
+    } catch (err) {
+      // 409 in-flight guard or a validation error surfaces here.
+      setMove({ kind: "idle" });
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  return (
+    <>
+      <h1>Storage</h1>
+      <p className="settings-sub">
+        Where orx keeps everything on this machine — the local database, run logs, artifacts, and
+        chat attachments for <strong>all</strong> projects. Moving it copies the whole store to the
+        new location and activates it there.
+      </p>
+      {loadError ? (
+        <div className="settings-card">
+          <div className="error">{loadError}</div>
+        </div>
+      ) : !settings ? (
+        <div className="settings-loading">
+          <span className="spinner" /> Loading…
+        </div>
+      ) : (
+        <div className="settings-card">
+          <div className="settings-card-head">
+            <h3>Data directory</h3>
+            <div className="spacer" style={{ flex: 1 }} />
+            <span className="badge">{settings.isDefault ? "default" : "custom"}</span>
+          </div>
+          <div className="kv">
+            <span className="k">Current</span>
+            <span className="v mono">{settings.current}</span>
+            <span className="k">Source</span>
+            <span className="v">{DATA_DIR_SOURCE_LABEL[settings.source]}</span>
+            {!settings.isDefault && (
+              <>
+                <span className="k">Default</span>
+                <span className="v mono">{settings.defaultPath}</span>
+              </>
+            )}
+          </div>
+
+          {envForced ? (
+            <p className="settings-note">
+              The data directory is pinned by the <code>ORX_DATA_DIR</code> environment variable,
+              which overrides this setting. Unset it to choose a location here.
+            </p>
+          ) : (
+            <form className="form settings-form" onSubmit={startMove}>
+              <label>
+                New location
+                <input
+                  className="mono"
+                  type="text"
+                  value={path}
+                  onChange={(e) => {
+                    setPath(e.target.value);
+                    setValidation(null);
+                  }}
+                  placeholder="/absolute/path/to/openresearch"
+                  autoComplete="off"
+                  spellCheck={false}
+                  disabled={move.kind === "moving"}
+                />
+              </label>
+
+              {validation && !validation.error && validation.ok && (
+                <p className="settings-note">
+                  Ready to move {fmtBytes(validation.treeBytes ?? 0)}
+                  {validation.freeBytes != null && ` — ${fmtBytes(validation.freeBytes)} free at target`}
+                  {validation.sameFilesystem ? " (same disk, instant)" : ""}.
+                </p>
+              )}
+              {validation && validation.ok === false && validation.error && (
+                <div className="error">{validation.error}</div>
+              )}
+              {error && <div className="error">{error}</div>}
+
+              {move.kind === "moving" && (
+                <ProgressBar
+                  value={move.copied}
+                  max={move.total}
+                  label={`${move.phase.charAt(0).toUpperCase()}${move.phase.slice(1)}…`}
+                />
+              )}
+              {move.kind === "done" && (
+                <p className="settings-note">
+                  Moved. orx is now using the new location.
+                  {move.oldPathLeft && (
+                    <>
+                      {" "}
+                      The old copy was left at <code>{move.oldPathLeft}</code> (different disk) — you
+                      can delete it once you&apos;ve confirmed everything works.
+                    </>
+                  )}
+                </p>
+              )}
+              {move.kind === "error" && <div className="error">Move failed: {move.message}</div>}
+
+              <div className="actions">
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={check}
+                  disabled={checking || !trimmed || unchanged || move.kind === "moving"}
+                >
+                  {checking ? "Checking…" : "Check"}
+                </button>
+                <button
+                  type="submit"
+                  className="btn primary"
+                  disabled={!trimmed || unchanged || move.kind === "moving"}
+                >
+                  {move.kind === "moving" ? "Moving…" : "Move data here"}
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
 // --- instances ---------------------------------------------------------------
 
 const isLive = (status: string) => status === "running" || status === "starting";
@@ -1452,6 +1711,7 @@ export const SETTINGS_NAV: { id: Tab; label: string; icon: React.ReactNode }[] =
   { id: "instances", label: "Instances", icon: <Server size={15} /> },
   { id: "environment", label: "Environment", icon: <SquareTerminal size={15} /> },
   { id: "git", label: "Git", icon: <GitBranch size={15} /> },
+  { id: "storage", label: "Storage", icon: <HardDrive size={15} /> },
 ];
 
 /** One settings section's content, shown in the middle pane in place of chat. */
@@ -1471,6 +1731,7 @@ export function SettingsView({ tab }: { tab: Tab }) {
       )}
       {tab === "instances" && <InstancesTab />}
       {tab === "git" && <GitTab />}
+      {tab === "storage" && <StorageTab />}
     </div>
   );
 }

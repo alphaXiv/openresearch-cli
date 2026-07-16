@@ -325,6 +325,40 @@ export const deleteEnvVar = (key: string) =>
     .then((r) => json<{ vars: EnvVar[] }>(r))
     .then((r) => r.vars);
 
+/** Where `source` says the resolved data dir came from. `env` means the
+ * `$ORX_DATA_DIR` override forces it — the UI shows the field read-only. */
+export type DataDirSource = "env" | "config" | "xdg" | "default";
+
+export interface DataDirSettings {
+  current: string;
+  defaultPath: string;
+  isDefault: boolean;
+  source: DataDirSource;
+}
+
+export const getDataDir = () => get<DataDirSettings>("/api/settings/data-dir");
+
+export interface DataDirValidation {
+  ok: boolean;
+  error?: string;
+  treeBytes?: number;
+  freeBytes?: number;
+  sameFilesystem?: boolean;
+}
+
+export const validateDataDir = (path: string) =>
+  post<DataDirValidation>("/api/settings/data-dir/validate", { path });
+
+/** Set the path without moving (onboarding / already-populated target). */
+export const setDataDir = (path: string) =>
+  post<DataDirSettings>("/api/settings/data-dir", { path });
+
+/** Kick off a relocate. Resolves once the move has *started* (HTTP 202); watch
+ * `onDataDirMove` (events.ts) for `progress` / `done` / `error`. Throws on the
+ * 409 in-flight guard with the server's message. */
+export const moveDataDir = (path: string) =>
+  post<{ started: boolean }>("/api/settings/data-dir/move", { path });
+
 export interface SshHost {
   host: string;
   hostname?: string;
@@ -725,6 +759,19 @@ export function fmtDuration(ms: number): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ${m % 60}m`;
   return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+/** Compact byte size, e.g. "512 B", "2.0 KB", "5.3 MB". Mirrors the backend's
+ * `store::human_bytes`. */
+export function fmtBytes(n: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = n;
+  let u = 0;
+  while (v >= 1024 && u < units.length - 1) {
+    v /= 1024;
+    u += 1;
+  }
+  return u === 0 ? `${n} B` : `${v.toFixed(1)} ${units[u]}`;
 }
 
 export function shortId(id: string): string {

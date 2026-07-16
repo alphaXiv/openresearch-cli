@@ -2283,6 +2283,31 @@ textarea::placeholder {
   font-weight: 600;
 }
 
+/* Determinate progress bar (data-dir move). */
+.progress {
+  margin: 12px 0 4px;
+}
+.progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+.progress-caption {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .settings-form {
   margin-top: 14px;
   padding-top: 14px;
@@ -2375,6 +2400,18 @@ a.files-pill:hover {
   width: 22px;
   height: 22px;
   margin: -4px -6px -4px 0;
+}
+/* "Change storage location →" — a pill-shaped button, not a path pill. */
+button.files-pill-link {
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+button.files-pill-link:hover {
+  border-color: var(--muted);
+  color: var(--text);
 }
 .files-hint {
   margin: 0;

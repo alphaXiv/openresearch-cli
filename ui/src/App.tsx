@@ -442,7 +442,12 @@ export default function App() {
               (() => {
                 const project = projects.find((p) => p.id === projectId);
                 return project ? (
-                  <FilesTab project={project} files={files} onChanged={refreshFiles} />
+                  <FilesTab
+                    project={project}
+                    files={files}
+                    onChanged={refreshFiles}
+                    onOpenStorage={() => setMainView("storage")}
+                  />
                 ) : null;
               })()
             ) : mainView !== "chat" ? (
