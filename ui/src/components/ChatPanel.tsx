@@ -309,7 +309,10 @@ function ToolGroup({ parts, onOpenFile }: { parts: ChatPart[]; onOpenFile?: (pat
 }
 
 /** Interactive card for a plan / permission / question prompt. Approving (or
- * answering) resumes the session; the card renders read-only once resolved. */
+ * answering) resumes the session. Resolved cards mirror Claude Code: a
+ * permission leaves no trace, a plan collapses to an expandable
+ * "Proposed plan" row, a question collapses to a compact record of the
+ * chosen answer — all inline at the card's chronological position. */
 function PromptCard({
   part,
   onRespond,
@@ -323,10 +326,60 @@ function PromptCard({
 }) {
   const p = part.prompt as ChatPrompt;
   const [picked, setPicked] = useState<string[]>([]);
-  const done = p.resolved || !onRespond;
+  // Read-only host (no onRespond): buttons disabled, card still visible.
+  const done = !onRespond;
 
   const respond = (answer: Omit<PromptAnswer, "promptId">) =>
     onRespond?.({ promptId: part.id, ...answer });
+
+  // Resolved rendering, keyed off `resolved` alone (`done` also covers
+  // read-only hosts, where an *unresolved* card must stay visible).
+  if (p.resolved) {
+    if (p.kind === "permission") return null;
+    if (p.kind === "plan") {
+      const outcome =
+        p.approved === true ? "Plan approved" : p.approved === false ? "Revision requested" : "Resolved";
+      return (
+        <details className="prompt-collapsed">
+          <summary>
+            <span className="prompt-collapsed-title">
+              {p.synthesized ? "Plan" : "Proposed plan"}
+            </span>
+            <span className={`prompt-outcome ${p.approved === false ? "revised" : "approved"}`}>
+              {outcome}
+            </span>
+          </summary>
+          <div className="prompt-collapsed-body">
+            <Md text={p.plan ?? ""} onOpenFile={onOpenFile} />
+            {p.note && <div className="prompt-collapsed-note">{p.note}</div>}
+          </div>
+        </details>
+      );
+    }
+    // question — one line: header/question + what was chosen.
+    const chosen = (p.answers ?? []).join(", ");
+    return (
+      <details className="prompt-collapsed">
+        <summary>
+          <span className="prompt-collapsed-title">{p.header || p.question || "Question"}</span>
+          {chosen && <span className="prompt-outcome approved">{chosen}</span>}
+        </summary>
+        <div className="prompt-collapsed-body">
+          {p.question && <div className="prompt-q">{p.question}</div>}
+          {(p.options ?? []).length > 0 && (
+            <ul className="prompt-collapsed-options">
+              {(p.options ?? []).map((o) => (
+                <li key={o.label} className={p.answers?.includes(o.label) ? "sel" : ""}>
+                  {o.label}
+                </li>
+              ))}
+            </ul>
+          )}
+          {p.note && <div className="prompt-collapsed-note">{p.note}</div>}
+        </div>
+      </details>
+    );
+  }
 
   if (p.kind === "plan") {
     // With a plan-strip host (onOpenPlan), the docked strip owns the approval
@@ -348,25 +401,21 @@ function PromptCard({
             View full plan
           </button>
         )}
-        {done ? (
-          <div className="prompt-resolved">Resolved</div>
-        ) : (
-          !docked && (
-            <div className="prompt-actions">
-              <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "auto" })}>
-                Approve &amp; run
-              </button>
-              <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "accept-edits" })}>
-                Approve &amp; accept edits
-              </button>
-              <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "bypass" })}>
-                Approve &amp; bypass all
-              </button>
-              <button className="btn-ghost" onClick={() => respond({ approve: false })}>
-                Keep planning
-              </button>
-            </div>
-          )
+        {!done && !docked && (
+          <div className="prompt-actions">
+            <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "auto" })}>
+              Approve &amp; run
+            </button>
+            <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "accept-edits" })}>
+              Approve &amp; accept edits
+            </button>
+            <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "bypass" })}>
+              Approve &amp; bypass all
+            </button>
+            <button className="btn-ghost" onClick={() => respond({ approve: false })}>
+              Keep planning
+            </button>
+          </div>
         )}
       </div>
     );
@@ -388,9 +437,7 @@ function PromptCard({
         </div>
         {summary && <div className="prompt-sub">{summary}</div>}
         {reason && <div className="prompt-sub">{reason}</div>}
-        {done ? (
-          <div className="prompt-resolved">Resolved</div>
-        ) : (
+        {!done && (
           // No resumeMode: the harness picks the right one for an approval.
           // Claude resumes under `bypass` (the only mode that actually grants a
           // blocked tool — acceptEdits would re-deny Bash); inline harnesses
@@ -448,9 +495,21 @@ function PromptCard({
           </button>
         </div>
       )}
-      {done && <div className="prompt-resolved">Resolved</div>}
     </div>
   );
+}
+
+/** Whether a message renders anything once resolved-permission cards vanish —
+ * a bridge permission card rides its own message, so resolving it leaves the
+ * message empty and it must drop out of the transcript entirely. */
+function messageHasVisibleContent(m: ChatMessage): boolean {
+  if (m.role === "user") return true;
+  return m.parts.some((part) => {
+    if (part.type === "prompt")
+      return !!part.prompt && !(part.prompt.resolved && part.prompt.kind === "permission");
+    if (part.type === "text" || part.type === "reasoning") return !!part.text;
+    return true; // tool, image, …
+  });
 }
 
 function Message({
@@ -1321,7 +1380,7 @@ export function ChatPanel({
           <div className="chat-thread-inner" ref={threadInnerRef}>
             {/* Stamp the session onto file opens: the agent runs in this
                 session's worktree, so that's where its paths point. */}
-            {messages.map((m) => (
+            {messages.filter(messageHasVisibleContent).map((m) => (
               <Message
                 key={m.id}
                 message={m}

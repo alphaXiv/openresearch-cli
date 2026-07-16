@@ -3571,10 +3571,64 @@ button.files-pill-link:hover {
   cursor: default;
 }
 
-.prompt-resolved {
-  font-size: 11px;
-  font-weight: 600;
+/* Resolved plan/question cards collapse to a one-line expandable row at their
+   chronological position (Claude-desktop style); resolved permission cards
+   render nothing at all. Same visual family as `.reasoning`. */
+.prompt-collapsed {
   color: var(--muted);
+  font-size: 13px;
+  margin: 4px 0;
+}
+.prompt-collapsed summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.prompt-collapsed summary::after {
+  content: "›";
+  color: var(--muted);
+  transition: transform 80ms ease;
+}
+.prompt-collapsed[open] summary::after {
+  transform: rotate(90deg);
+}
+.prompt-collapsed-title {
+  font-weight: 600;
+}
+.prompt-outcome {
+  font-size: 12px;
+  color: var(--subtext);
+}
+.prompt-outcome.approved {
+  color: var(--accent-green);
+}
+.prompt-outcome.approved::before {
+  content: "✓ ";
+}
+.prompt-outcome.revised {
+  color: var(--accent-amber);
+}
+.prompt-collapsed-body {
+  margin-top: 6px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+  font-size: 13px;
+  color: var(--subtext);
+}
+.prompt-collapsed-options {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.prompt-collapsed-options .sel {
+  color: var(--text);
+  font-weight: 600;
+}
+.prompt-collapsed-note {
+  margin-top: 6px;
+  font-style: italic;
 }
 
 /* --- plan strip (docked above the composer while a plan awaits a decision) --- */
