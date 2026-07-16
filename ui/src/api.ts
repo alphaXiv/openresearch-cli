@@ -561,6 +561,8 @@ export interface ChatPrompt {
   kind: "plan" | "permission" | "question";
   resolved: boolean;
   plan?: string;
+  /** plan: card synthesized from the turn's final text (no ExitPlanMode call). */
+  synthesized?: boolean;
   tool?: string;
   toolInput?: Record<string, unknown>;
   question?: string;

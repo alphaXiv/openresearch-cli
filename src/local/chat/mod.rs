@@ -74,6 +74,12 @@ pub struct WirePrompt {
     /// plan: the proposed plan markdown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
+    /// plan: true when the harness synthesized this card from the turn's final
+    /// text because the model never called ExitPlanMode. The approval flow is
+    /// identical; the UI just softens the framing ("ready to proceed?" instead
+    /// of "proposed plan").
+    #[serde(default)]
+    pub synthesized: bool,
     /// permission: the tool the harness was blocked from using, + its input.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,

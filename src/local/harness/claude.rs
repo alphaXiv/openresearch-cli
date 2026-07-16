@@ -297,6 +297,22 @@ fn synthesize_resume(kind: &str, req: &PromptAnswer) -> (String, Option<Permissi
     }
 }
 
+/// Whether a finished plan-mode turn needs a synthesized plan card: the model
+/// presented its plan as plain text without calling ExitPlanMode (and without
+/// asking a question), and the turn didn't error. Without a card the user is
+/// stranded — only a plan-card answer switches the resume mode, so a plain
+/// chat reply would resume still in plan mode. A trivial Q&A turn in plan mode
+/// also gets a card: in plan mode the only exit *is* a plan answer, so the
+/// card is always the recourse.
+fn should_synthesize_plan(
+    plan_mode: bool,
+    saw_prompt: bool,
+    errored: bool,
+    final_text: &str,
+) -> bool {
+    plan_mode && !saw_prompt && !errored && !final_text.trim().is_empty()
+}
+
 /// ExitPlanMode → a `plan` prompt (its `input.plan` is the proposed markdown).
 fn plan_prompt(name: &str, input: Option<&Value>) -> Option<WirePrompt> {
     if name != "ExitPlanMode" {
@@ -452,6 +468,13 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
     let mut lines = BufReader::new(stdout).lines();
     let mut saw_result = false;
+    // Synthesized-plan-card tracking (see `should_synthesize_plan`): whether
+    // any interactive card was surfaced, whether the turn errored, and the
+    // last non-empty text block — the plan, if the model wrote one as text.
+    let plan_mode = ctx.permission_mode == Some(PermissionMode::Plan);
+    let mut saw_prompt = false;
+    let mut turn_errored = false;
+    let mut last_text = String::new();
 
     while let Some(line) = lines.next_line().await? {
         let Ok(event) = serde_json::from_str::<Value>(&line) else {
@@ -480,6 +503,9 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                     match block.get("type").and_then(Value::as_str) {
                         Some("text") => {
                             let text = block.get("text").and_then(Value::as_str).unwrap_or("");
+                            if !text.trim().is_empty() {
+                                last_text = text.to_string();
+                            }
                             ctx.upsert_part(WirePart::text(format!("{mid}-{i}"), text));
                         }
                         Some("thinking") => {
@@ -501,6 +527,7 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                             if let Some(prompt) =
                                 plan_prompt(name, input).or_else(|| question_prompt(name, input))
                             {
+                                saw_prompt = true;
                                 ctx.upsert_part(WirePart::prompt(id, prompt));
                             } else {
                                 ctx.upsert_part(WirePart {
@@ -581,6 +608,7 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                     .and_then(Value::as_bool)
                     .unwrap_or(subtype != "success");
                 if is_error {
+                    turn_errored = true;
                     let detail = event
                         .get("result")
                         .and_then(Value::as_str)
@@ -592,6 +620,24 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
             }
             _ => {}
         }
+    }
+
+    // The model sometimes ends a plan-mode turn with its plan as plain text
+    // and no ExitPlanMode call. Headless leaves no way out of plan mode then —
+    // only a plan-card answer switches the resume mode, so a chat "yes" would
+    // resume still read-only. Synthesize a card from the final text so
+    // approval always has a handle.
+    if should_synthesize_plan(plan_mode, saw_prompt, turn_errored, &last_text) {
+        ctx.upsert_part(WirePart::prompt(
+            format!("plan-synth-{}", ctx.assistant.id),
+            WirePrompt {
+                kind: "plan".into(),
+                plan: Some(last_text),
+                synthesized: true,
+                ..Default::default()
+            },
+        ));
+        ctx.maybe_flush();
     }
 
     let status = child.wait().await?;
@@ -607,6 +653,26 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plan_card_synthesized_only_for_cardless_texty_plan_turns() {
+        // The one case that needs it: plan mode, no card fired, no error, text.
+        assert!(should_synthesize_plan(
+            true,
+            false,
+            false,
+            "Here's my plan…"
+        ));
+        // Not in plan mode → the mode needs no exit.
+        assert!(!should_synthesize_plan(false, false, false, "plan text"));
+        // A real card (ExitPlanMode or AskUserQuestion) already surfaced.
+        assert!(!should_synthesize_plan(true, true, false, "plan text"));
+        // Errored turns surface the error, not a phantom approval.
+        assert!(!should_synthesize_plan(true, false, true, "plan text"));
+        // Nothing to approve.
+        assert!(!should_synthesize_plan(true, false, false, "   "));
+        assert!(!should_synthesize_plan(true, false, false, ""));
+    }
 
     fn answer(
         approve: bool,
