@@ -7,9 +7,6 @@ own agent. Agents work in parallel in isolated git worktrees, propose and edit
 experiments, launch runs on GPU compute, and analyze the results — using your
 existing tools, accounts, and compute.
 
-Built by [alphaXiv](https://alphaxiv.org). The same harness powers the
-Autoresearch tab on alphaXiv paper pages and [openresearch.sh](https://openresearch.sh).
-
 ## Quick start
 
 ```sh
