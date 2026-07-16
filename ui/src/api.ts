@@ -247,6 +247,35 @@ export const getProjectFile = (projectId: string, path: string, sessionId?: stri
       (sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""),
   );
 
+export interface CodeTree {
+  /** Which checkout answered — the session's worktree, or the hub clone
+   * (also the fallback when the session's worktree has been pruned). */
+  root: "worktree" | "clone";
+  /** Checked-out branch, or null when detached (fresh worktree). */
+  branch: string | null;
+  /** Repo-relative file paths (gitignored trees excluded), sorted. */
+  entries: string[];
+  /** True when the listing hit the server-side cap (20,000 entries). */
+  truncated: boolean;
+}
+
+/** Flat file listing of the project checkout (a chat session's worktree when
+ * `sessionId` is given, else the hub clone) plus the checked-out branch. */
+export const getCodeTree = (projectId: string, sessionId?: string) =>
+  get<CodeTree>(
+    `/api/projects/${projectId}/code-tree` +
+      (sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ""),
+  );
+
+/** A GitHub `tree` URL for a branch. Branch names contain `/` (`orx/<slug>`),
+ * so encode each path segment — never the whole string, which would escape the
+ * slashes. Unpushed branches 404 on GitHub, which is acceptable. */
+export const githubBranchUrl = (owner: string, repo: string, branch: string) =>
+  `https://github.com/${owner}/${repo}/tree/${branch
+    .split("/")
+    .map(encodeURIComponent)
+    .join("/")}`;
+
 export type HfTokenSource = "env" | "openresearchEnv" | "hfCache";
 
 export interface HfSettings {

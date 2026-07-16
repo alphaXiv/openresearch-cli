@@ -472,9 +472,7 @@ pub fn list_commits(repo: &Path, branch: &str, limit: usize) -> Result<Vec<Commi
 /// Uncommitted changes in the clone: tracked edits vs HEAD plus untracked
 /// files rendered as new-file diffs. Returns (current branch, diff).
 pub fn working_tree_diff(repo: &Path) -> Result<(Option<String>, DiffPayload)> {
-    let branch = git(Some(repo), &["rev-parse", "--abbrev-ref", "HEAD"])
-        .ok()
-        .filter(|b| b != "HEAD");
+    let branch = current_branch(repo);
     let mut bytes = git_bytes(repo, &["--no-pager", "diff", "HEAD"], &[1])?;
     let untracked = git(Some(repo), &["ls-files", "--others", "--exclude-standard"])?;
     for f in untracked.lines().filter(|l| !l.is_empty()) {
@@ -490,4 +488,38 @@ pub fn working_tree_diff(repo: &Path) -> Result<(Option<String>, DiffPayload)> {
         }
     }
     Ok((branch, cap_diff(bytes)))
+}
+
+/// The checked-out branch name, or `None` when detached (`rev-parse
+/// --abbrev-ref HEAD` prints the literal `HEAD` — e.g. a fresh worktree
+/// before the agent checks out its branch) or when rev-parse fails outright
+/// (unborn HEAD in an empty repo). Never errors — no branch is an answer.
+pub fn current_branch(repo: &Path) -> Option<String> {
+    git(Some(repo), &["rev-parse", "--abbrev-ref", "HEAD"])
+        .ok()
+        .filter(|b| b != "HEAD" && !b.is_empty())
+}
+
+/// Every path in the checkout that git would show as tracked or
+/// untracked-but-not-ignored (`git ls-files --cached --others
+/// --exclude-standard -z`). NUL-separated so non-ASCII paths aren't quoted;
+/// gitignored trees (`target/`, `node_modules/`, `.git/`) drop out for free.
+/// Repo-relative, unsorted.
+pub fn list_worktree_files(repo: &Path) -> Result<Vec<String>> {
+    let bytes = git_bytes(
+        repo,
+        &[
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+        &[],
+    )?;
+    Ok(bytes
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect())
 }

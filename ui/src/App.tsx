@@ -1,4 +1,13 @@
-import { FileCode, GitBranch, Maximize2, Minimize2, ScrollText, Terminal, X } from "lucide-react";
+import {
+  FileCode,
+  FolderTree,
+  GitBranch,
+  Maximize2,
+  Minimize2,
+  ScrollText,
+  Terminal,
+  X,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   cancelRun,
@@ -13,6 +22,7 @@ import {
   type Run,
 } from "./api";
 import { ChatPanel } from "./components/ChatPanel";
+import { CodeTab } from "./components/CodeTab";
 import { FilesTab } from "./components/FilesTab";
 import { ClosableTab } from "./components/ClosableTab";
 import { DetailDrawer, type ExperimentView } from "./components/DetailDrawer";
@@ -56,6 +66,13 @@ interface PlanViewDef {
   /** The prompt part the plan came from — one tab per plan card. */
   promptId: string;
   plan: string;
+}
+
+/** A code-browser view of one chat session's worktree. Discriminates on the
+ * `code` flag (the other tab kinds discriminate on `view`/`path`/`kind`). */
+interface CodeTabDef {
+  code: true;
+  sessionId: string;
 }
 
 // Map a path an agent reported to a repo-relative one — keeping the session
@@ -142,11 +159,12 @@ export default function App() {
   // opened experiment view / project file. Views are single-purpose, so the
   // same experiment can hold both a terminal tab and a changes tab.
   const [rightTab, setRightTab] = useState<
-    "experiments" | ExpViewDef | FileViewDef | PlanViewDef
+    "experiments" | ExpViewDef | FileViewDef | PlanViewDef | CodeTabDef
   >("experiments");
   const [expTabs, setExpTabs] = useState<ExpViewDef[]>([]);
   const [fileTabs, setFileTabs] = useState<FileViewDef[]>([]);
   const [planTabs, setPlanTabs] = useState<PlanViewDef[]>([]);
+  const [codeTabs, setCodeTabs] = useState<CodeTabDef[]>([]);
   // The right pane is a floating panel: closable, edge-resizable, expandable
   // to (nearly) full screen. Width persists across sessions.
   const [panelOpen, setPanelOpen] = useState(true);
@@ -201,6 +219,7 @@ export default function App() {
     setExpTabs([]);
     setFileTabs([]);
     setPlanTabs([]);
+    setCodeTabs([]);
     setRightTab("experiments");
     listExperiments(projectId).then(setExperiments).catch(() => {});
     listRuns(projectId).then(setRuns).catch(() => {});
@@ -308,6 +327,27 @@ export default function App() {
     [planTabs, rightTab],
   );
 
+  // Open the code browser for a chat session's worktree — one tab per session
+  // (deduped on sessionId), mirroring the file/plan tab handlers.
+  const openCodeTab = useCallback((sessionId: string) => {
+    const tab: CodeTabDef = { code: true, sessionId };
+    setCodeTabs((prev) => (prev.some((t) => t.sessionId === sessionId) ? prev : [...prev, tab]));
+    setRightTab(tab);
+    setPanelOpen(true);
+  }, []);
+
+  const closeCodeTab = useCallback(
+    (tab: CodeTabDef) => {
+      const idx = codeTabs.findIndex((t) => t.sessionId === tab.sessionId);
+      if (idx === -1) return;
+      const next = codeTabs.filter((_, i) => i !== idx);
+      setCodeTabs(next);
+      if (typeof rightTab === "object" && "code" in rightTab && rightTab.sessionId === tab.sessionId)
+        setRightTab(next[Math.min(idx, next.length - 1)] ?? "experiments");
+    },
+    [codeTabs, rightTab],
+  );
+
   // Drag the panel's left edge to resize; width persists across reloads.
   const resizePanel = (e: React.PointerEvent) => {
     e.preventDefault();
@@ -359,6 +399,8 @@ export default function App() {
   const expTab = typeof rightTab === "object" && "view" in rightTab ? rightTab : null;
   const fileTab = typeof rightTab === "object" && "path" in rightTab ? rightTab : null;
   const planTab = typeof rightTab === "object" && "kind" in rightTab ? rightTab : null;
+  const codeTab = typeof rightTab === "object" && "code" in rightTab ? rightTab : null;
+  const activeProject = projects?.find((p) => p.id === projectId) ?? null;
   const tabExperiment = expTab ? (experiments.find((e) => e.id === expTab.id) ?? null) : null;
 
   if (projects === null) {
@@ -437,6 +479,7 @@ export default function App() {
             }}
             onOpenFile={openFileTab}
             onOpenPlan={openPlanTab}
+            onOpenCode={openCodeTab}
           >
             {mainView === "files" ? (
               (() => {
@@ -511,6 +554,16 @@ export default function App() {
                   onClose={() => closePlanTab(t)}
                 />
               ))}
+              {codeTabs.map((t) => (
+                <ClosableTab
+                  key={`code:${t.sessionId}`}
+                  active={codeTab !== null && codeTab.sessionId === t.sessionId}
+                  label="Code"
+                  icon={<FolderTree size={12} style={{ flexShrink: 0 }} />}
+                  onSelect={() => setRightTab(t)}
+                  onClose={() => closeCodeTab(t)}
+                />
+              ))}
             </div>
             <div className="panel-controls">
               <button
@@ -554,16 +607,19 @@ export default function App() {
               </div>
               <div className="pane-content">
                 {view === "tree" ? (
-                  <TreeView
-                    experiments={experiments}
-                    runs={runs}
-                    selectedId={selectedExpId}
-                    onSelect={(id) => {
-                      setSelectedRunId(null);
-                      setSelectedExpId(id);
-                    }}
-                    onOpenView={openExperimentTab}
-                  />
+                  activeProject && (
+                    <TreeView
+                      experiments={experiments}
+                      runs={runs}
+                      project={activeProject}
+                      selectedId={selectedExpId}
+                      onSelect={(id) => {
+                        setSelectedRunId(null);
+                        setSelectedExpId(id);
+                      }}
+                      onOpenView={openExperimentTab}
+                    />
+                  )
                 ) : (
                   <RunsTable
                     runs={runs}
@@ -601,12 +657,25 @@ export default function App() {
                 />
               </div>
             </div>
+          ) : codeTab ? (
+            <div className="tab-body">
+              {projectId && activeProject && (
+                <CodeTab
+                  key={`code:${codeTab.sessionId}`}
+                  projectId={projectId}
+                  sessionId={codeTab.sessionId}
+                  project={activeProject}
+                  onOpenFile={openFileTab}
+                />
+              )}
+            </div>
           ) : (
             <div className="tab-body">
-              {expTab && tabExperiment && (
+              {expTab && tabExperiment && activeProject && (
                 <DetailDrawer
                   key={`${expTab.id}:${expTab.view}`}
                   experiment={tabExperiment}
+                  project={activeProject}
                   view={expTab.view}
                   runs={runs}
                   selectedRunId={selectedRunId}

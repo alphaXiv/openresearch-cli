@@ -9,9 +9,11 @@ import {
   type CommitInfo,
   type DiffPayload,
   type Experiment,
+  type Project,
   type Run,
   type WorkingTree,
 } from "../api";
+import { BranchPill } from "./BranchPill";
 import { GitDiff, TruncatedDiffNotice } from "./GitDiff";
 import { LogTerminal } from "./LogTerminal";
 import { StatusBadge } from "./StatusBadge";
@@ -45,12 +47,15 @@ export type ExperimentView = "terminal" | "changes";
  *  keyed by `${experiment.id}:${view}` so per-view state resets on switch. */
 export function DetailDrawer({
   experiment,
+  project,
   view,
   runs,
   selectedRunId,
   onSelectRun,
 }: {
   experiment: Experiment;
+  /** Owning project — supplies owner/repo for the GitHub branch link. */
+  project: Project;
   view: ExperimentView;
   runs: Run[];
   selectedRunId: string | null;
@@ -68,7 +73,7 @@ export function DetailDrawer({
       onSelectRun={onSelectRun}
     />
   ) : (
-    <ChangesView experiment={experiment} />
+    <ChangesView experiment={experiment} project={project} />
   );
 }
 
@@ -195,7 +200,7 @@ function TerminalView({
 }
 
 /** The branch's changes: a commit picker + diff, including uncommitted edits. */
-function ChangesView({ experiment }: { experiment: Experiment }) {
+function ChangesView({ experiment, project }: { experiment: Experiment; project: Project }) {
   const [commits, setCommits] = useState<CommitInfo[] | null>(null);
   const [changesError, setChangesError] = useState<string | null>(null);
   const [workingTree, setWorkingTree] = useState<WorkingTree | null>(null);
@@ -275,6 +280,13 @@ function ChangesView({ experiment }: { experiment: Experiment }) {
     <div className="drawer">
       <div className="drawer-body">
         <div className="drawer-section">
+          <div className="changes-branch">
+            <BranchPill
+              owner={project.githubOwner}
+              repo={project.githubRepo}
+              branch={experiment.branchName}
+            />
+          </div>
           {changesError ? (
             <div className="error">{changesError}</div>
           ) : commits === null ? (

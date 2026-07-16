@@ -8,9 +8,9 @@ import {
   type Node,
   type NodeProps,
 } from "@xyflow/react";
-import { GitBranch, Terminal } from "lucide-react";
+import { ExternalLink, GitBranch, Terminal } from "lucide-react";
 import { memo, useMemo } from "react";
-import { timeAgo, type Experiment, type Run } from "../api";
+import { githubBranchUrl, timeAgo, type Experiment, type Project, type Run } from "../api";
 import type { ExperimentView } from "./DetailDrawer";
 import { StatusBadge } from "./StatusBadge";
 
@@ -26,6 +26,8 @@ type ExpNodeData = {
   runs: Run[]; // oldest → newest
   isBaseline: boolean;
   selected: boolean;
+  githubOwner: string;
+  githubRepo: string;
   onOpenView: (id: string, view: ExperimentView) => void;
 };
 type ExpFlowNode = Node<ExpNodeData, "exp">;
@@ -69,7 +71,7 @@ function runSquareClass(status: string): string {
 }
 
 const ExpNode = memo(function ExpNode({ data }: NodeProps<ExpFlowNode>) {
-  const { exp, latestRun, runs, isBaseline, selected, onOpenView } = data;
+  const { exp, latestRun, runs, isBaseline, selected, githubOwner, githubRepo, onOpenView } = data;
   const status = latestRun?.status;
   const live = status === "running" || status === "starting";
   const kind = isBaseline ? "BASELINE" : live ? "RUNNING" : "EXPERIMENT";
@@ -121,6 +123,17 @@ const ExpNode = memo(function ExpNode({ data }: NodeProps<ExpFlowNode>) {
             Terminal
           </button>
         )}
+        <a
+          className="node-action"
+          title={`Open ${exp.branchName} on GitHub`}
+          href={githubBranchUrl(githubOwner, githubRepo, exp.branchName)}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <ExternalLink size={13} />
+          GitHub
+        </a>
       </div>
       <Handle type="source" position={Position.Bottom} />
     </div>
@@ -137,12 +150,15 @@ const defaultEdgeOptions = {
 export function TreeView({
   experiments,
   runs,
+  project,
   selectedId,
   onSelect,
   onOpenView,
 }: {
   experiments: Experiment[];
   runs: Run[];
+  /** Owning project — supplies owner/repo for the GitHub branch links. */
+  project: Project;
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   /** Open an experiment view as a right-pane tab (card shortcut buttons). */
@@ -173,6 +189,8 @@ export function TreeView({
           runs: expRuns,
           isBaseline: !node.exp.parentExperimentId,
           selected: node.exp.id === selectedId,
+          githubOwner: project.githubOwner,
+          githubRepo: project.githubRepo,
           onOpenView,
         },
       });
@@ -200,7 +218,7 @@ export function TreeView({
       rx += w + GAP_X;
     }
     return { nodes, edges };
-  }, [experiments, runs, selectedId, onOpenView]);
+  }, [experiments, runs, selectedId, onOpenView, project.githubOwner, project.githubRepo]);
 
   if (experiments.length === 0) {
     return (

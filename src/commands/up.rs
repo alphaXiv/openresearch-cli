@@ -167,6 +167,7 @@ fn router(state: AppState) -> Router {
             get(experiment_commit_diff),
         )
         .route("/api/projects/{id}/working-tree", get(project_working_tree))
+        .route("/api/projects/{id}/code-tree", get(project_code_tree))
         .route("/api/projects/{id}/file", get(project_file))
         .route(
             "/api/projects/{id}/files",
@@ -893,6 +894,91 @@ async fn project_working_tree(Path(id): Path<String>) -> ApiResult {
 /// Cap on file bytes served to the viewer (mirrors openresearch.sh).
 const FILE_READ_LIMIT: u64 = 512_000;
 
+/// Resolve which on-disk checkout answers a file/code request for a project.
+///
+/// The chat session's worktree is where the agent actually works, so it can
+/// hold files the hub clone's checkout never sees. When `session_id` is given
+/// it must be this project's session (the authorization boundary, which also
+/// pins the worktree dir to a store-issued id); a missing worktree (pruned, or
+/// never created) degrades to the clone rather than erroring, but any other
+/// worktree failure is reported, not papered over. Returns the canonicalized
+/// root and whether it is the `"worktree"` or the `"clone"`.
+fn resolve_checkout_root(
+    store: &Store,
+    project: &local::model::LocalProject,
+    session_id: Option<&str>,
+) -> std::result::Result<(std::path::PathBuf, &'static str), ApiError> {
+    let session_id = session_id.map(str::trim).filter(|s| !s.is_empty());
+    let worktree = match session_id {
+        Some(s) => {
+            let session = store
+                .get_chat_session(s)?
+                .filter(|sess| sess.project_id == project.id)
+                .ok_or_else(|| not_found("chat session"))?;
+            let dir = local::git::session_worktree_path(
+                &project.github_owner,
+                &project.github_repo,
+                &session.id,
+            );
+            match std::fs::canonicalize(&dir) {
+                Ok(p) => Some(p),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(ApiError::from(anyhow!("session worktree unavailable: {e}"))),
+            }
+        }
+        None => None,
+    };
+    match worktree {
+        Some(r) => Ok((r, "worktree")),
+        None => Ok((
+            std::fs::canonicalize(&project.repo_path)
+                .map_err(|e| ApiError::from(anyhow!("repo clone unavailable: {e}")))?,
+            "clone",
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodeTreeQuery {
+    /// Chat session whose worktree to list. Absent (or the worktree already
+    /// pruned) falls back to the hub clone.
+    session_id: Option<String>,
+}
+
+/// Cap on entries returned by the code-tree listing.
+const CODE_TREE_LIMIT: usize = 20_000;
+
+/// Flat file listing of the project's checkout — the chat session's worktree
+/// when `sessionId` is given, else the hub clone — plus the checked-out branch
+/// name, for the UI code browser. Paths are repo-relative (`git ls-files`, so
+/// gitignored trees are excluded and untracked-but-new files are included).
+/// The client builds the nested tree.
+async fn project_code_tree(Path(id): Path<String>, Query(q): Query<CodeTreeQuery>) -> ApiResult {
+    blocking_api(move || {
+        let store = Store::open()?;
+        let project = store
+            .get_local_project(&id)?
+            .ok_or_else(|| not_found("project"))?;
+        let (root, root_kind) = resolve_checkout_root(&store, &project, q.session_id.as_deref())?;
+        let branch = local::git::current_branch(&root);
+        let mut entries = local::git::list_worktree_files(&root)?;
+        entries.sort();
+        // During a merge conflict `ls-files --cached` emits an unmerged path
+        // once per stage — collapse to one entry (they'd be duplicate keys).
+        entries.dedup();
+        let truncated = entries.len() > CODE_TREE_LIMIT;
+        entries.truncate(CODE_TREE_LIMIT);
+        Ok(Json(json!({
+            "root": root_kind,
+            "branch": branch,
+            "entries": entries,
+            "truncated": truncated,
+        })))
+    })
+    .await
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProjectFileQuery {
@@ -926,46 +1012,7 @@ async fn project_file(Path(id): Path<String>, Query(q): Query<ProjectFileQuery>)
         let project = store
             .get_local_project(&id)?
             .ok_or_else(|| not_found("project"))?;
-        // The session's worktree is where the agent actually works, so it can
-        // hold files the hub clone's checkout never sees. The session must be
-        // this project's (which also pins the worktree dir to a store-issued
-        // id); a missing worktree (pruned, or never created) degrades to the
-        // clone rather than erroring, but any other worktree failure is
-        // reported, not papered over.
-        let session_id = q
-            .session_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-        let worktree = match session_id {
-            Some(s) => {
-                let session = store
-                    .get_chat_session(s)?
-                    .filter(|sess| sess.project_id == project.id)
-                    .ok_or_else(|| not_found("chat session"))?;
-                let dir = local::git::session_worktree_path(
-                    &project.github_owner,
-                    &project.github_repo,
-                    &session.id,
-                );
-                match std::fs::canonicalize(&dir) {
-                    Ok(p) => Some(p),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                    Err(e) => {
-                        return Err(ApiError::from(anyhow!("session worktree unavailable: {e}")))
-                    }
-                }
-            }
-            None => None,
-        };
-        let (root, root_kind) = match worktree {
-            Some(r) => (r, "worktree"),
-            None => (
-                std::fs::canonicalize(&project.repo_path)
-                    .map_err(|e| ApiError::from(anyhow!("repo clone unavailable: {e}")))?,
-                "clone",
-            ),
-        };
+        let (root, root_kind) = resolve_checkout_root(&store, &project, q.session_id.as_deref())?;
         let not_found_json = json!({
             "path": rel, "content": "", "truncated": false, "notFound": true, "root": root_kind,
         });

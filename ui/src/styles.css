@@ -1516,6 +1516,8 @@ textarea::placeholder {
   font-weight: 700;
   color: var(--subtext);
   border-radius: 6px;
+  /* The GitHub shortcut is an <a> among sibling <button>s. */
+  text-decoration: none;
 }
 .exp-node .node-action:hover {
   color: var(--text);
@@ -1870,6 +1872,10 @@ textarea::placeholder {
 }
 
 /* commit picker (Changes tab) */
+.changes-branch {
+  display: flex;
+  margin-bottom: 10px;
+}
 .commit-picker {
   display: flex;
   align-items: center;
@@ -3700,4 +3706,71 @@ button.files-pill-link:hover {
 }
 .prompt-plan-open:hover {
   text-decoration: underline;
+}
+
+/* Code browser tab — session-worktree file tree in flow layout (NOT
+   .runs-table-wrap, which is position:absolute and would jump to (0,0)). */
+.code-tab {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.code-tab-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-variant);
+  flex-shrink: 0;
+}
+.code-tab-branch-none {
+  font-size: 12px;
+  color: var(--muted);
+}
+.code-tab-note {
+  padding: 8px 16px;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border-variant);
+  flex-shrink: 0;
+}
+.code-tab-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--base);
+}
+.code-tree {
+  padding: 6px 0;
+  font-size: 12.5px;
+}
+.code-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+}
+.code-tree-row:hover {
+  background: var(--panel);
+}
+.code-tree-row > svg {
+  flex-shrink: 0;
+  color: var(--subtext);
+}
+.code-tree-row > svg.code-tree-chev {
+  color: var(--muted);
+}
+.code-tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
