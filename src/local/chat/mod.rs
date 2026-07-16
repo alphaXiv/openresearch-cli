@@ -108,7 +108,7 @@ pub struct WirePrompt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_id: Option<String>,
     /// Answer echo, stamped when the user resolves the card so the collapsed
-    /// read-only rendering can show the outcome (and it survives a reload):
+    /// rendering can show the outcome (and it survives a reload):
     /// questions record the chosen labels, plan/permission whether it was
     /// approved, and any freeform note rides along. Absent on cards resolved
     /// without an answer (stale-card cleanup, cancelled bridge requests).
@@ -1560,9 +1560,9 @@ impl TurnCtx {
     /// assistant message, so a concurrent `respond` that resolved a card isn't
     /// clobbered by this turn's next flush. Only ever flips `false`→`true` and
     /// fills an empty echo (`answers`/`approved`/`note`) — never the reverse —
-    /// so it's safe regardless of ordering: the in-memory copy never carries
-    /// an echo of its own, and dropping the stored one here would erase the
-    /// stamped outcome on the next flush.
+    /// so it's safe regardless of ordering: the in-memory copy normally never
+    /// carries an echo of its own, and dropping the stored one here would
+    /// erase the stamped outcome on the next flush.
     fn adopt_resolved_prompts(&mut self, store: &Store) {
         let Ok(Some(stored)) = store.get_chat_message(&self.assistant.id) else {
             return;

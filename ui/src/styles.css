@@ -3602,10 +3602,12 @@ button.files-pill-link:hover {
 }
 .prompt-collapsed-title {
   font-weight: 600;
+  word-break: break-word;
 }
 .prompt-outcome {
   font-size: 12px;
   color: var(--subtext);
+  word-break: break-word;
 }
 .prompt-outcome.approved,
 .prompt-outcome.chosen {

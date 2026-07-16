@@ -326,7 +326,7 @@ function PromptCard({
 }) {
   const p = part.prompt as ChatPrompt;
   const [picked, setPicked] = useState<string[]>([]);
-  // Read-only host (no onRespond): buttons disabled, card still visible.
+  // Read-only host (no onRespond): actions disabled or hidden, card visible.
   const done = !onRespond;
 
   const respond = (answer: Omit<PromptAnswer, "promptId">) =>
@@ -368,7 +368,8 @@ function PromptCard({
           <span className={`prompt-outcome ${chosen ? "chosen" : ""}`}>{chosen || "Resolved"}</span>
         </summary>
         <div className="prompt-collapsed-body">
-          {p.question && <div className="prompt-q">{p.question}</div>}
+          {/* The summary title already shows the question when there's no header. */}
+          {p.header && p.question && <div className="prompt-q">{p.question}</div>}
           {(p.options ?? []).length > 0 && (
             <ul className="prompt-collapsed-options">
               {(p.options ?? []).map((o) => (
