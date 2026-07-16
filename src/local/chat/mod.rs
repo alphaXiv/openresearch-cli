@@ -8,7 +8,7 @@
 //! normalized parts into the per-turn assistant message; every flush persists
 //! the message and broadcasts it as a `chat.message` SSE event.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -26,6 +26,12 @@ use crate::store::{now_ms, Store, StoredChatMessage, StoredChatSession};
 /// Min interval between mid-turn persist+broadcast flushes (streaming parts
 /// can update many times a second; the final flush is always unconditional).
 const FLUSH_INTERVAL: Duration = Duration::from_millis(150);
+
+/// How long a bridge approval card may sit unanswered before it's denied and
+/// the turn continues. Kept under the `MCP_TOOL_TIMEOUT` the claude child runs
+/// with (60 min — see `harness::claude`), so orx answers before the CLI gives
+/// up on the tool call.
+const BRIDGE_ANSWER_TIMEOUT: Duration = Duration::from_secs(55 * 60);
 
 // --- wire types (what the UI renders) ---------------------------------------
 
@@ -256,6 +262,106 @@ fn stored_to_wire(m: &StoredChatMessage) -> WireMessage {
     }
 }
 
+// --- permission bridge ---------------------------------------------------------
+
+/// The decision returned to the `orx mcp-gate` permission bridge for one
+/// blocked tool call. Serialized verbatim into Claude Code's
+/// permission-prompt-tool contract (the bridge stringifies it into the MCP
+/// tool result), so the wire shape is exactly
+/// `{"behavior":"allow","updatedInput":{…}}` / `{"behavior":"deny","message":"…"}`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "behavior", rename_all = "lowercase")]
+pub enum PermissionDecision {
+    Allow {
+        /// The (possibly rewritten) tool input. The contract requires it on an
+        /// allow; we echo the original input.
+        #[serde(rename = "updatedInput", skip_serializing_if = "Option::is_none")]
+        updated_input: Option<Value>,
+    },
+    Deny {
+        message: String,
+    },
+}
+
+impl PermissionDecision {
+    fn deny(message: impl Into<String>) -> Self {
+        Self::Deny {
+            message: message.into(),
+        }
+    }
+}
+
+/// One outstanding bridge request: the oneshot unblocks the long-poll handler
+/// in `request_permission` (and thereby the `orx mcp-gate` HTTP call and the
+/// claude turn behind it).
+struct PendingPermission {
+    session_id: String,
+    tx: tokio::sync::oneshot::Sender<PermissionDecision>,
+}
+
+/// The card-less tier of plan-mode permission policy: `Some(decision)` where
+/// the answer is unambiguous, `None` where the user must decide (a card).
+///
+/// Read-only Bash allows — the PreToolUse hook normally short-circuits these
+/// before the permission tool ever fires; this keeps behavior right if the
+/// hook wasn't wired. WebFetch/WebSearch are read-only research that plan mode
+/// denies natively (verified on claude 2.1.197) — exactly what planning needs,
+/// so allow. File edits DENY: with a permission tool configured the CLI
+/// *delegates* plan mode's edit block to it (verified: an allow here creates
+/// files mid-plan), so this branch IS the plan-mode safety, not dead defense.
+fn plan_auto_policy(tool_name: &str, tool_input: &Value) -> Option<PermissionDecision> {
+    if tool_name == "Bash" {
+        let readonly = tool_input
+            .get("command")
+            .and_then(Value::as_str)
+            .is_some_and(crate::local::harness::command_is_readonly);
+        if readonly {
+            return Some(PermissionDecision::Allow {
+                updated_input: Some(tool_input.clone()),
+            });
+        }
+        // A non-read-only Bash command is the user's call — card.
+        return None;
+    }
+    match tool_name {
+        "WebFetch" | "WebSearch" => Some(PermissionDecision::Allow {
+            updated_input: Some(tool_input.clone()),
+        }),
+        "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => Some(PermissionDecision::deny(
+            "File edits are blocked in plan mode. Present your plan with the \
+             ExitPlanMode tool; the user approves it from the plan card.",
+        )),
+        _ => None,
+    }
+}
+
+/// Cleanup for one bridge request, running on *every* exit from
+/// `request_permission` — answered, timed out, or the handler future dropped
+/// mid-await (the HTTP connection died with the claude child). Removes the
+/// pending entry and resolves the card so it can't be answered into the void.
+/// Resolving an already-resolved card is an idempotent re-persist.
+struct PendingGuard {
+    host: Arc<ChatHost>,
+    session_id: String,
+    prompt_id: String,
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        self.host
+            .pending_permissions
+            .lock()
+            .unwrap()
+            .remove(&self.prompt_id);
+        if let Ok(Some(msg)) =
+            mark_prompt_resolved(&self.host.msg_write, &self.session_id, &self.prompt_id)
+        {
+            self.host
+                .emit("chat.message", message_json(&msg, &self.session_id));
+        }
+    }
+}
+
 // --- host --------------------------------------------------------------------
 
 /// Owns turn tasks and the chat event stream. One per `orx up` process.
@@ -288,6 +394,19 @@ pub struct ChatHost {
     /// no real contention) makes each RMW atomic. Sync because `flush` is sync;
     /// never held across an `.await`.
     msg_write: std::sync::Mutex<()>,
+    /// Outstanding permission-bridge requests, keyed by the prompt part id the
+    /// card was surfaced under. Sync mutex, never held across an await.
+    pending_permissions: std::sync::Mutex<HashMap<String, PendingPermission>>,
+    /// Per-session bridge token, minted fresh each plan-mode turn. The rest of
+    /// the localhost API is unauthenticated, but this endpoint *grants tool
+    /// permissions*, so the bridge must echo the token the turn was spawned with.
+    gate_tokens: std::sync::Mutex<HashMap<String, String>>,
+    /// Sessions whose running turn surfaced a bridge card — checked (and
+    /// cleared) by the synthesized-plan-card fallback so it never double-cards
+    /// a turn the bridge already carded.
+    bridge_prompted: std::sync::Mutex<HashSet<String>>,
+    /// The port `orx up` bound, for the bridge env contract.
+    up_port: std::sync::OnceLock<u16>,
 }
 
 /// Reserves a session's turn slot for the duration of `send_message`'s setup.
@@ -356,6 +475,188 @@ impl ChatHost {
             turns: Mutex::new(HashMap::new()),
             respond_locks: Mutex::new(HashMap::new()),
             msg_write: std::sync::Mutex::new(()),
+            pending_permissions: std::sync::Mutex::new(HashMap::new()),
+            gate_tokens: std::sync::Mutex::new(HashMap::new()),
+            bridge_prompted: std::sync::Mutex::new(HashSet::new()),
+            up_port: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Record the port `orx up` bound (once, at startup) so plan-mode turns can
+    /// hand it to the `orx mcp-gate` bridge.
+    pub fn set_up_port(&self, port: u16) {
+        let _ = self.up_port.set(port);
+    }
+
+    /// The bound `orx up` port, if this host runs under a server (None in
+    /// contexts with no HTTP surface — the bridge is skipped there).
+    pub fn up_port(&self) -> Option<u16> {
+        self.up_port.get().copied()
+    }
+
+    /// Mint (and remember) the bridge token for a session's plan-mode turn.
+    /// One token per session, refreshed each turn; the previous turn's bridge
+    /// child dies with its turn, so overwriting is correct.
+    pub fn mint_gate_token(&self, session_id: &str) -> String {
+        let token = uuid::Uuid::new_v4().to_string();
+        self.gate_tokens
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), token.clone());
+        token
+    }
+
+    /// Whether this session's running turn surfaced a bridge card — and clear
+    /// the flag. Consulted by the synthesized-plan-card fallback at turn end.
+    pub fn take_bridge_prompted(&self, session_id: &str) -> bool {
+        self.bridge_prompted.lock().unwrap().remove(session_id)
+    }
+
+    /// Bridge entry point (`POST /api/internal/permissions`): decide one
+    /// blocked tool call from a plan-mode turn. Auto-decides by policy where
+    /// the answer is unambiguous; otherwise surfaces a card and **blocks until
+    /// the user answers** (or the timeout denies) — the held HTTP response is
+    /// what pauses the claude turn mid-flight.
+    pub async fn request_permission(
+        self: &Arc<Self>,
+        session_id: &str,
+        token: &str,
+        tool_name: &str,
+        tool_input: Value,
+    ) -> Result<PermissionDecision> {
+        // The endpoint grants tool permissions, so unlike the rest of the
+        // localhost API it authenticates: the bridge must echo the token its
+        // turn was spawned with.
+        let token_ok = self
+            .gate_tokens
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .is_some_and(|t| t == token);
+        if !token_ok {
+            return Err(anyhow!("unknown or stale gate token"));
+        }
+        // A bridge child that outlived its turn has nothing left to approve.
+        if !self.is_busy(session_id).await {
+            return Ok(PermissionDecision::deny(
+                "the turn this approval belonged to has already ended",
+            ));
+        }
+
+        // Tier 1 — policy decides, no card.
+        if let Some(decision) = plan_auto_policy(tool_name, &tool_input) {
+            return Ok(decision);
+        }
+
+        // Tier 2 — the user decides. ExitPlanMode becomes the plan card (the
+        // hook routes it here with an "ask" so headless can't self-approve);
+        // everything else — gray-area Bash, MCP tools, … — a permission card.
+        let prompt_id = format!("perm_{}", uuid::Uuid::new_v4());
+        let prompt = if tool_name == "ExitPlanMode" {
+            WirePrompt {
+                kind: "plan".into(),
+                plan: Some(
+                    tool_input
+                        .get("plan")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                ),
+                native_id: Some(prompt_id.clone()),
+                ..Default::default()
+            }
+        } else {
+            WirePrompt {
+                kind: "permission".into(),
+                tool: Some(tool_name.to_string()),
+                tool_input: Some(tool_input),
+                native_id: Some(prompt_id.clone()),
+                ..Default::default()
+            }
+        };
+
+        // The card rides its own assistant message: the running turn owns its
+        // in-flight message's parts (a foreign part appended there would be
+        // clobbered by the turn's next flush).
+        let msg = WireMessage {
+            id: format!("msg_{prompt_id}"),
+            role: "assistant".into(),
+            parts: vec![WirePart::prompt(prompt_id.clone(), prompt)],
+            created_at: now_ms(),
+        };
+        Store::open()?.upsert_chat_message(&StoredChatMessage {
+            id: msg.id.clone(),
+            session_id: session_id.to_string(),
+            role: "assistant".into(),
+            parts_json: serde_json::to_string(&msg.parts)?,
+            created_at: msg.created_at,
+        })?;
+        self.emit("chat.message", message_json(&msg, session_id));
+        self.bridge_prompted
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string());
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending_permissions.lock().unwrap().insert(
+            prompt_id.clone(),
+            PendingPermission {
+                session_id: session_id.to_string(),
+                tx,
+            },
+        );
+        // Cleanup on every exit path — answered, timed out, or this handler
+        // future dropped (HTTP connection died with the claude child): remove
+        // the pending entry and resolve the card so it can't be answered into
+        // the void.
+        let _guard = PendingGuard {
+            host: self.clone(),
+            session_id: session_id.to_string(),
+            prompt_id: prompt_id.clone(),
+        };
+
+        let decision = tokio::select! {
+            d = rx => d.unwrap_or_else(|_| PermissionDecision::deny("the approval was cancelled")),
+            _ = tokio::time::sleep(BRIDGE_ANSWER_TIMEOUT) => PermissionDecision::deny(
+                "No one answered this approval within 55 minutes; treat it as denied \
+                 and wrap up the turn cleanly.",
+            ),
+        };
+        Ok(decision)
+    }
+
+    /// Settle a pending bridge request with the user's decision (the native
+    /// resume path). Err if it's no longer pending — a stale card.
+    pub fn settle_permission(&self, prompt_id: &str, decision: PermissionDecision) -> Result<()> {
+        let pending = self
+            .pending_permissions
+            .lock()
+            .unwrap()
+            .remove(prompt_id)
+            .ok_or_else(|| anyhow!("this approval is no longer pending"))?;
+        // A dropped receiver means the request handler already died; its guard
+        // is cleaning the card up, so a lost send is fine.
+        let _ = pending.tx.send(decision);
+        Ok(())
+    }
+
+    /// Deny-and-unblock every pending bridge request of a session. Called when
+    /// its turn ends or is interrupted: the bridge child dies with the turn,
+    /// and a card left pending would strand its long-poll forever.
+    fn cancel_pending_permissions(&self, session_id: &str) {
+        let drained: Vec<PendingPermission> = {
+            let mut map = self.pending_permissions.lock().unwrap();
+            let ids: Vec<String> = map
+                .iter()
+                .filter(|(_, p)| p.session_id == session_id)
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.into_iter().filter_map(|id| map.remove(&id)).collect()
+        };
+        for pending in drained {
+            let _ = pending
+                .tx
+                .send(PermissionDecision::deny("the turn was interrupted"));
         }
     }
 
@@ -563,6 +864,9 @@ impl ChatHost {
     /// Turn cleanup: drop the handle, bump the session, broadcast idle.
     async fn finish_turn(&self, session_id: &str) {
         self.turns.lock().await.remove(session_id);
+        // Any bridge card still pending belongs to the turn that just ended —
+        // deny it so the (dying) bridge child's long-poll unblocks.
+        self.cancel_pending_permissions(session_id);
         if let Ok(store) = Store::open() {
             let _ = store.touch_chat_session(session_id);
             if let Ok(Some(session)) = store.get_chat_session(session_id) {
@@ -674,9 +978,16 @@ impl ChatHost {
 
         match action {
             ResumeAction::SendMessage { text, mode } => {
-                // End-turn resume: the CLI turn already finished, so the session
-                // should be idle; `send_message`'s own guard rejects if a resume
-                // turn is somehow already running.
+                // A native (mid-turn) card may resume while its turn is still
+                // running — plan approval under the permission bridge replaces
+                // the paused plan turn with the implementation turn, so
+                // interrupt first. End-turn cards keep the old contract: the
+                // session should be idle, and `send_message`'s guard rejects if
+                // a turn is somehow running (answering a stale card must never
+                // kill an unrelated live turn).
+                if prompt.native_id.is_some() && self.is_busy(&req.session_id).await {
+                    self.interrupt(&req.session_id).await?;
+                }
                 let overrides = TurnOverrides {
                     model: None,
                     permission_mode: mode.map(|m| m.id().to_string()),
@@ -1296,4 +1607,73 @@ pub fn harness_log(name: &str) -> Result<std::fs::File> {
         .append(true)
         .open(&path)
         .map_err(|e| anyhow!("Could not open {}: {}", path.display(), e))
+}
+
+#[cfg(test)]
+mod bridge_tests {
+    use super::*;
+
+    /// The decision wire shapes are Claude Code's permission-prompt-tool
+    /// contract verbatim — the bridge stringifies them unchanged, so a drift
+    /// here breaks every approval.
+    #[test]
+    fn permission_decision_serializes_to_the_cli_contract() {
+        let allow = PermissionDecision::Allow {
+            updated_input: Some(json!({"command": "orx runs"})),
+        };
+        assert_eq!(
+            serde_json::to_value(&allow).unwrap(),
+            json!({"behavior": "allow", "updatedInput": {"command": "orx runs"}})
+        );
+        let allow_bare = PermissionDecision::Allow {
+            updated_input: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&allow_bare).unwrap(),
+            json!({"behavior": "allow"})
+        );
+        let deny = PermissionDecision::deny("no");
+        assert_eq!(
+            serde_json::to_value(&deny).unwrap(),
+            json!({"behavior": "deny", "message": "no"})
+        );
+    }
+
+    #[test]
+    fn plan_auto_policy_decides_the_unambiguous_tiers() {
+        let allow =
+            |d: Option<PermissionDecision>| matches!(d, Some(PermissionDecision::Allow { .. }));
+        let deny =
+            |d: Option<PermissionDecision>| matches!(d, Some(PermissionDecision::Deny { .. }));
+
+        // Read-only Bash: allowed without a card.
+        assert!(allow(plan_auto_policy(
+            "Bash",
+            &json!({"command": "orx runs 2>&1 | head -50"})
+        )));
+        assert!(allow(plan_auto_policy(
+            "Bash",
+            &json!({"command": "git show origin/b:f.py | head -100"})
+        )));
+        // Gray-area Bash: the user's call — card.
+        assert!(plan_auto_policy("Bash", &json!({"command": "cargo metadata"})).is_none());
+        assert!(plan_auto_policy("Bash", &json!({"command": "rm -rf /"})).is_none());
+        // Read-only research tools: allowed (plan mode denies them natively).
+        assert!(allow(plan_auto_policy(
+            "WebFetch",
+            &json!({"url": "https://example.com"})
+        )));
+        assert!(allow(plan_auto_policy("WebSearch", &json!({"query": "x"}))));
+        // File edits: denied — this branch IS plan mode's edit block once a
+        // permission tool is configured.
+        for tool in ["Write", "Edit", "MultiEdit", "NotebookEdit"] {
+            assert!(
+                deny(plan_auto_policy(tool, &json!({"file_path": "/x"}))),
+                "{tool}"
+            );
+        }
+        // ExitPlanMode and unknown tools: the user's call — card.
+        assert!(plan_auto_policy("ExitPlanMode", &json!({"plan": "x"})).is_none());
+        assert!(plan_auto_policy("mcp__foo__bar", &json!({})).is_none());
+    }
 }
