@@ -50,6 +50,12 @@ const WHOLE_VERB_READS: &[&str] = &[
     "version",
 ];
 
+/// Shell no-ops allowed as glue between read-only `orx` segments in a batch —
+/// separators and labels the planning agent prints, e.g. `echo ====`. They take
+/// arbitrary args but can't have a side effect here (redirection/substitution
+/// are rejected before we get this far), so a program-name match is enough.
+const READONLY_GLUE: &[&str] = &["echo", "true", ":"];
+
 /// Decide whether a `PreToolUse` hook payload describes a read-only `orx`
 /// invocation that plan mode should let through. Returns the JSON to print on
 /// stdout (an `allow` decision) or `None` to stay silent and defer to plan
@@ -80,13 +86,63 @@ pub fn decide(payload: &Value) -> Option<Value> {
     }))
 }
 
-/// True iff `command` is a single `orx` invocation whose (sub)command is on the
-/// read-only allowlist. Anything with shell metacharacters that could chain a
-/// second command (`;`, `&&`, `|`, `` ` ``, `$(`, redirection) is rejected — a
-/// read-only prefix must not be a smuggling vector for a write.
+/// True iff `command` is a read-only `orx` inspection that plan mode may run.
+///
+/// A single `orx <read-verb>` is allowed. So is a *sequence* of them joined by
+/// `;` or `&&` and interleaved with harmless glue (`echo`, `true`, `:`) — the
+/// batching the planning agent uses to fetch several nodes in one call, e.g.
+/// `orx exp desc A; echo ====; orx exp desc B`. The whole line is allowed only
+/// if **every** segment is independently read-only; one unknown or write
+/// segment gates the entire command (allowlist-only — see [`is_readonly_orx`]'s
+/// caller). This keeps the security property: a read-only prefix can never
+/// smuggle a write through as a later segment.
+///
+/// Only `;` and `&&` are recognized as separators. Pipes (`|`), redirection
+/// (`>`/`<`), backticks, `$(…)`, background `&`, and newlines are rejected
+/// outright: they can capture, redirect, or spawn work outside the per-segment
+/// check, so they never appear in legitimate read-only batching.
+///
+/// The split is not quote-aware, so a `;`/`&&` *inside* a quoted argument (e.g.
+/// `orx query "select … where a && b"`) is still treated as a separator and
+/// gates the line. This over-gates rather than under-allows — it fails safe —
+/// so such a command just falls back to plan mode's normal gate; run it outside
+/// a batch to have it auto-allowed.
 fn is_readonly_orx(command: &str) -> bool {
     let command = command.trim();
-    if command.contains([';', '|', '&', '`', '>', '<', '\n']) || command.contains("$(") {
+
+    // Reject metacharacters that a per-segment scan can't reason about. `&` is
+    // excluded here because it's part of the `&&` separator; a stray *single*
+    // `&` (background execution) is caught per-segment below, after the split.
+    if command.contains(['|', '`', '>', '<', '\n']) || command.contains("$(") {
+        return false;
+    }
+
+    // Split on the two sequencing separators. Splitting on `&&` first, then `;`,
+    // yields the individual commands; each must stand on its own as read-only.
+    // An empty segment (leading/trailing/doubled separator) is treated as a
+    // no-op and allowed, matching the shell's own tolerance for `orx runs;`.
+    command
+        .split("&&")
+        .flat_map(|part| part.split(';'))
+        .all(is_readonly_orx_segment)
+}
+
+/// True iff a single command segment (no `;`/`&&` separators) is either a
+/// read-only `orx` invocation or harmless glue. Empty/whitespace segments and
+/// the shell no-ops `echo`/`true`/`:` are allowed so they can punctuate a batch;
+/// everything else must be an `orx` read verb.
+fn is_readonly_orx_segment(command: &str) -> bool {
+    let command = command.trim();
+
+    // Empty segment (from a leading/trailing/doubled separator): a shell no-op.
+    if command.is_empty() {
+        return true;
+    }
+
+    // `split("&&")` consumed every `&&`, so any `&` reaching a segment cannot be
+    // part of a separator: it's background execution (`orx runs &`) or a
+    // malformed `&&&` — reject it outright.
+    if command.contains('&') {
         return false;
     }
 
@@ -94,15 +150,18 @@ fn is_readonly_orx(command: &str) -> bool {
     // simple split is enough to read the leading `orx <verb> [<sub>]`.
     let mut tokens = command.split_whitespace();
 
-    // The binary must be `orx` (bare or a path ending in `/orx`). Reject a
-    // leading env-assignment or a different program.
+    // The program is the first token. `READONLY_GLUE` commands are harmless
+    // punctuation and take arbitrary args, so a program-name match is enough.
+    // Otherwise it must be the `orx` binary (bare or a path ending in `/orx`) —
+    // reject a leading env-assignment or any other program.
     match tokens.next() {
+        Some(prog) if READONLY_GLUE.contains(&prog) => return true,
         Some(bin) if bin == "orx" || bin.ends_with("/orx") => {}
         _ => return false,
     }
 
     // First non-flag token after the binary is the top-level verb.
-    let verb = tokens.by_ref().find(|t| !t.starts_with('-'));
+    let verb = subcommand(&mut tokens);
     let Some(verb) = verb else {
         // Bare `orx` (or only flags): prints usage — harmless and read-only.
         return true;
@@ -236,14 +295,40 @@ mod tests {
     }
 
     #[test]
-    fn command_chaining_is_rejected() {
-        // A read-only prefix must not smuggle a second command through.
-        assert!(!allowed("orx runs; orx exp run e-1"));
-        assert!(!allowed("orx runs && rm -rf /"));
-        assert!(!allowed("orx runs | tee /etc/passwd"));
-        assert!(!allowed("orx logs r-1 > /tmp/x"));
-        assert!(!allowed("orx query \"$(rm -rf /)\""));
-        assert!(!allowed("orx runs `whoami`"));
+    fn dangerous_chaining_is_rejected() {
+        // Sequencing is validated per-segment (see `readonly_sequences_are_allowed`),
+        // but any segment that is a write, or any metacharacter a per-segment scan
+        // can't reason about, gates the whole line. A read-only prefix must never
+        // smuggle a second command through.
+        assert!(!allowed("orx runs; orx exp run e-1")); // write segment
+        assert!(!allowed("orx runs && rm -rf /")); // non-orx segment
+        assert!(!allowed("orx runs; echo hi; orx create-project --repo x/y")); // write in a batch
+        assert!(!allowed("orx runs | tee /etc/passwd")); // pipe
+        assert!(!allowed("orx logs r-1 > /tmp/x")); // redirection
+        assert!(!allowed("orx query \"$(rm -rf /)\"")); // command substitution
+        assert!(!allowed("orx runs `whoami`")); // backtick substitution
+        assert!(!allowed("orx runs &")); // background execution
+        assert!(!allowed("orx runs & rm -rf /")); // single-& chaining
+    }
+
+    #[test]
+    fn readonly_sequences_are_allowed() {
+        // The planning agent batches several read-only lookups into one call,
+        // punctuated by `echo` separators — the exact pattern plan mode was
+        // failing to run. Each segment is independently read-only, so the whole
+        // line is allowed.
+        assert!(allowed("orx exp desc e-1; echo ====; orx exp desc e-2"));
+        assert!(allowed("orx runs && orx logs r-1"));
+        assert!(allowed("orx exp desc e-1 && orx exp cmd e-1"));
+        // Mixed `&&` and `;` in one line exercises the two-level split.
+        assert!(allowed("orx runs && orx logs r-1; echo done"));
+        // Harmless glue on its own, and shell-tolerated trailing/empty segments.
+        assert!(allowed("echo hello"));
+        assert!(allowed("orx runs;"));
+        assert!(allowed("orx runs ; ; orx logs r-1"));
+        // A read/view form batched with its own write form still gates: the
+        // `--set` segment is a write.
+        assert!(!allowed("orx exp desc e-1; orx exp desc e-1 --set \"x\""));
     }
 
     #[test]
