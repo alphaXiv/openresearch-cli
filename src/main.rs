@@ -639,10 +639,12 @@ pub struct UpArgs {
     #[arg(long, default_value_t = 4791)]
     pub port: u16,
     /// Run `orx up` on a remote box over SSH and forward it here. The value is
-    /// an `~/.ssh/config` host alias (or `user@host`). Starts the server there,
-    /// tunnels `--port` to your laptop, and opens your browser. Note: the remote
-    /// dashboard is unauthenticated and bound to that host's loopback, so anyone
-    /// else with an account on that host can reach it.
+    /// an `~/.ssh/config` host alias, or `user@host` (append `:PORT` for a
+    /// non-standard SSH port, e.g. `root@1.2.3.4:38455`). Only user@host + port
+    /// are reconstructed; a custom key or jump host must come from `~/.ssh/config`.
+    /// Starts the server there, tunnels `--port` to your laptop, and opens your
+    /// browser. Note: the remote dashboard is unauthenticated and bound to that
+    /// host's loopback, so anyone else with an account on that host can reach it.
     #[arg(long, value_name = "HOST")]
     pub remote: Option<String>,
     /// Don't open the dashboard in the browser on startup.

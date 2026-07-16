@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use tokio::process::{Child, Command};
 
 use crate::error::{anyhow, Result};
-use crate::jobs::ssh::SshTarget;
+use crate::jobs::ssh::{HostKeyPolicy, SshTarget};
 use crate::{browser, UpArgs};
 
 /// How long to wait for the remote server to answer through the forward.
@@ -24,7 +24,7 @@ const HEALTH_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub async fn run(host: &str, args: UpArgs) -> Result<()> {
     let port = args.port;
-    let target = SshTarget::alias(host);
+    let target = parse_remote_target(host);
 
     // One round-trip that both proves the host is reachable and checks `orx` is
     // installed there — the forward would come up but nothing would serve on it
@@ -46,7 +46,11 @@ pub async fn run(host: &str, args: UpArgs) -> Result<()> {
         Err(e) => {
             return Err(anyhow!(
                 "can't reach '{host}' over SSH: {e}. Check it's an ~/.ssh/config \
-                 alias (or user@host) you can `ssh` into."
+                 alias, or a user@host (add :PORT for a non-standard SSH port, \
+                 e.g. root@1.2.3.4:2222) you can `ssh` into. A custom key or jump \
+                 host isn't reconstructed here — put it in ~/.ssh/config. If it's a \
+                 new host reached by name, `ssh` in once first to trust its key; if \
+                 its key changed (a reused IP), clear it with `ssh-keygen -R`."
             ));
         }
         Ok(out) if !out.contains("ORX_OK") => {
@@ -102,6 +106,89 @@ pub async fn run(host: &str, args: UpArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Turn the `--remote` value into an [`SshTarget`], supporting a trailing
+/// `:PORT` so boxes on a non-standard SSH port (RunPod / openresearch dev nodes,
+/// reached as `root@1.2.3.4:38455`) work with no `~/.ssh/config` entry.
+///
+/// - `alias` / `user@host` (no port) → a bare alias: `~/.ssh/config` alone
+///   decides everything, exactly as before.
+/// - `user@<hostname>:PORT` → `-p PORT` only; the user's own config/known_hosts
+///   still govern host-key checking, since a name they typed may be one they've
+///   pinned. We must not silently weaken verification for it.
+/// - `user@<ip>:PORT` → `-p PORT` plus `StrictHostKeyChecking=accept-new`
+///   (trust-on-first-use against the real `known_hosts`). A raw IP is the
+///   freshly-provisioned-box case (RunPod/openresearch): nothing is pinned yet,
+///   so first-use auto-accept lets `orx up --remote` connect without a prompt,
+///   while a later key change is still caught. Caveat: if a provider recycles
+///   that IP:port onto a *different* box, the pin now mismatches and ssh refuses
+///   until the user runs `ssh-keygen -R`; that loud failure is the safe choice
+///   over silently trusting whatever answers.
+///
+/// A trailing `:PORT` is only recognized when it's `1..=65535` and the address
+/// isn't a raw (unbracketed) IPv6 literal — so IPv6 hosts and aliases containing
+/// colons are left untouched rather than mis-split into host + bogus port.
+fn parse_remote_target(host: &str) -> SshTarget {
+    match split_host_port(host) {
+        Some((dest, port)) => {
+            let policy = if host_is_ip_literal(&dest) {
+                HostKeyPolicy::AcceptNew
+            } else {
+                HostKeyPolicy::UserConfig
+            };
+            SshTarget::host_port(dest, port, policy)
+        }
+        None => SshTarget::alias(host),
+    }
+}
+
+/// `(host, PORT)` when `host` ends in `:<port>` with `port` in `1..=65535` and
+/// `host` is not a raw (unbracketed) IPv6 literal. Returns `None` for aliases,
+/// bare `user@host`, `host:0`, out-of-range ports, and `2001:db8::1`-style
+/// addresses, so those keep their exact prior behavior instead of being
+/// mis-parsed into a host + spurious port.
+fn split_host_port(host: &str) -> Option<(String, u16)> {
+    let (head, tail) = host.rsplit_once(':')?;
+    // Reject if the port isn't purely numeric and in range (0 and >65535 are
+    // not usable ports, so treat them as "no port here", not a silent -p 0).
+    if tail.is_empty() || !tail.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let port = tail.parse::<u16>().ok().filter(|&p| p != 0)?;
+    // Disambiguate IPv6: a `:` remaining in the host means the split colon was
+    // *inside* an address (raw `2001:db8::1`, or an unclosed `[…`), not a port
+    // separator. Only a bracketed literal (`[2001:db8::1]`) is a valid host half
+    // here — mirroring how ssh requires brackets for an IPv6 host with a port.
+    // Check the part *after* any `user@`, so `user@[::1]:2222` isn't mistaken for
+    // an unbracketed literal (its `head` starts with `user@`, not `[`).
+    let host_only = strip_user(head);
+    let bracketed_v6 = host_only.starts_with('[') && host_only.ends_with(']');
+    if host_only.contains(':') && !bracketed_v6 {
+        return None;
+    }
+    Some((head.to_string(), port))
+}
+
+/// The host portion of a destination, dropping an optional leading `user@`.
+fn strip_user(dest: &str) -> &str {
+    dest.rsplit_once('@').map_or(dest, |(_, h)| h)
+}
+
+/// Whether `dest` (an alias or `user@host`) resolves to a bare IP literal — the
+/// signal that this is a freshly-provisioned box (nothing pinned) rather than a
+/// hostname the user may already trust. Strips an optional `user@` and matched
+/// IPv6 brackets before parsing.
+fn host_is_ip_literal(dest: &str) -> bool {
+    use std::net::IpAddr;
+    let host = strip_user(dest);
+    // Strip brackets only as a matched pair, so a malformed one-sided `[…`
+    // doesn't parse as an IP.
+    let host = match (host.strip_prefix('['), host.strip_suffix(']')) {
+        (Some(_), Some(_)) => &host[1..host.len() - 1],
+        _ => host,
+    };
+    host.parse::<IpAddr>().is_ok()
 }
 
 /// The remote command: start `orx up` bound to the remote's loopback, no
@@ -241,5 +328,102 @@ mod tests {
         let p = args.iter().position(|a| a == "-p").unwrap();
         assert!(p < sep, "extra_opts must precede the -- separator");
         assert_eq!(args[p + 1], "2222");
+    }
+
+    #[test]
+    fn bare_alias_and_userhost_stay_plain_aliases() {
+        // No port, no imposed opts — `~/.ssh/config` keeps full control.
+        for h in ["mybox", "root@example.com"] {
+            let t = parse_remote_target(h);
+            assert_eq!(t.dest, h);
+            assert!(t.extra_opts.is_empty(), "{h} should get no extra opts");
+        }
+    }
+
+    #[test]
+    fn ip_with_port_gets_accept_new_tofu_not_devnull() {
+        // The RunPod / openresearch case: root@<ip>:38455 → -p 38455 plus genuine
+        // trust-on-first-use (accept-new against real known_hosts). It must NOT
+        // use UserKnownHostsFile=/dev/null (that's accept-every-time, reserved
+        // for provider-managed boxes).
+        let t = parse_remote_target("root@38.128.232.245:38455");
+        assert_eq!(t.dest, "root@38.128.232.245");
+        let joined = t.extra_opts.join(" ");
+        assert!(joined.contains("-p 38455"));
+        assert!(joined.contains("StrictHostKeyChecking=accept-new"));
+        assert!(
+            !joined.contains("/dev/null"),
+            "user-typed host must keep its real known_hosts"
+        );
+        // And it flows all the way into the ssh argv, before the `--`.
+        let args = ssh_forward_args(&t, "127.0.0.1:7:localhost:7", "orx up");
+        let sep = args.iter().position(|a| a == "--").unwrap();
+        let p = args.iter().position(|a| a == "-p").unwrap();
+        assert!(p < sep && args[p + 1] == "38455");
+        assert_eq!(args[sep + 1], "root@38.128.232.245");
+    }
+
+    #[test]
+    fn hostname_with_port_gets_dash_p_only_no_hostkey_override() {
+        // A *name* the user typed may be one they've pinned — appending :PORT
+        // must not silently downgrade host-key verification. Only `-p` is added.
+        let t = parse_remote_target("root@example.com:2222");
+        assert_eq!(t.dest, "root@example.com");
+        assert_eq!(t.extra_opts, vec!["-p".to_string(), "2222".to_string()]);
+    }
+
+    #[test]
+    fn ipv6_and_odd_trailing_colons_are_not_treated_as_ports() {
+        // Bracketed IPv6 without a port: colon is inside the literal.
+        assert_eq!(parse_remote_target("[::1]").dest, "[::1]");
+        assert!(parse_remote_target("[::1]").extra_opts.is_empty());
+        // RAW (unbracketed) IPv6 must NOT be mis-split into host + port.
+        assert_eq!(parse_remote_target("2001:db8::5").dest, "2001:db8::5");
+        assert!(parse_remote_target("2001:db8::5").extra_opts.is_empty());
+        // A trailing colon with no digits, non-numeric, or :0 isn't a port.
+        assert!(parse_remote_target("host:").extra_opts.is_empty());
+        assert!(parse_remote_target("host:abc").extra_opts.is_empty());
+        assert!(parse_remote_target("host:0").extra_opts.is_empty());
+        assert_eq!(parse_remote_target("host:0").dest, "host:0");
+        // >u16 falls through to a bare alias (ssh will surface the bad host).
+        assert!(parse_remote_target("host:99999").extra_opts.is_empty());
+        // Bracketed IPv6 *with* a port is honored (and an IP literal → accept-new).
+        let t = parse_remote_target("[2001:db8::1]:2222");
+        assert_eq!(t.dest, "[2001:db8::1]");
+        let joined = t.extra_opts.join(" ");
+        assert!(joined.contains("-p 2222"));
+        assert!(joined.contains("StrictHostKeyChecking=accept-new"));
+    }
+
+    #[test]
+    fn user_prefixed_bracketed_ipv6_keeps_its_port() {
+        // Regression: `user@[::1]:2222` must NOT drop the port (the bracket check
+        // has to look past the `user@` prefix, or it silently connects on :22).
+        let t = parse_remote_target("root@[::1]:2222");
+        assert_eq!(t.dest, "root@[::1]");
+        let joined = t.extra_opts.join(" ");
+        assert!(joined.contains("-p 2222"), "port must survive: {joined}");
+        // `[::1]` is a loopback IP literal → accept-new TOFU.
+        assert!(joined.contains("StrictHostKeyChecking=accept-new"));
+    }
+
+    #[test]
+    fn host_is_ip_literal_classifies_forms() {
+        // IPs in every shape we can be handed → true.
+        for d in [
+            "1.2.3.4",
+            "root@1.2.3.4",
+            "[2001:db8::1]",
+            "root@[::1]",
+            "::ffff:1.2.3.4",
+        ] {
+            assert!(host_is_ip_literal(d), "{d} should be an IP literal");
+        }
+        // Hostnames (incl. a numeric-looking one) → false.
+        for d in ["example.com", "root@example.com", "1.2.3.4.example.com"] {
+            assert!(!host_is_ip_literal(d), "{d} should be a hostname");
+        }
+        // A malformed one-sided bracket must NOT parse as an IP.
+        assert!(!host_is_ip_literal("[1.2.3.4"));
     }
 }

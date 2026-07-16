@@ -39,6 +39,24 @@ pub struct SshTarget {
     pub extra_opts: Vec<String>,
 }
 
+/// How to treat the remote's SSH host key for a `host_port` target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostKeyPolicy {
+    /// `~/.ssh/config` + the user's own `known_hosts` decide everything — impose
+    /// nothing. For a user-typed hostname they may already have pinned.
+    UserConfig,
+    /// `StrictHostKeyChecking=accept-new` against the user's real `known_hosts`:
+    /// genuine trust-on-first-use — the first connection is accepted and
+    /// recorded, and a later key change is caught. For a freshly-seen box
+    /// identified by a raw IP (nothing to have pinned yet).
+    AcceptNew,
+    /// `StrictHostKeyChecking=no` + `UserKnownHostsFile=/dev/null`: accept any
+    /// key every time, persist nothing. ONLY for machine-provisioned boxes whose
+    /// proxy `host:port` pairs are recycled by the provider, where a real pin
+    /// would just produce spurious mismatches (see `openresearch_ssh_target`).
+    Ephemeral,
+}
+
 impl SshTarget {
     /// A bare alias — `~/.ssh/config` alone decides the endpoint.
     pub fn alias(host: &str) -> Self {
@@ -46,6 +64,32 @@ impl SshTarget {
             dest: host.to_string(),
             extra_opts: Vec::new(),
         }
+    }
+
+    /// `dest` (an alias or `user@host`) on an explicit `port`, with an explicit
+    /// host-key `policy`. Centralizes the `-p`/`-o` opt vector that both the
+    /// `--remote` CLI and the openresearch backend need, so the host-key
+    /// rationale lives in one place ([`HostKeyPolicy`]) instead of drifting
+    /// across call sites.
+    pub fn host_port(dest: String, port: u16, policy: HostKeyPolicy) -> Self {
+        let mut extra_opts = vec!["-p".into(), port.to_string()];
+        match policy {
+            HostKeyPolicy::UserConfig => {}
+            HostKeyPolicy::AcceptNew => {
+                extra_opts.extend(["-o".into(), "StrictHostKeyChecking=accept-new".into()]);
+            }
+            HostKeyPolicy::Ephemeral => {
+                extra_opts.extend([
+                    "-o".into(),
+                    "StrictHostKeyChecking=no".into(),
+                    "-o".into(),
+                    "UserKnownHostsFile=/dev/null".into(),
+                    "-o".into(),
+                    "LogLevel=ERROR".into(),
+                ]);
+            }
+        }
+        Self { dest, extra_opts }
     }
 }
 
@@ -315,6 +359,38 @@ mod tests {
         assert!(target.extra_opts.is_empty());
         // No `-p`/`-o Strict…` beyond the shared multiplexing opts.
         assert_eq!(ssh_opts(&target).len(), 10);
+    }
+
+    #[test]
+    fn host_port_policy_shapes_the_opt_vector() {
+        // UserConfig: -p only, user's own config/known_hosts untouched.
+        let t = SshTarget::host_port("root@h".into(), 2222, HostKeyPolicy::UserConfig);
+        assert_eq!(t.extra_opts, vec!["-p".to_string(), "2222".to_string()]);
+
+        // AcceptNew: real TOFU — accept-new, but NOT /dev/null.
+        let t = SshTarget::host_port("root@h".into(), 2222, HostKeyPolicy::AcceptNew);
+        let joined = t.extra_opts.join(" ");
+        assert!(joined.contains("-p 2222"));
+        assert!(joined.contains("StrictHostKeyChecking=accept-new"));
+        assert!(!joined.contains("/dev/null"));
+
+        // Ephemeral: provider box — accept-anything, persist nothing. Assert the
+        // EXACT vector so the openresearch backend (which relies on this shape,
+        // incl. LogLevel=ERROR and ordering) can't silently drift.
+        let t = SshTarget::host_port("root@h".into(), 2222, HostKeyPolicy::Ephemeral);
+        assert_eq!(
+            t.extra_opts,
+            vec![
+                "-p",
+                "2222",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "LogLevel=ERROR",
+            ]
+        );
     }
 
     /// Explicit targets on the same host but different ports must not share a

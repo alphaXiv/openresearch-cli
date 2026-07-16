@@ -178,32 +178,23 @@ impl BackendDescriptor {
     }
 
     /// The box's SSH endpoint as a ready-to-use target, once the supervisor
-    /// has recorded it (openresearch_job only). Host keys are accepted on
-    /// first use: the box is freshly provisioned and providers recycle proxy
-    /// host:port pairs, so pinning would only produce false mismatches — the
-    /// platform's own ssh access to these boxes behaves the same way.
+    /// has recorded it (openresearch_job only). Uses
+    /// [`ssh::HostKeyPolicy::Ephemeral`] — see its docs for why these
+    /// machine-provisioned, host:port-recycled boxes accept any key.
     pub fn openresearch_ssh_target(&self) -> Option<ssh::SshTarget> {
         if self.kind != "openresearch_job" {
             return None;
         }
-        let (host, port, user) = (
-            self.ssh_host.as_deref()?,
-            self.ssh_port?,
-            self.ssh_user.as_deref()?,
-        );
-        Some(ssh::SshTarget {
-            dest: format!("{user}@{host}"),
-            extra_opts: vec![
-                "-p".into(),
-                port.to_string(),
-                "-o".into(),
-                "StrictHostKeyChecking=no".into(),
-                "-o".into(),
-                "UserKnownHostsFile=/dev/null".into(),
-                "-o".into(),
-                "LogLevel=ERROR".into(),
-            ],
-        })
+        let host = self.ssh_host.as_deref()?;
+        let user = self.ssh_user.as_deref()?;
+        // Stored as i64 (SQLite); a real SSH port fits u16. Bail rather than
+        // panic if the row somehow holds an out-of-range value.
+        let port = u16::try_from(self.ssh_port?).ok()?;
+        Some(ssh::SshTarget::host_port(
+            format!("{user}@{host}"),
+            port,
+            ssh::HostKeyPolicy::Ephemeral,
+        ))
     }
 }
 
