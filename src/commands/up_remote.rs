@@ -38,7 +38,9 @@ pub async fn run(host: &str, args: UpArgs) -> Result<()> {
     // and would be misreported as an unreachable host.
     match crate::jobs::ssh::ssh_run(
         &target,
-        "if command -v orx >/dev/null 2>&1; then echo ORX_OK; else echo ORX_MISSING; fi",
+        &remote_orx_cmd(
+            "if command -v orx >/dev/null 2>&1; then echo ORX_OK; else echo ORX_MISSING; fi",
+        ),
         None,
     )
     .await
@@ -53,10 +55,29 @@ pub async fn run(host: &str, args: UpArgs) -> Result<()> {
                  its key changed (a reused IP), clear it with `ssh-keygen -R`."
             ));
         }
-        Ok(out) if !out.contains("ORX_OK") => {
+        Ok(out) if out.contains("ORX_MISSING") => {
             return Err(anyhow!(
-                "`orx` isn't installed on '{host}' (or not on its non-interactive \
-                 PATH). Install it there, then re-run `orx up --remote {host}`."
+                "`orx` isn't installed on '{host}' (we look on PATH plus \
+                 ~/.cargo/bin and ~/.local/bin). Install it there \
+                 (curl -LsSf https://openresearch.sh/install.sh | sh), then \
+                 re-run `orx up --remote {host}`."
+            ));
+        }
+        Ok(out) if !out.contains("ORX_OK") => {
+            // Neither marker, yet ssh exited 0: the probe ran but its stdout
+            // carried neither answer — e.g. a box that echoes something on every
+            // command and swallowed the marker, or `sh` itself was unavailable.
+            // Not "unreachable" and not a clean "missing", so echo what we saw.
+            let out = out.trim();
+            let saw = if out.is_empty() {
+                String::new()
+            } else {
+                format!(" (got: {out:?})")
+            };
+            return Err(anyhow!(
+                "couldn't confirm `orx` on '{host}': the check returned no clear \
+                 answer{saw}. Make sure you can `ssh {host}` and that `orx` is \
+                 installed there."
             ));
         }
         Ok(_) => {}
@@ -191,10 +212,48 @@ fn host_is_ip_literal(dest: &str) -> bool {
     host.parse::<IpAddr>().is_ok()
 }
 
+/// Dirs prepended to the remote `PATH` so `orx` is found on a non-interactive
+/// shell. These are *POSIX shell words* expanded on the remote (`$CARGO_HOME`,
+/// `$HOME`), not locally — so they adapt to the remote user and a relocated
+/// `CARGO_HOME`, whether that's `root` or `runpod`.
+///
+/// `${CARGO_HOME:-$HOME/.cargo}/bin` is where our installer lands `orx`
+/// (dist-workspace.toml sets `install-path = "CARGO_HOME"`, i.e. `~/.cargo/bin`
+/// unless the box overrides `$CARGO_HOME`); `$HOME/.local/bin` covers pip/uv-style
+/// drops. The "not installed" error above names these as `~/.cargo/bin` and
+/// `~/.local/bin` — keep the two in step.
+const REMOTE_ORX_PATH: &str = "${CARGO_HOME:-$HOME/.cargo}/bin:$HOME/.local/bin";
+
 /// The remote command: start `orx up` bound to the remote's loopback, no
 /// browser there (we open ours), on the port we forward.
 fn remote_up_cmd(port: u16) -> String {
-    format!("orx up --no-browser --port {port}")
+    remote_orx_cmd(&format!("orx up --no-browser --port {port}"))
+}
+
+/// Wrap a remote command so `orx` is found even though ssh runs it in a shell
+/// that skips the box's `~/.bashrc`/`~/.profile`, and so it runs under POSIX
+/// `sh` regardless of the remote user's login shell.
+///
+/// Two problems this solves, both hit on real boxes:
+/// 1. **PATH.** ssh runs the command non-interactively, so `~/.bashrc`/`~/.profile`
+///    aren't sourced; on a minimal image (RunPod's Ubuntu, etc.) `orx`'s install
+///    dir isn't on the default `PATH`, so a bare `command -v orx` / `orx up` fails
+///    even when `which orx` works when you're logged in. We prepend
+///    [`REMOTE_ORX_PATH`].
+/// 2. **Login shell.** ssh runs the command under the remote user's *login* shell,
+///    which may be csh/tcsh/fish — none of which understand `export VAR=val`. We
+///    hand the whole POSIX body to `sh -c` so it's interpreted by `/bin/sh`
+///    whatever the login shell is. (This mirrors how the job backends run their
+///    payload through an explicit `bash`/`sh`, never the bare login shell.)
+///
+/// The PATH dirs are left as literal `$…`/`${…}` shell words for the *inner* `sh`
+/// to expand on the remote, so they adapt to that box's user and `CARGO_HOME`.
+fn remote_orx_cmd(cmd: &str) -> String {
+    let body = format!(r#"export PATH="{REMOTE_ORX_PATH}:$PATH"; {cmd}"#);
+    // `sh -c '<body>'`: the login shell sees three plain words and execs /bin/sh,
+    // which parses the POSIX body. sh_quote wraps the body so its own quotes,
+    // `$…`, and `;` reach `sh` intact rather than being eaten by the login shell.
+    format!("sh -c {}", crate::jobs::ssh::sh_quote(&body))
 }
 
 /// The `-L` forward value. Local bind pinned to `127.0.0.1` (see the call site).
@@ -290,7 +349,39 @@ mod tests {
     #[test]
     fn forward_and_remote_cmd_use_the_same_port() {
         assert_eq!(forward_spec(4899), "127.0.0.1:4899:localhost:4899");
-        assert_eq!(remote_up_cmd(4899), "orx up --no-browser --port 4899");
+        // The remote command carries the port and starts orx headless…
+        assert!(remote_up_cmd(4899).contains("orx up --no-browser --port 4899"));
+        // …behind a PATH prelude so a non-interactive shell still finds orx in
+        // the installer dir (the common target on minimal RunPod images).
+        assert!(remote_up_cmd(4899).contains(r#"PATH="${CARGO_HOME:-$HOME/.cargo}/bin"#));
+    }
+
+    #[test]
+    fn remote_orx_cmd_forces_posix_sh_and_keeps_expansions_literal() {
+        let wrapped = remote_orx_cmd("orx up");
+        // Runs under an explicit POSIX `sh -c`, not the remote's login shell —
+        // so a csh/tcsh/fish login shell can't choke on `export VAR=val`.
+        assert!(wrapped.starts_with("sh -c "));
+        // The installer dir (CARGO_HOME-aware) and ~/.local/bin are both on PATH,
+        // and every `$…`/`${…}` stays LITERAL for the *remote* sh to expand — so
+        // it adapts to the box's user (root or `runpod`) and its CARGO_HOME. The
+        // presence of the raw tokens proves nothing was expanded on the laptop.
+        assert!(wrapped.contains("${CARGO_HOME:-$HOME/.cargo}/bin"));
+        assert!(wrapped.contains("$HOME/.local/bin"));
+        assert!(wrapped.contains("orx up"));
+    }
+
+    #[test]
+    fn preflight_probe_is_also_wrapped() {
+        // The reachability/installed probe MUST go through remote_orx_cmd too —
+        // else a box with orx only in ~/.cargo/bin false-negatives as "missing".
+        // This mirrors the exact string run() hands to ssh_run at the call site.
+        let probe = remote_orx_cmd(
+            "if command -v orx >/dev/null 2>&1; then echo ORX_OK; else echo ORX_MISSING; fi",
+        );
+        assert!(probe.starts_with("sh -c "));
+        assert!(probe.contains("${CARGO_HOME:-$HOME/.cargo}/bin"));
+        assert!(probe.contains("ORX_OK") && probe.contains("ORX_MISSING"));
     }
 
     #[test]
