@@ -28,7 +28,9 @@ export function PlanStrip({
   onView: () => void;
   onApprove: (resumeMode: "auto" | "accept-edits" | "bypass") => void;
   onReject: () => void;
-  /** Revision feedback; empty means "revise with no specific note". */
+  /** Revision feedback; always non-empty (a blank submit sends a generic
+   * "please revise" — note presence is what distinguishes revise from
+   * reject on the wire). */
   onRevise: (note: string) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -51,7 +53,10 @@ export function PlanStrip({
   }, [revising]);
 
   const submitRevision = () => {
-    onRevise(note.trim());
+    // A blank submit still means "revise": the wire distinguishes reject
+    // (no note) from revise (note), so an empty field gets a generic nudge
+    // rather than accidentally reading as a hard rejection.
+    onRevise(note.trim() || "Please revise the plan.");
     setNote("");
     setRevising(false);
   };

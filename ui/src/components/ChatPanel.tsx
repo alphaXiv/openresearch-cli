@@ -1077,6 +1077,19 @@ export function ChatPanel({
     return null;
   }, [messages, activeSession?.harness]);
 
+  // A submitted plan revision, until its replacement card arrives: drives the
+  // strip's "Revising the plan…" placeholder. Without it, the strip snaps
+  // back to an identical-looking action row (old card, then the revised one
+  // with the same title) and the submit reads as a silent no-op.
+  const [revising, setRevising] = useState<{ sessionId: string; promptId: string } | null>(null);
+  const revisingPlan = revising && revising.sessionId === activeId ? revising : null;
+  useEffect(() => {
+    if (!revising) return;
+    const stillBusy = state.busySessions.has(revising.sessionId);
+    const replaced = pendingPlan && pendingPlan.promptId !== revising.promptId;
+    if (!stillBusy || replaced) setRevising(null);
+  }, [revising, pendingPlan, state.busySessions]);
+
   // Plan opens are stamped with the session like file opens are.
   const openPlan =
     onOpenPlan && activeId
@@ -1264,11 +1277,27 @@ export function ChatPanel({
 
   function respond(answer: PromptAnswer) {
     if (!activeId) return;
+    const sid = activeId;
     // The resumed turn streams over SSE; optimistically mark busy.
-    dispatch({ type: "busy", sessionId: activeId, busy: true });
-    void respondChat(activeId, answer).catch(() => {
-      if (activeId) dispatch({ type: "busy", sessionId: activeId, busy: false });
-    });
+    dispatch({ type: "busy", sessionId: sid, busy: true });
+    void respondChat(sid, answer)
+      .catch(() => dispatch({ type: "busy", sessionId: sid, busy: false }))
+      .finally(() => {
+        // Reconcile with the store: if this tab's copy of the card was stale
+        // (e.g. the held turn timed out and resolved it while our SSE was
+        // dropped), the answer no-ops server-side and nothing re-broadcasts —
+        // without this the card stays actionable forever and every answer
+        // silently dead-ends. Busy is reconciled too, so the optimistic flag
+        // above can't wedge true after a no-op.
+        getChatMessages(sid)
+          .then((messages) => dispatch({ type: "seed", sessionId: sid, messages }))
+          .catch(() => {});
+        listChatSessions(projectId)
+          .then((list) =>
+            dispatch({ type: "seedBusy", sessions: list.filter((s) => s.busy).map((s) => s.id) }),
+          )
+          .catch(() => {});
+      });
   }
 
   const visibleSessions = sessions.filter((s) =>
@@ -1466,7 +1495,7 @@ export function ChatPanel({
         {/* Inside the composer so the composer's popovers (mode/model pickers,
             z 50 within this stacking context) layer above the strip — as a
             sibling, the composer's own z-index: 4 capped them below it. */}
-        {pendingPlan && (
+        {pendingPlan && !(revisingPlan && pendingPlan.promptId === revisingPlan.promptId) ? (
           <PlanStrip
             synthesized={pendingPlan.synthesized}
             onView={() => openPlan?.(pendingPlan.plan, pendingPlan.promptId)}
@@ -1476,16 +1505,20 @@ export function ChatPanel({
             // Plain rejection — no note; the model stops and waits.
             onReject={() => respond({ promptId: pendingPlan.promptId, approve: false })}
             // The strip owns its own revise textarea (Claude-desktop style);
-            // the note (possibly empty) comes back on submit.
-            onRevise={(note) =>
-              respond({
-                promptId: pendingPlan.promptId,
-                approve: false,
-                note: note || undefined,
-              })
-            }
+            // the note comes back on submit, always non-empty (note presence
+            // is what distinguishes revise from reject on the wire).
+            onRevise={(note) => {
+              if (activeId) setRevising({ sessionId: activeId, promptId: pendingPlan.promptId });
+              respond({ promptId: pendingPlan.promptId, approve: false, note });
+            }}
           />
-        )}
+        ) : revisingPlan && busy ? (
+          // In-place acknowledgment while the model rewrites the plan; the
+          // replacement card swaps in when it arrives (effect above).
+          <div className="plan-strip plan-strip-pending">
+            <span className="spinner" /> Revising the plan…
+          </div>
+        ) : null}
         <div className="composer-box">
           {skillMenuOpen && (
             <SkillMenu
