@@ -117,6 +117,62 @@ fn playbook_md(project: &LocalProject) -> String {
              from; `orx paper {p}` fetches its report\n"
         )
     });
+    // The default compute target (Settings → Compute) is read fresh here on
+    // every playbook rewrite — `ensure_playbook` runs per harness invocation,
+    // so a changed default reaches the agent on its next turn. Launch-time
+    // resolution in `exp run` stays authoritative either way: the agent is
+    // told to OMIT `--backend`, never to echo the default back.
+    let compute_default = crate::config::compute_default();
+    let compute_bullet = match &compute_default {
+        Some((b, f)) => {
+            let flavor_part = f
+                .as_ref()
+                .map_or(String::new(), |f| format!(" (--flavor {f})"));
+            format!(
+                "- Compute: default target **{b}**{flavor_part} — the user set it in \
+                 Settings → Compute; omit `--backend` on `orx exp run` to launch there. \
+                 Use another backend only when the user names one (see \"Compute backends\")"
+            )
+        }
+        None => "- Compute: backends — `hf`, `modal`, `k8s`, `ssh`, `slurm`, or `local` —\n  \
+                 chosen by the user per run; **there is no default backend** (see \"Compute\n  \
+                 backends\")"
+            .to_string(),
+    };
+    let backends_intro = match &compute_default {
+        Some((b, f)) => {
+            let flavor_part = f
+                .as_ref()
+                .map_or(String::new(), |f| format!(" --flavor {f}"));
+            let mut s = format!(
+                "`orx exp run` launches on the user's configured default — **{b}{flavor_part}** \
+                 — when you omit `--backend`. Omit it (and `--flavor`) to use the default. \
+                 Deviate only when the user names another backend for the task or this \
+                 conversation — a connected token for some other backend is NOT a signal to \
+                 switch."
+            );
+            if b == "ssh" {
+                s.push_str(" (`--host <alias>` is still required on every launch.)");
+            }
+            if f.is_none() && matches!(b.as_str(), "hf" | "modal" | "openresearch") {
+                s.push_str(" (No default flavor is saved, so `--flavor` is still required.)");
+            }
+            s
+        }
+        None => "`orx exp run` requires an explicit `--backend` — **there is no default**.\n\
+                 Which backend to use is the user's decision: if the task doesn't name one and\n\
+                 the user hasn't already picked one in this conversation, ask before launching."
+            .to_string(),
+    };
+    let launch_step = if compute_default.is_some() {
+        "3. **Launch**: `orx exp run <expId>` — omitting `--backend` uses the default\n   \
+         target — or name one explicitly (`--flavor` for hf/modal, `--host` for\n   \
+         ssh/slurm; k8s reads the committed manifest; local takes no flags)."
+    } else {
+        "3. **Launch**: `orx exp run <expId> --backend <backend>` (`--flavor` for\n   \
+         hf/modal, `--host` for ssh/slurm; k8s reads the committed manifest; local\n   \
+         takes no flags)."
+    };
     format!(
         r#"# OpenResearch local agent — {name}
 
@@ -129,9 +185,7 @@ same clone, sharing its branches and remotes.
 - Project id: `{id}`
 - GitHub repo: `{repo}`
 - Baseline branch: `{baseline}`
-{paper_line}- Compute: backends — `hf`, `modal`, `k8s`, `ssh`, `slurm`, or `local` —
-  chosen by the user per run; **there is no default backend** (see "Compute
-  backends")
+{paper_line}{compute_bullet}
 - Files dir: `{files}` — every file in it shows up in the dashboard's
   Files tab (reports, figures, CSVs), grouped by experiment
 
@@ -231,9 +285,7 @@ Carry one goal across many runs:
 2. **Edit** in this worktree: `git fetch origin && git checkout <branch>`,
    change the code, commit, and `git push`. The job clones from GitHub, so
    **unpushed work never runs**.
-3. **Launch**: `orx exp run <expId> --backend <backend>` (`--flavor` for
-   hf/modal, `--host` for ssh/slurm; k8s reads the committed manifest; local
-   takes no flags).
+{launch_step}
 4. **Wait — hold your turn open**: call `orx exp wait <expId> --timeout 480`
    (or `--project` when several are in flight) in a loop. Exit 0 → the run is
    terminal, go analyze. Non-zero → nothing changed yet; immediately call it
@@ -301,9 +353,7 @@ small or CPU-scale runs and use a remote backend for anything heavy.
 
 ## Compute backends
 
-`orx exp run` requires an explicit `--backend` — **there is no default**.
-Which backend to use is the user's decision: if the task doesn't name one and
-the user hasn't already picked one in this conversation, ask before launching.
+{backends_intro}
 All of them share the same contract — the job clones the experiment branch's
 GitHub tip and runs the fixed run command, and everything downstream
 (`orx exp wait` / `orx runs` / `orx logs` / `orx exp cancel`) works
