@@ -267,33 +267,33 @@ function K8sSection() {
             <p className="settings-note">{settings.preflight.error}</p>
           )}
           <form className="form settings-form" onSubmit={submit}>
-              <div className="row2">
-                <label>
-                  Context
-                  <select value={context} onChange={(e) => setContext(e.target.value)}>
-                    <option value="">
-                      kubectl default{settings.currentContext ? ` (${settings.currentContext})` : ""}
+            <div className="row2">
+              <label>
+                Context
+                <select value={context} onChange={(e) => setContext(e.target.value)}>
+                  <option value="">
+                    kubectl default{settings.currentContext ? ` (${settings.currentContext})` : ""}
+                  </option>
+                  {settings.contexts.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
                     </option>
-                    {settings.contexts.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Namespace
-                  <input
-                    className="mono"
-                    type="text"
-                    value={namespace}
-                    onChange={(e) => setNamespace(e.target.value)}
-                    placeholder="default"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                </label>
-              </div>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Namespace
+                <input
+                  className="mono"
+                  type="text"
+                  value={namespace}
+                  onChange={(e) => setNamespace(e.target.value)}
+                  placeholder="default"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+            </div>
             {error && <div className="error">{error}</div>}
             <div className="actions">
               <button type="submit" className="btn primary" disabled={saving || unchanged}>
@@ -847,16 +847,6 @@ function OpenResearchSection() {
 
 // --- compute -----------------------------------------------------------------
 
-const TARGET_ORDER: ComputeTargetId[] = [
-  "local",
-  "hf",
-  "modal",
-  "k8s",
-  "ssh",
-  "slurm",
-  "openresearch",
-];
-
 const TARGET_LABELS: Record<ComputeTargetId, string> = {
   local: "This machine",
   hf: "HF Jobs",
@@ -987,24 +977,11 @@ function TargetRow({
   const [settingDefault, setSettingDefault] = useState(false);
   if (open && !visited) setVisited(true);
 
-  async function makeDefault(e: React.MouseEvent) {
-    e.stopPropagation(); // the header click is expand/collapse
+  async function setDefault(backend: ComputeTargetId | null) {
     if (settingDefault) return;
     setSettingDefault(true);
     try {
-      onSettings(await setComputeDefault({ backend: target.id }));
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSettingDefault(false);
-    }
-  }
-
-  async function clearDefault() {
-    if (settingDefault) return;
-    setSettingDefault(true);
-    try {
-      onSettings(await setComputeDefault({ backend: null }));
+      onSettings(await setComputeDefault({ backend }));
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1025,12 +1002,15 @@ function TargetRow({
         <span className="compute-row-summary">{target.summary}</span>
         <TargetStatusBadge t={target} isDefault={isDefault} />
         {isDefault ? (
-          <span className="compute-default-pill">Default</span>
+          <span className="badge compute-default-pill">Default</span>
         ) : (
           <button
             type="button"
             className="btn sm compute-make-default"
-            onClick={(e) => void makeDefault(e)}
+            onClick={(e) => {
+              e.stopPropagation(); // the header click is expand/collapse
+              void setDefault(target.id);
+            }}
             disabled={settingDefault}
           >
             Make default
@@ -1058,7 +1038,7 @@ function TargetRow({
               <button
                 type="button"
                 className="btn sm"
-                onClick={() => void clearDefault()}
+                onClick={() => void setDefault(null)}
                 disabled={settingDefault}
               >
                 Clear default
@@ -1093,22 +1073,31 @@ function ComputeTab() {
   const [expanded, setExpanded] = useState<ComputeTargetId | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Refetched whenever a row expands/collapses (not just on mount): a form
+  // saved inside a row (k8s context, HF token, …) changes the collapsed
+  // summaries, and the toggle is the natural moment to catch up. Cheap by
+  // contract — the endpoint only does fs/env probes.
   useEffect(() => {
+    let stale = false;
     getComputeSettings()
-      .then(setSettings)
-      .catch((err) => setLoadError(err instanceof Error ? err.message : String(err)));
-  }, []);
+      .then((s) => {
+        if (!stale) setSettings(s);
+      })
+      .catch((err) => {
+        if (!stale) setLoadError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      stale = true;
+    };
+  }, [expanded]);
 
   const apply = (s: ComputeSettings) => {
     setSettings(s);
     setError(null);
   };
 
-  const targets = settings
-    ? [...settings.targets].sort(
-        (a, b) => TARGET_ORDER.indexOf(a.id) - TARGET_ORDER.indexOf(b.id),
-      )
-    : null;
+  // Server order is canonical (local first, then external backends).
+  const targets = settings ? settings.targets : null;
 
   return (
     <>

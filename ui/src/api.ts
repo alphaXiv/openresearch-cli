@@ -174,7 +174,8 @@ export const createExperiment = (projectId: string, body: NewExperiment) =>
 export const startRun = (
   experimentId: string,
   body: {
-    /** Omit to launch on the default compute target (Settings → Compute). */
+    /** Omit to launch on the default compute target (Settings → Compute);
+     * with no default set the server falls back to `hf`. */
     backend?: "local" | "hf" | "modal" | "k8s" | "ssh" | "slurm" | "openresearch";
     flavor?: string;
     manifest?: string;

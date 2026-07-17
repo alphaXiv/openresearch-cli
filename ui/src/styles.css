@@ -3044,17 +3044,10 @@ button.files-pill-link:hover {
 .compute-default-pill {
   flex: none;
 }
+/* Rendered as `badge compute-default-pill` — only the accent color differs. */
 .compute-default-pill {
-  display: inline-flex;
-  align-items: center;
-  font-size: 10px;
-  font-weight: 700;
-  font-family: var(--mono);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  padding: 1px 7px;
   color: var(--primary);
-  border: 1px solid var(--primary);
+  border-color: var(--primary);
 }
 .compute-chevron-btn {
   flex: none;

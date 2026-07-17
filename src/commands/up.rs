@@ -219,10 +219,7 @@ fn router(state: AppState) -> Router {
         .route("/api/settings/compute", get(compute_settings))
         .route("/api/settings/compute/default", post(set_compute_default))
         .route("/api/settings/local", get(local_machine_settings))
-        .route(
-            "/api/settings/openresearch",
-            get(openresearch_settings_route),
-        )
+        .route("/api/settings/openresearch", get(openresearch_settings))
         .route("/api/harnesses", get(list_harnesses))
         .route("/api/skills", get(list_skills))
         .route(
@@ -2142,7 +2139,7 @@ fn compute_settings_json() -> Value {
             "summary": if or_logged_in {
                 "Signed in — ephemeral boxes billed to your org"
             } else {
-                "Not signed in — run `orx login`"
+                "Not signed in — run orx login"
             },
         },
     ]);
@@ -2184,13 +2181,15 @@ async fn set_compute_default(Json(req): Json<SetComputeDefaultReq>) -> ApiResult
     if let Some(b) = &backend {
         local::validate_compute_default(b, flavor.as_deref()).map_err(bad_request)?;
     }
+    // Validation already ran above, so a failure in here is a server-side
+    // fault (io error, corrupt settings.json refusal) — surface it as 500 via
+    // the plain ApiError conversion, not as a 400 blaming the request.
     let payload = tokio::task::spawn_blocking(move || -> Result<Value> {
         crate::config::set_compute_default(backend, flavor)?;
         Ok(compute_settings_json())
     })
     .await
-    .map_err(|e| ApiError::from(anyhow!("compute default task failed: {e}")))?
-    .map_err(bad_request)?;
+    .map_err(|e| ApiError::from(anyhow!("compute default task failed: {e}")))??;
     Ok(Json(payload))
 }
 
@@ -2206,7 +2205,7 @@ async fn local_machine_settings() -> ApiResult {
 /// The OpenResearch row's expanded detail. Network calls are fine here (the
 /// row is open) but each is individually best-effort — an offline machine
 /// still renders "signed in, status unknown" instead of an error page.
-async fn openresearch_settings_route() -> ApiResult {
+async fn openresearch_settings() -> ApiResult {
     let Some(creds) = crate::config::load_credentials().await? else {
         return Ok(Json(json!({
             "loggedIn": false,

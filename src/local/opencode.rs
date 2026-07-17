@@ -117,11 +117,14 @@ fn playbook_md(project: &LocalProject) -> String {
              from; `orx paper {p}` fetches its report\n"
         )
     });
-    // The default compute target (Settings → Compute) is read fresh here on
-    // every playbook rewrite — `ensure_playbook` runs per harness invocation,
-    // so a changed default reaches the agent on its next turn. Launch-time
-    // resolution in `exp run` stays authoritative either way: the agent is
-    // told to OMIT `--backend`, never to echo the default back.
+    // The default compute target (Settings → Compute) is read fresh on every
+    // playbook rewrite. The claude/codex adapters call `ensure_playbook` per
+    // turn, so a changed default reaches them on the next message; a live
+    // opencode server keeps its playbook until respawn (`AgentHost::ensure`
+    // early-returns for a running child). Launch-time resolution in `exp run`
+    // stays authoritative either way: the agent is told to OMIT `--backend`,
+    // never to echo the default back, so even a stale prompt launches on the
+    // current default.
     let compute_default = crate::config::compute_default();
     let compute_bullet = match &compute_default {
         Some((b, f)) => {
@@ -144,18 +147,29 @@ fn playbook_md(project: &LocalProject) -> String {
             let flavor_part = f
                 .as_ref()
                 .map_or(String::new(), |f| format!(" --flavor {f}"));
+            // The omit-instruction must match what a bare launch actually
+            // needs: with a saved flavor both flags can go; a flavor-required
+            // backend without one still needs --flavor; ssh always needs
+            // --host. Contradicting the launch validation here sends the
+            // agent into a guaranteed-failing command.
+            let omit_hint = if f.is_some() {
+                "Omit it (and `--flavor`) to use the default.".to_string()
+            } else if matches!(b.as_str(), "hf" | "modal" | "openresearch") {
+                "Omit `--backend` to use the default, but still pass `--flavor` — no default \
+                 flavor is saved."
+                    .to_string()
+            } else {
+                "Omit it to use the default.".to_string()
+            };
             let mut s = format!(
                 "`orx exp run` launches on the user's configured default — **{b}{flavor_part}** \
-                 — when you omit `--backend`. Omit it (and `--flavor`) to use the default. \
+                 — when you omit `--backend`. {omit_hint} \
                  Deviate only when the user names another backend for the task or this \
                  conversation — a connected token for some other backend is NOT a signal to \
                  switch."
             );
             if b == "ssh" {
                 s.push_str(" (`--host <alias>` is still required on every launch.)");
-            }
-            if f.is_none() && matches!(b.as_str(), "hf" | "modal" | "openresearch") {
-                s.push_str(" (No default flavor is saved, so `--flavor` is still required.)");
             }
             s
         }
@@ -166,8 +180,9 @@ fn playbook_md(project: &LocalProject) -> String {
     };
     let launch_step = if compute_default.is_some() {
         "3. **Launch**: `orx exp run <expId>` — omitting `--backend` uses the default\n   \
-         target — or name one explicitly (`--flavor` for hf/modal, `--host` for\n   \
-         ssh/slurm; k8s reads the committed manifest; local takes no flags)."
+         target (flags the default still needs are listed under \"Compute backends\") —\n   \
+         or name one explicitly (`--flavor` for hf/modal, `--host` for ssh/slurm; k8s\n   \
+         reads the committed manifest; local takes no flags)."
     } else {
         "3. **Launch**: `orx exp run <expId> --backend <backend>` (`--flavor` for\n   \
          hf/modal, `--host` for ssh/slurm; k8s reads the committed manifest; local\n   \
