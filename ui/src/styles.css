@@ -3701,6 +3701,28 @@ button.files-pill-link:hover {
 .plan-strip-spacer {
   flex: 1;
 }
+/* Revise mode: a standalone bordered textarea (the strip itself has none —
+   unlike the borderless composer textarea, this needs to read as its own
+   input), focus ring on :focus like any other text field. */
+.plan-strip-revise-input {
+  width: 100%;
+  resize: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 13px;
+  font-family: inherit;
+  background: var(--base);
+  color: var(--text);
+}
+.plan-strip-revise-input:focus {
+  border-color: var(--accent-blue);
+}
+.plan-strip-revise-submit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .plan-strip-icon {
   color: var(--accent-blue);
   flex-shrink: 0;

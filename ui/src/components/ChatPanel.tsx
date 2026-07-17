@@ -1060,18 +1060,18 @@ export function ChatPanel({
     return null;
   }, [messages]);
 
-  // The newest unresolved interactive card (plan or question): typed composer
-  // text answers IT instead of racing the turn with a new message — a plan
-  // gets the text as revision feedback (keep planning), a question as a
-  // custom answer. Questions only route on Claude sessions: opencode rejects
-  // note-only replies (see reply_inline), so its options stay the interface.
+  // The newest unresolved question card: typed composer text answers IT as a
+  // custom answer, instead of racing the held turn with a new message (which
+  // the busy guard would reject/drop). Plan cards have their own inline
+  // revise textarea (PlanStrip) and don't route through here. Claude sessions
+  // only: opencode rejects note-only replies (see reply_inline), so its
+  // options stay the interface.
   const pendingPrompt = useMemo(() => {
+    if (activeSession?.harness !== "claude-code") return null;
     for (let i = messages.length - 1; i >= 0; i--) {
       for (const part of messages[i].parts) {
         if (part.type !== "prompt" || !part.prompt || part.prompt.resolved) continue;
-        const kind = part.prompt.kind;
-        if (kind === "plan" || (kind === "question" && activeSession?.harness === "claude-code"))
-          return { promptId: part.id, kind };
+        if (part.prompt.kind === "question") return { promptId: part.id };
       }
     }
     return null;
@@ -1121,17 +1121,13 @@ export function ChatPanel({
     const text = draft.trim();
     const pending = attachments;
     if (!text && pending.length === 0) return;
-    // A pending card owns plain typed text (Claude-desktop behavior): a plan
-    // gets it as revision feedback, a question as a custom answer. This also
-    // works while the turn is HELD on the card — where a new message would
-    // be rejected as busy and silently dropped.
+    // A pending question card owns plain typed text as a custom answer
+    // (Claude-desktop behavior). This also works while the turn is HELD on
+    // the card — where a new message would be rejected as busy and silently
+    // dropped.
     if (text && pendingPrompt && pending.length === 0) {
       setDraft("");
-      respond(
-        pendingPrompt.kind === "plan"
-          ? { promptId: pendingPrompt.promptId, approve: false, note: text }
-          : { promptId: pendingPrompt.promptId, answers: [], note: text },
-      );
+      respond({ promptId: pendingPrompt.promptId, answers: [], note: text });
       return;
     }
     if (busy) return;
@@ -1479,9 +1475,15 @@ export function ChatPanel({
             }
             // Plain rejection — no note; the model stops and waits.
             onReject={() => respond({ promptId: pendingPlan.promptId, approve: false })}
-            // Revision feedback is typed: focus the composer, whose send()
-            // routes the text to this card as the keep-planning note.
-            onRevise={() => composerRef.current?.focus()}
+            // The strip owns its own revise textarea (Claude-desktop style);
+            // the note (possibly empty) comes back on submit.
+            onRevise={(note) =>
+              respond({
+                promptId: pendingPlan.promptId,
+                approve: false,
+                note: note || undefined,
+              })
+            }
           />
         )}
         <div className="composer-box">
@@ -1513,13 +1515,11 @@ export function ChatPanel({
             ref={composerRef}
             value={draft}
             placeholder={
-              // A pending card owns typed text (see send()); say so. Otherwise
-              // follow `composerSelection` so the name tracks the picker for a
-              // new session and the open session once one exists.
+              // A pending question card owns typed text (see send()); say so.
+              // Otherwise follow `composerSelection` so the name tracks the
+              // picker for a new session and the open session once one exists.
               pendingPrompt
-                ? pendingPrompt.kind === "plan"
-                  ? "Describe changes to request a plan revision…"
-                  : "Type a custom answer…"
+                ? "Type a custom answer…"
                 : composerSelection
                   ? `Message ${HARNESS_LABELS[composerSelection.harness]}… ( / for skills)`
                   : "Ask the research agent… ( / for skills)"

@@ -1,4 +1,4 @@
-import { ChevronDown, ScrollText } from "lucide-react";
+import { ChevronDown, CornerDownLeft, ScrollText } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 /** Docked strip above the composer while a plan awaits the user's decision.
@@ -8,8 +8,9 @@ import { useEffect, useRef, useState } from "react";
  *
  * Claude-desktop parity — the actions mean:
  *  - Reject: plain rejection, no feedback; the model stops and waits.
- *  - Revise…: focuses the composer; typed text is sent as revision feedback
- *    (the composer routes it to this card — see ChatPanel's send()).
+ *  - Revise…: swaps the strip into its own inline textarea ("What should
+ *    change? (optional)") with Back/Revise buttons — self-contained, not a
+ *    detour through the main composer.
  *  - Accept and auto mode (primary): approve + resume under Auto — the
  *    default accept action. The caret menu holds the two guarded tiers:
  *    accept-edits (edits allowed, everything else still gated) and
@@ -27,10 +28,14 @@ export function PlanStrip({
   onView: () => void;
   onApprove: (resumeMode: "auto" | "accept-edits" | "bypass") => void;
   onReject: () => void;
-  onRevise: () => void;
+  /** Revision feedback; empty means "revise with no specific note". */
+  onRevise: (note: string) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const [revising, setRevising] = useState(false);
+  const [note, setNote] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -40,6 +45,16 @@ export function PlanStrip({
     window.addEventListener("pointerdown", close);
     return () => window.removeEventListener("pointerdown", close);
   }, [menuOpen]);
+
+  useEffect(() => {
+    if (revising) textareaRef.current?.focus();
+  }, [revising]);
+
+  const submitRevision = () => {
+    onRevise(note.trim());
+    setNote("");
+    setRevising(false);
+  };
 
   return (
     <div className="plan-strip">
@@ -52,47 +67,89 @@ export function PlanStrip({
           Open plan
         </button>
       </div>
-      <div className="prompt-actions plan-strip-actions">
-        <button className="btn-ghost" onClick={onReject}>
-          Reject
-        </button>
-        <button className="btn-ghost" onClick={onRevise}>
-          Revise…
-        </button>
-        <span className="plan-strip-spacer" />
-        <div className="plan-strip-approve" ref={menuRef}>
-          <button className="btn-primary plan-strip-primary" onClick={() => onApprove("auto")}>
-            Accept and auto mode
+      {revising ? (
+        <>
+          <textarea
+            ref={textareaRef}
+            className="plan-strip-revise-input"
+            placeholder="What should change? (optional)"
+            rows={2}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setNote("");
+                setRevising(false);
+              } else if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                submitRevision();
+              }
+            }}
+          />
+          <div className="prompt-actions plan-strip-actions">
+            <button
+              className="btn-ghost"
+              onClick={() => {
+                setNote("");
+                setRevising(false);
+              }}
+            >
+              Back
+            </button>
+            <span className="plan-strip-spacer" />
+            <button
+              className="btn-primary plan-strip-primary plan-strip-revise-submit"
+              onClick={submitRevision}
+            >
+              Revise
+              <CornerDownLeft size={13} />
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="prompt-actions plan-strip-actions">
+          <button className="btn-ghost" onClick={onReject}>
+            Reject
           </button>
-          <button
-            className="btn-primary plan-strip-primary plan-strip-caret"
-            aria-label="More approval options"
-            onClick={() => setMenuOpen((o) => !o)}
-          >
-            <ChevronDown size={13} />
+          <button className="btn-ghost" onClick={() => setRevising(true)}>
+            Revise…
           </button>
-          {menuOpen && (
-            <div className="plan-strip-menu">
-              <button
-                onClick={() => {
-                  setMenuOpen(false);
-                  onApprove("accept-edits");
-                }}
-              >
-                Accept
-              </button>
-              <button
-                onClick={() => {
-                  setMenuOpen(false);
-                  onApprove("bypass");
-                }}
-              >
-                Accept and bypass all
-              </button>
-            </div>
-          )}
+          <span className="plan-strip-spacer" />
+          <div className="plan-strip-approve" ref={menuRef}>
+            <button className="btn-primary plan-strip-primary" onClick={() => onApprove("auto")}>
+              Accept and auto mode
+            </button>
+            <button
+              className="btn-primary plan-strip-primary plan-strip-caret"
+              aria-label="More approval options"
+              onClick={() => setMenuOpen((o) => !o)}
+            >
+              <ChevronDown size={13} />
+            </button>
+            {menuOpen && (
+              <div className="plan-strip-menu">
+                <button
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onApprove("accept-edits");
+                  }}
+                >
+                  Accept
+                </button>
+                <button
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onApprove("bypass");
+                  }}
+                >
+                  Accept and bypass all
+                </button>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
