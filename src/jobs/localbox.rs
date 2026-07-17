@@ -292,7 +292,8 @@ mod tests {
 
     #[test]
     fn nvidia_smi_csv_two_gpus() {
-        let parsed = parse_nvidia_smi_csv("NVIDIA A100-SXM4-80GB, 81920\nNVIDIA A100-SXM4-80GB, 81920\n");
+        let parsed =
+            parse_nvidia_smi_csv("NVIDIA A100-SXM4-80GB, 81920\nNVIDIA A100-SXM4-80GB, 81920\n");
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].name, "NVIDIA A100-SXM4-80GB");
         assert_eq!(parsed[0].mem_mib, Some(81920));

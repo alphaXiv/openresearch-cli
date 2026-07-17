@@ -2173,8 +2173,14 @@ struct SetComputeDefaultReq {
 /// (config state fluctuates outside orx; the UI warns instead) — only unknown
 /// backends and meaningless flavors are rejected.
 async fn set_compute_default(Json(req): Json<SetComputeDefaultReq>) -> ApiResult {
-    let backend = req.backend.map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
-    let flavor = req.flavor.map(|f| f.trim().to_string()).filter(|f| !f.is_empty());
+    let backend = req
+        .backend
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty());
+    let flavor = req
+        .flavor
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty());
     if let Some(b) = &backend {
         local::validate_compute_default(b, flavor.as_deref()).map_err(bad_request)?;
     }

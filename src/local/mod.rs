@@ -76,7 +76,15 @@ pub fn slugify(text: &str) -> String {
 /// Every backend a local-mode launch can target. The canonical id list —
 /// launch dispatch, the default-target validation, and the Settings UI all
 /// agree on these strings.
-pub const BACKENDS: &[&str] = &["local", "hf", "modal", "k8s", "ssh", "slurm", "openresearch"];
+pub const BACKENDS: &[&str] = &[
+    "local",
+    "hf",
+    "modal",
+    "k8s",
+    "ssh",
+    "slurm",
+    "openresearch",
+];
 
 /// Backends whose launches take a `--flavor` (hf/modal/openresearch require
 /// one; slurm's is an optional GRES spec). k8s (manifest), ssh (host), and
@@ -238,7 +246,10 @@ mod tests {
         }
         assert!(validate_compute_default("gcp", None).is_err());
         for b in FLAVORED_BACKENDS {
-            assert!(validate_compute_default(b, Some("x")).is_ok(), "{b} flavored");
+            assert!(
+                validate_compute_default(b, Some("x")).is_ok(),
+                "{b} flavored"
+            );
         }
         for b in ["k8s", "ssh", "local"] {
             assert!(
