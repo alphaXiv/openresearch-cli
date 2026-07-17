@@ -73,6 +73,75 @@ pub fn slugify(text: &str) -> String {
     }
 }
 
+/// Every backend a local-mode launch can target. The canonical id list —
+/// launch dispatch, the default-target validation, and the Settings UI all
+/// agree on these strings.
+pub const BACKENDS: &[&str] = &["local", "hf", "modal", "k8s", "ssh", "slurm", "openresearch"];
+
+/// Backends whose launches take a `--flavor` (hf/modal/openresearch require
+/// one; slurm's is an optional GRES spec). k8s (manifest), ssh (host), and
+/// local (this machine's hardware) have no flavor axis.
+pub const FLAVORED_BACKENDS: &[&str] = &["hf", "modal", "slurm", "openresearch"];
+
+/// Fill a local-mode launch's backend/flavor from the persisted default
+/// (Settings → Compute) when the caller didn't pass them. Explicit args always
+/// win; see `resolve_compute_default` for the exact precedence.
+pub fn apply_compute_default(backend: &mut Option<String>, flavor: &mut Option<String>) {
+    let (b, f) = resolve_compute_default(
+        backend.take(),
+        flavor.take(),
+        crate::config::compute_default(),
+    );
+    *backend = b;
+    *flavor = f;
+}
+
+/// Pure precedence rule for the default compute target:
+/// - an explicit backend always wins; the default backend fills only when none
+///   was given
+/// - the default flavor fills only when the *effective* backend equals the
+///   default backend AND no explicit flavor was given (a default flavor for
+///   modal must never leak onto an explicit `--backend hf` launch)
+/// - an explicit flavor is never overwritten
+fn resolve_compute_default(
+    explicit_backend: Option<String>,
+    explicit_flavor: Option<String>,
+    default: Option<(String, Option<String>)>,
+) -> (Option<String>, Option<String>) {
+    let Some((default_backend, default_flavor)) = default else {
+        return (explicit_backend, explicit_flavor);
+    };
+    let backend = explicit_backend.unwrap_or_else(|| default_backend.clone());
+    let flavor = explicit_flavor.or_else(|| {
+        if backend == default_backend {
+            default_flavor
+        } else {
+            None
+        }
+    });
+    (Some(backend), flavor)
+}
+
+/// Validate a default-target choice before persisting it (the POST handler's
+/// guard). Being *configured* is deliberately not required — config state
+/// fluctuates outside orx and setup order shouldn't matter — but the backend
+/// must exist and the flavor must be meaningful for it.
+pub fn validate_compute_default(backend: &str, flavor: Option<&str>) -> Result<()> {
+    if !BACKENDS.contains(&backend) {
+        return Err(anyhow!(
+            "Unknown backend '{backend}'. Valid backends: {}.",
+            BACKENDS.join(", ")
+        ));
+    }
+    if flavor.is_some_and(|f| !f.is_empty()) && !FLAVORED_BACKENDS.contains(&backend) {
+        return Err(anyhow!(
+            "Backend '{backend}' does not take a flavor (flavors apply to {}).",
+            FLAVORED_BACKENDS.join(", ")
+        ));
+    }
+    Ok(())
+}
+
 /// Compact relative time for local tables ("3m ago").
 pub fn fmt_ago(ms: i64) -> String {
     let secs = (now_ms() - ms).max(0) / 1000;
@@ -103,5 +172,83 @@ pub fn run_failure_detail(run: &StoredRun) -> Option<String> {
             "reason: — (no message recorded — see `orx logs {}`)",
             run.id
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dflt(b: &str, f: Option<&str>) -> Option<(String, Option<String>)> {
+        Some((b.to_string(), f.map(str::to_string)))
+    }
+
+    #[test]
+    fn resolve_no_default_passes_through() {
+        assert_eq!(
+            resolve_compute_default(None, None, None),
+            (None, None),
+            "no default + no args stays empty (caller keeps its error path)"
+        );
+        assert_eq!(
+            resolve_compute_default(Some("hf".into()), Some("t4-small".into()), None),
+            (Some("hf".into()), Some("t4-small".into()))
+        );
+    }
+
+    #[test]
+    fn resolve_default_fills_omitted_backend_and_flavor() {
+        assert_eq!(
+            resolve_compute_default(None, None, dflt("modal", Some("a10g"))),
+            (Some("modal".into()), Some("a10g".into()))
+        );
+        assert_eq!(
+            resolve_compute_default(None, None, dflt("local", None)),
+            (Some("local".into()), None)
+        );
+    }
+
+    #[test]
+    fn resolve_explicit_backend_wins_and_blocks_default_flavor() {
+        // Explicit backend differs from the default: the default flavor must
+        // NOT leak onto it.
+        assert_eq!(
+            resolve_compute_default(Some("hf".into()), None, dflt("modal", Some("a10g"))),
+            (Some("hf".into()), None)
+        );
+        // Explicit backend HAPPENS to equal the default: flavor still fills.
+        assert_eq!(
+            resolve_compute_default(Some("modal".into()), None, dflt("modal", Some("a10g"))),
+            (Some("modal".into()), Some("a10g".into()))
+        );
+    }
+
+    #[test]
+    fn resolve_explicit_flavor_never_overwritten() {
+        assert_eq!(
+            resolve_compute_default(None, Some("h100".into()), dflt("modal", Some("a10g"))),
+            (Some("modal".into()), Some("h100".into()))
+        );
+    }
+
+    #[test]
+    fn validate_default_backend_ids_and_flavors() {
+        for b in BACKENDS {
+            assert!(validate_compute_default(b, None).is_ok(), "{b} valid");
+        }
+        assert!(validate_compute_default("gcp", None).is_err());
+        for b in FLAVORED_BACKENDS {
+            assert!(validate_compute_default(b, Some("x")).is_ok(), "{b} flavored");
+        }
+        for b in ["k8s", "ssh", "local"] {
+            assert!(
+                validate_compute_default(b, Some("x")).is_err(),
+                "{b} must reject a flavor"
+            );
+            assert!(
+                validate_compute_default(b, Some("")).is_ok(),
+                "{b} tolerates an empty flavor (treated as absent)"
+            );
+        }
     }
 }

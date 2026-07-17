@@ -121,6 +121,21 @@ pub fn set_settings_data_dir(data_dir: Option<String>) -> Result<()> {
     Ok(())
 }
 
+/// The persisted default compute target for local-mode launches, if any:
+/// `(backend, flavor)`. Lives in the telemetry-owned `settings.json` for the
+/// same single-writer reason as the data dir above.
+pub fn compute_default() -> Option<(String, Option<String>)> {
+    crate::telemetry::compute_default()
+}
+
+/// Set or clear the default compute target, preserving every other settings
+/// field. Delegates to `telemetry::set_compute_default` (the locked, atomic
+/// RMW). `None` backend clears both backend and flavor.
+pub fn set_compute_default(backend: Option<String>, flavor: Option<String>) -> Result<()> {
+    crate::telemetry::set_compute_default(backend, flavor)?;
+    Ok(())
+}
+
 /// Look up a var from the box's synced env file (`~/.openresearch/env`, written
 /// by the api's env sync). Needed because non-interactive shells never source
 /// it via .bashrc (Ubuntu's interactive guard returns first), so an agent's
