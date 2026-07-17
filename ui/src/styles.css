@@ -3700,9 +3700,24 @@ button.files-pill-link:hover {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* Button styling comes from the shared `.prompt-actions` rules. */
+/* Button styling comes from the shared `.prompt-actions` rules, but the
+   strip is monochrome (no brand red): black text, black borders, quiet
+   hover. `--text` keeps it theme-correct in dark mode. */
 .plan-strip-actions {
   gap: 8px;
+}
+.plan-strip-actions .btn-primary,
+.plan-strip-actions .btn-ghost {
+  background: transparent;
+  border: 1px solid var(--text);
+  color: var(--text);
+}
+.plan-strip-actions .btn-primary:hover:not(:disabled),
+.plan-strip-actions .btn-ghost:hover:not(:disabled) {
+  background: var(--surface-2, rgb(0 0 0 / 5%));
+  border-color: var(--text);
+  color: var(--text);
+  opacity: 1;
 }
 .plan-strip-approve {
   position: relative;
@@ -3716,7 +3731,9 @@ button.files-pill-link:hover {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
   padding: 0 5px;
-  margin-left: 1px;
+  /* Outlined split-button: overlap the shared border so the two halves
+     read as one control. */
+  margin-left: -1px;
   display: flex;
   align-items: center;
 }
