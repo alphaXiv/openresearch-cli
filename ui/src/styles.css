@@ -3056,8 +3056,17 @@ button.files-pill-link:hover {
   color: var(--primary);
   border: 1px solid var(--primary);
 }
-.compute-chevron {
+.compute-chevron-btn {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 6px;
+}
+.compute-chevron-btn:hover {
+  background: var(--panel);
+}
+.compute-chevron {
   color: var(--muted);
   transition: transform 120ms ease;
 }

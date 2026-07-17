@@ -1014,19 +1014,10 @@ function TargetRow({
 
   return (
     <div className={`compute-row${open ? " open" : ""}`}>
-      <div
-        className="compute-row-head"
-        role="button"
-        tabIndex={0}
-        aria-expanded={open}
-        onClick={onToggle}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            onToggle();
-          }
-        }}
-      >
+      {/* The head is a plain clickable div, NOT role="button": it holds real
+          buttons (Make default, the chevron), and interactive elements must
+          not nest. The chevron is the keyboard-reachable expand control. */}
+      <div className="compute-row-head" onClick={onToggle}>
         <span className="compute-row-logo">
           <BackendLogo kind={TARGET_KIND[target.id]} size={18} />
         </span>
@@ -1045,14 +1036,25 @@ function TargetRow({
             Make default
           </button>
         )}
-        <ChevronDown size={16} className="compute-chevron" />
+        <button
+          type="button"
+          className="compute-chevron-btn"
+          aria-expanded={open}
+          aria-label={`${open ? "Collapse" : "Expand"} ${TARGET_LABELS[target.id]}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggle();
+          }}
+        >
+          <ChevronDown size={16} className="compute-chevron" />
+        </button>
       </div>
       {visited && (
         <div className="compute-row-body" hidden={!open}>
           {isDefault && (
             <p className="settings-note compute-default-note">
               The agent launches runs here unless you tell it otherwise, and so does{" "}
-              <code>orx exp run</code> without <code>--backend</code>.{" "}
+              <code>orx exp run</code> with no <code>--backend</code> flag.{" "}
               <button
                 type="button"
                 className="btn sm"
@@ -2060,7 +2062,8 @@ function InstancesTab() {
         </button>
       </div>
       <p className="settings-sub">
-        Compute spun up across all projects — Modal, Hugging Face, SSH, Kubernetes, Slurm, and OpenResearch.
+        Compute spun up across all projects — this machine, Modal, Hugging Face, SSH, Kubernetes,
+        Slurm, and OpenResearch.
       </p>
       {error && <div className="error">{error}</div>}
       {!running || !past ? (

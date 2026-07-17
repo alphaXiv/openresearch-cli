@@ -2080,8 +2080,8 @@ fn compute_settings_json() -> Value {
 
     let source_label = |s: &crate::jobs::huggingface::TokenSource| match s {
         crate::jobs::huggingface::TokenSource::Env => "HF_TOKEN in the environment",
-        crate::jobs::huggingface::TokenSource::OpenresearchEnv => "token from ~/.openresearch/env",
-        crate::jobs::huggingface::TokenSource::HfCache => "token from the HF CLI cache",
+        crate::jobs::huggingface::TokenSource::OpenresearchEnv => "Token from ~/.openresearch/env",
+        crate::jobs::huggingface::TokenSource::HfCache => "Token from the HF CLI cache",
     };
     let targets = json!([
         {
