@@ -662,6 +662,11 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     // can't suppress this turn's fallback.
     let plan_mode = ctx.permission_mode == Some(PermissionMode::Plan);
     let _ = ctx.host.take_bridge_prompted(&ctx.session_id);
+    // Sweep zombie HELD cards (native_id) a crashed/restarted process left
+    // unresolved: they can never be answered again, and once this turn makes
+    // the session busy one could capture the composer's typed-text routing.
+    // End-turn cards are deliberately left alone — they resume via --resume.
+    let _ = ctx.host.resolve_stale_prompts(&ctx.session_id, true).await;
     let mut saw_prompt = false;
     let mut turn_errored = false;
     let mut last_text = String::new();

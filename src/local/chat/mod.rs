@@ -1336,21 +1336,27 @@ fn mark_prompt_resolved(
     Ok(None)
 }
 
-/// Resolve every still-unresolved prompt card of a session, store-side.
+/// Resolve still-unresolved prompt cards of a session, store-side.
 ///
 /// For inline-approval harnesses whose prompts die with their turn (codex: a
 /// JSON-RPC request the process has since abandoned), a leftover unresolved
 /// card is a zombie — unanswerable, and worse, its reply id can collide with a
 /// fresh child's restarting request ids, so a click on the dead card could be
-/// delivered to a *different, live* request. Called at codex turn entry to
-/// close both. NOT for end-turn harnesses (Claude): their unresolved cards
-/// deliberately outlive turns and resume via a new message.
+/// delivered to a *different, live* request. Called at codex turn entry
+/// (`native_only: false`) to close both.
+///
+/// End-turn harnesses (Claude) sweep with `native_only: true`: their
+/// UN-held cards deliberately outlive turns and resume via a new message, but
+/// a *held* (`native_id`) card can never outlive its process — one left
+/// unresolved is a crash/restart artifact that would otherwise capture the
+/// composer once the fresh turn makes the session busy again.
 ///
 /// Same `msg_write` contract as `mark_prompt_resolved`. Returns the updated
 /// messages so the caller can broadcast them.
 fn resolve_stale_prompts(
     msg_write: &std::sync::Mutex<()>,
     session_id: &str,
+    native_only: bool,
 ) -> Result<Vec<WireMessage>> {
     let _guard = msg_write.lock().unwrap();
     let store = Store::open()?;
@@ -1363,7 +1369,7 @@ fn resolve_stale_prompts(
         let mut changed = false;
         for part in parts.iter_mut() {
             if let Some(prompt) = part.prompt.as_mut() {
-                if !prompt.resolved {
+                if !prompt.resolved && (!native_only || prompt.native_id.is_some()) {
                     stamp_resolved(prompt, None);
                     changed = true;
                 }
@@ -1390,8 +1396,8 @@ fn resolve_stale_prompts(
 
 impl ChatHost {
     /// [`resolve_stale_prompts`] + broadcast, for harness turn-entry use.
-    pub async fn resolve_stale_prompts(&self, session_id: &str) -> Result<()> {
-        for msg in resolve_stale_prompts(&self.msg_write, session_id)? {
+    pub async fn resolve_stale_prompts(&self, session_id: &str, native_only: bool) -> Result<()> {
+        for msg in resolve_stale_prompts(&self.msg_write, session_id, native_only)? {
             self.emit("chat.message", message_json(&msg, session_id));
         }
         Ok(())

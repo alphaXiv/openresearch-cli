@@ -309,8 +309,8 @@ function ToolGroup({ parts, onOpenFile }: { parts: ChatPart[]; onOpenFile?: (pat
 }
 
 /** Interactive card for a plan / permission / question prompt. Approving (or
- * answering) resumes the session. Resolved cards mirror Claude Code: a
- * permission leaves no trace, a plan collapses to an expandable
+ * answering) resumes the session. Once resolved, cards mirror Claude Code:
+ * a permission leaves no trace, a plan collapses to an expandable
  * "Proposed plan" row, a question collapses to a compact record of the
  * chosen answer — all inline at the card's chronological position. */
 function PromptCard({
@@ -1322,7 +1322,10 @@ export function ChatPanel({
               busy: !!list.find((s) => s.id === sid)?.busy,
             }),
           )
-          .catch(() => dispatch({ type: "busy", sessionId: sid, busy: false }));
+          // On a failed fetch keep the optimistic flag: clearing busy while a
+          // Handled resume is still streaming would hide Working…/Stop for
+          // the rest of the turn (nothing re-asserts busy mid-stream).
+          .catch(() => {});
       });
   }
 
