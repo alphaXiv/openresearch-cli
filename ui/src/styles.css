@@ -3719,6 +3719,11 @@ button.files-pill-link:hover {
   color: var(--text);
   opacity: 1;
 }
+/* Split button: the caret drops its own left border so the seam is the left
+   half's single 1px line (must out-rank the monochrome border shorthand). */
+.plan-strip-actions .plan-strip-caret {
+  border-left: none;
+}
 .plan-strip-approve {
   position: relative;
   display: flex;
@@ -3730,10 +3735,11 @@ button.files-pill-link:hover {
 .plan-strip-caret {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
-  padding: 0 5px;
-  /* Outlined split-button: overlap the shared border so the two halves
-     read as one control. */
-  margin-left: -1px;
+  padding: 0 6px;
+  /* Split button: the caret drops its own left border so the seam is the
+     left half's single 1px border, not a doubled line. */
+  border-left: none;
+  margin-left: 0;
   display: flex;
   align-items: center;
 }
