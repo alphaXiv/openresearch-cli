@@ -1393,11 +1393,19 @@ export function ChatPanel({
                 onOpenPlan={openPlan}
               />
             ))}
-            {busy && (
-              <div className="working">
-                <span className="spinner" /> Working…
-              </div>
-            )}
+            {busy &&
+              // A busy turn whose newest message is an unanswered card is not
+              // "working" — it's held open waiting on the user (a bridge-held
+              // question/permission/plan). Say so instead of spinning.
+              (messages[messages.length - 1]?.parts.some(
+                (p) => p.type === "prompt" && p.prompt && !p.prompt.resolved,
+              ) ? (
+                <div className="working awaiting">Waiting for your input…</div>
+              ) : (
+                <div className="working">
+                  <span className="spinner" /> Working…
+                </div>
+              ))}
           </div>
         </div>
       )}

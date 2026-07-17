@@ -210,6 +210,25 @@ impl Harness for ClaudeCode {
                     let (text, mode) = synthesize_resume("plan", answer);
                     Ok(ResumeAction::SendMessage { text, mode })
                 }
+                // Mid-turn question (a bridge-held AskUserQuestion): the held
+                // tool call is denied with the user's answer as the message —
+                // the model reads the answer from the denial and continues the
+                // same turn. (Allowing the tool instead would run it headless,
+                // which returns no answer — the model would guess and move on
+                // rather than block; that's the bug this arm exists to avoid.)
+                ("question", _) => {
+                    let (text, _) = synthesize_resume("question", answer);
+                    if text.trim().is_empty() {
+                        return Err(anyhow!("select an option (or add a note) to answer"));
+                    }
+                    ctx.host.settle_permission(
+                        native_id,
+                        crate::local::chat::PermissionDecision::Deny {
+                            message: format!("The user answered: {text}"),
+                        },
+                    )?;
+                    Ok(ResumeAction::Handled)
+                }
                 _ => Err(anyhow!("unsupported prompt kind for a bridge card")),
             };
         }
@@ -440,8 +459,10 @@ fn plan_prompt(name: &str, input: Option<&Value>) -> Option<WirePrompt> {
 
 /// AskUserQuestion → a `question` prompt. Claude's schema is
 /// `{questions: [{question, header, options: [{label, description}], multiSelect}]}`;
-/// we surface the first question (the composer answers one at a time).
-fn question_prompt(name: &str, input: Option<&Value>) -> Option<WirePrompt> {
+/// we surface the first question (the composer answers one at a time). Also
+/// used by the plan-mode bridge (`ChatHost::request_permission`, via the
+/// harness re-export) to build the held mid-turn question card.
+pub(crate) fn question_prompt(name: &str, input: Option<&Value>) -> Option<WirePrompt> {
     if name != "AskUserQuestion" {
         return None;
     }
@@ -661,12 +682,13 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                             // ExitPlanMode / AskUserQuestion surface as interactive
                             // prompt cards instead of plain tool rows, and the
                             // user's choice resumes the session. With the bridge
-                            // active, ExitPlanMode's card comes from the bridge
-                            // instead (a held, mid-turn-answerable card), so the
-                            // tool_use renders as a plain tool row — two cards
-                            // for one plan would race each other.
-                            let bridged_plan = bridge_active && name == "ExitPlanMode";
-                            if let Some(prompt) = (!bridged_plan)
+                            // active, BOTH cards come from the bridge instead
+                            // (held, mid-turn-answerable), so the tool_use
+                            // renders as a plain tool row — two cards for one
+                            // call would race each other.
+                            let bridged =
+                                bridge_active && matches!(name, "ExitPlanMode" | "AskUserQuestion");
+                            if let Some(prompt) = (!bridged)
                                 .then(|| {
                                     plan_prompt(name, input)
                                         .or_else(|| question_prompt(name, input))

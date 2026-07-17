@@ -336,13 +336,7 @@ fn plan_auto_policy(tool_name: &str, tool_input: &Value) -> Option<PermissionDec
         return None;
     }
     match tool_name {
-        // AskUserQuestion's entire purpose is to ask the user something — a
-        // permission card in front of it ("may I ask?") is a pointless double
-        // interaction, and worse: the held bridge card keeps the turn busy
-        // while the question card resumes via the end-turn path, whose guard
-        // then rejects the answer — the turn hangs until interrupted. Let it
-        // through; the question card is the user-facing gate.
-        "WebFetch" | "WebSearch" | "AskUserQuestion" => Some(PermissionDecision::Allow {
+        "WebFetch" | "WebSearch" => Some(PermissionDecision::Allow {
             updated_input: Some(tool_input.clone()),
         }),
         "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => Some(PermissionDecision::deny(
@@ -572,7 +566,13 @@ impl ChatHost {
 
         // Tier 2 — the user decides. ExitPlanMode becomes the plan card (the
         // hook routes it here with an "ask" so headless can't self-approve);
-        // everything else — gray-area Bash, MCP tools, … — a permission card.
+        // AskUserQuestion becomes the QUESTION card itself, held mid-turn —
+        // gating it behind a permission card would be a pointless double
+        // interaction, and *allowing* it is worse: headless the tool returns
+        // no answer, so the model guesses and keeps going instead of blocking.
+        // Holding the call is the only shape that actually blocks the turn on
+        // the user's answer. Everything else — gray-area Bash, MCP tools, … —
+        // a permission card.
         let prompt_id = format!("perm_{}", uuid::Uuid::new_v4());
         let prompt = if tool_name == "ExitPlanMode" {
             WirePrompt {
@@ -586,6 +586,16 @@ impl ChatHost {
                 ),
                 native_id: Some(prompt_id.clone()),
                 ..Default::default()
+            }
+        } else if let Some(question) = (tool_name == "AskUserQuestion")
+            .then(|| crate::local::harness::question_prompt(tool_name, Some(&tool_input)))
+            .flatten()
+        {
+            // Malformed question input falls through to a permission card
+            // (the user can still allow/deny the raw tool call).
+            WirePrompt {
+                native_id: Some(prompt_id.clone()),
+                ..question
             }
         } else {
             WirePrompt {
@@ -1755,12 +1765,15 @@ mod bridge_tests {
             &json!({"url": "https://example.com"})
         )));
         assert!(allow(plan_auto_policy("WebSearch", &json!({"query": "x"}))));
-        // AskUserQuestion: asking IS the user interaction — never gate it
-        // behind a permission card (rationale on the policy arm).
-        assert!(allow(plan_auto_policy(
+        // AskUserQuestion: tier 2, but its card is the QUESTION itself, held
+        // mid-turn (see `request_permission`) — auto-allowing would run the
+        // tool headless, which returns no answer, so the model would guess
+        // instead of blocking on the user.
+        assert!(plan_auto_policy(
             "AskUserQuestion",
             &json!({"questions": [{"question": "Which?", "options": []}]})
-        )));
+        )
+        .is_none());
         // File edits: denied — this branch IS plan mode's edit block once a
         // permission tool is configured.
         for tool in ["Write", "Edit", "MultiEdit", "NotebookEdit"] {

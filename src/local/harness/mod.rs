@@ -32,6 +32,7 @@ use async_trait::async_trait;
 use crate::error::{anyhow, Result};
 use crate::local::chat::{PromptAnswer, ResumeCtx, TurnCtx, WirePrompt};
 
+pub(crate) use claude::question_prompt;
 pub use detect::{HarnessInfo, ModelInfo};
 pub use options::{HarnessOptions, PermissionMode};
 pub use plan_gate::command_is_readonly;

@@ -1120,6 +1120,10 @@ textarea::placeholder {
   font-size: 12.5px;
   padding: 2px 0 8px;
 }
+/* Turn held open on an unanswered card: waiting on the user, not the model. */
+.working.awaiting {
+  font-style: italic;
+}
 
 .spinner {
   width: 13px;
