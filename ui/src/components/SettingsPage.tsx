@@ -928,7 +928,11 @@ function DefaultFlavorEditor({
           list={`flavors-${target}`}
           value={value}
           onChange={(e) => setValue(e.target.value)}
-          placeholder={FLAVOR_REQUIRED.includes(target) ? "e.g. " + (FLAVOR_SUGGESTIONS[target]?.[1] ?? "") : "none (CPU-only)"}
+          placeholder={
+            FLAVOR_REQUIRED.includes(target)
+              ? `e.g. ${FLAVOR_SUGGESTIONS[target]?.[1] ?? ""}`
+              : "none (CPU-only)"
+          }
           autoComplete="off"
           spellCheck={false}
         />
@@ -1072,26 +1076,37 @@ function ComputeTab() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<ComputeTargetId | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Monotonic guard: a POST response applied via `apply` must not be
+  // overwritten by a slower background GET that was already in flight.
+  const seqRef = useRef(0);
 
   // Refetched whenever a row expands/collapses (not just on mount): a form
   // saved inside a row (k8s context, HF token, …) changes the collapsed
   // summaries, and the toggle is the natural moment to catch up. Cheap by
   // contract — the endpoint only does fs/env probes.
   useEffect(() => {
-    let stale = false;
+    const seq = ++seqRef.current;
     getComputeSettings()
       .then((s) => {
-        if (!stale) setSettings(s);
+        if (seq !== seqRef.current) return;
+        setSettings(s);
+        setLoadError(null);
       })
       .catch((err) => {
-        if (!stale) setLoadError(err instanceof Error ? err.message : String(err));
+        if (seq !== seqRef.current) return;
+        // Only the very first load may brick the tab; a failed background
+        // refresh of already-rendered rows goes to the transient banner.
+        const msg = err instanceof Error ? err.message : String(err);
+        setSettings((cur) => {
+          if (cur === null) setLoadError(msg);
+          else setError(msg);
+          return cur;
+        });
       });
-    return () => {
-      stale = true;
-    };
   }, [expanded]);
 
   const apply = (s: ComputeSettings) => {
+    seqRef.current++; // supersede any in-flight background GET
     setSettings(s);
     setError(null);
   };

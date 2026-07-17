@@ -91,6 +91,10 @@ pub const BACKENDS: &[&str] = &[
 /// local (this machine's hardware) have no flavor axis.
 pub const FLAVORED_BACKENDS: &[&str] = &["hf", "modal", "slurm", "openresearch"];
 
+/// The subset whose launches FAIL without a `--flavor` — the playbook warns
+/// about these when they're the default with no saved flavor.
+pub const FLAVOR_REQUIRED_BACKENDS: &[&str] = &["hf", "modal", "openresearch"];
+
 /// Fill a local-mode launch's backend/flavor from the persisted default
 /// (Settings → Compute) when the caller didn't pass them. Explicit args always
 /// win; see `resolve_compute_default` for the exact precedence.

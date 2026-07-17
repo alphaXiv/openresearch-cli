@@ -703,8 +703,9 @@ async fn run_experiment(
     // Resolve the persisted default target (Settings → Compute) when the
     // request doesn't name a backend; `hf` stays the last-resort fallback so
     // existing clients keep their historical behavior when no default is set.
-    let mut backend_opt = req.backend;
-    let mut flavor = req.flavor;
+    // Empty strings mean "unset", matching the /compute/default endpoint.
+    let mut backend_opt = req.backend.filter(|b| !b.trim().is_empty());
+    let mut flavor = req.flavor.filter(|f| !f.trim().is_empty());
     local::apply_compute_default(&mut backend_opt, &mut flavor);
     let backend = backend_opt.unwrap_or_else(|| "hf".to_string());
     let args = crate::ExpRunArgs {
@@ -2075,10 +2076,13 @@ fn compute_settings_json() -> Value {
     // the expanded row's (network) question.
     let or_logged_in = crate::config::credentials_present();
 
+    // Same spellings as the expanded rows' SOURCE_LABELS/MODAL_TOKEN_LABELS
+    // in the UI — the collapsed head stays visible above the open row, so the
+    // same fact must not read two different ways.
     let source_label = |s: &crate::jobs::huggingface::TokenSource| match s {
-        crate::jobs::huggingface::TokenSource::Env => "HF_TOKEN in the environment",
+        crate::jobs::huggingface::TokenSource::Env => "HF_TOKEN env var",
         crate::jobs::huggingface::TokenSource::OpenresearchEnv => "Token from ~/.openresearch/env",
-        crate::jobs::huggingface::TokenSource::HfCache => "Token from the HF CLI cache",
+        crate::jobs::huggingface::TokenSource::HfCache => "Token from ~/.cache/huggingface/token",
     };
     let targets = json!([
         {
@@ -2098,7 +2102,7 @@ fn compute_settings_json() -> Value {
             "id": "modal",
             "configured": modal_source.is_some(),
             "summary": match modal_source {
-                Some("env") => "MODAL_TOKEN_ID in the environment",
+                Some("env") => "MODAL_TOKEN_ID env var",
                 Some("syncedEnv") => "Token from ~/.openresearch/env",
                 Some("modalToml") => "Token from ~/.modal.toml",
                 _ => "No token",

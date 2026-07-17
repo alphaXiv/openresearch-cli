@@ -118,19 +118,19 @@ fn playbook_md(project: &LocalProject) -> String {
         )
     });
     // The default compute target (Settings → Compute) is read fresh on every
-    // playbook rewrite. The claude/codex adapters call `ensure_playbook` per
-    // turn, so a changed default reaches them on the next message; a live
-    // opencode server keeps its playbook until respawn (`AgentHost::ensure`
-    // early-returns for a running child). Launch-time resolution in `exp run`
-    // stays authoritative either way: the agent is told to OMIT `--backend`,
-    // never to echo the default back, so even a stale prompt launches on the
-    // current default.
+    // playbook rewrite, but how soon a rewrite reaches a live agent varies:
+    // claude re-injects the playbook per turn; codex only on thread
+    // start/resume; a live opencode server keeps its playbook until respawn
+    // (`AgentHost::ensure` early-returns for a running child). Launch-time
+    // resolution in `exp run` stays authoritative either way: the agent is
+    // told to OMIT `--backend`, never to echo the default back, so even a
+    // stale prompt launches on the current default.
     let compute_default = crate::config::compute_default();
     let compute_bullet = match &compute_default {
         Some((b, f)) => {
             let flavor_part = f
                 .as_ref()
-                .map_or(String::new(), |f| format!(" (--flavor {f})"));
+                .map_or(String::new(), |f| format!(" (`--flavor {f}`)"));
             format!(
                 "- Compute: default target **{b}**{flavor_part} — the user set it in \
                  Settings → Compute; omit `--backend` on `orx exp run` to launch there. \
@@ -154,7 +154,7 @@ fn playbook_md(project: &LocalProject) -> String {
             // agent into a guaranteed-failing command.
             let omit_hint = if f.is_some() {
                 "Omit it (and `--flavor`) to use the default.".to_string()
-            } else if matches!(b.as_str(), "hf" | "modal" | "openresearch") {
+            } else if super::FLAVOR_REQUIRED_BACKENDS.contains(&b.as_str()) {
                 "Omit `--backend` to use the default, but still pass `--flavor` — no default \
                  flavor is saved."
                     .to_string()

@@ -491,7 +491,8 @@ The user may set a **default compute target** in the `orx up` dashboard
 (Settings → Compute → Make default); it is machine-wide and applies to every
 local project. When one is set, `orx exp run <expId>` with no `--backend`
 launches there, with the saved default flavor — omitting the flag is how you
-use it. When none is set, local launches require an explicit `--backend`; the
+use it (flavor-required backends still need `--flavor` if no default flavor
+is saved). When none is set, local launches require an explicit `--backend`; the
 compute choice is the user's, so ask. Server projects are unaffected: managed
 compute (`--gpu`/`--cpu`/`--sandbox`) stays their default.
 
@@ -542,8 +543,9 @@ Rules and notes:
 **Same rule as HF: managed compute is the default. Use `--backend modal` ONLY
 when the user explicitly asks for Modal** ("run this on Modal", "use my Modal
 account") or it is the configured default target. Modal runs on the user's
-own Modal account, billed there per second; no OpenResearch balance is spent. It runs the job in a Modal **Sandbox** (an
-ephemeral container that scales to zero when the run ends).
+own Modal account, billed there per second; no OpenResearch balance is spent.
+It runs the job in a Modal **Sandbox** (an ephemeral container that scales to
+zero when the run ends).
 
 orx auto-provisions a managed `modal` environment on the first Modal launch (no
 pip-install needed). You only need a Modal token — `MODAL_TOKEN_ID` +
