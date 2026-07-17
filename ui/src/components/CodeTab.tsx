@@ -85,7 +85,7 @@ function DirRow({
     <>
       <button
         type="button"
-        className="code-tree-row code-tree-dir"
+        className="code-tree-row"
         style={{ paddingLeft: 8 + depth * 14 }}
         onClick={() => onToggle(path)}
         title={path}
@@ -152,7 +152,7 @@ function TreeLevel({
           <button
             key={`f:${path}`}
             type="button"
-            className="code-tree-row code-tree-file"
+            className="code-tree-row"
             style={{ paddingLeft: 8 + depth * 14 }}
             onClick={() => onOpenFile(path)}
             title={path}
@@ -226,10 +226,11 @@ export function CodeTab({
         })
         .catch((e: Error) => {
           if (id !== reqId.current) return;
-          // A seeded default can name a branch that doesn't exist yet (run
-          // just started) — fall back to live instead of erroring. A branch
+          // A seeded default is best-effort by definition (its branch may
+          // not exist yet — run just started) — fall back to live on any
+          // failure; live's own error path surfaces real problems. A branch
           // the user picked keeps the error.
-          if (sel && !selPickedRef.current && e.message === "branch not found") {
+          if (sel && !selPickedRef.current) {
             onSelChangeRef.current("", false);
             return;
           }
@@ -336,7 +337,7 @@ export function CodeTab({
       </div>
       {!sel && data?.root === "clone" && (
         <div className="code-tab-note">
-          session worktree unavailable — showing the project clone
+          This session's worktree isn't available — showing the project clone.
         </div>
       )}
       {data?.truncated && <div className="code-tab-note">listing truncated</div>}

@@ -364,7 +364,10 @@ export default function App() {
         selPicked: false,
         toggled: new Set<string>(),
       };
-      if (!existing) setCodeTabs((prev) => [...prev, tab]);
+      // Self-guarding updater: a double invocation must not push duplicates.
+      setCodeTabs((prev) =>
+        prev.some((t) => t.sessionId === sessionId) ? prev : [...prev, tab],
+      );
       setRightTab(tab);
       setPanelOpen(true);
     },

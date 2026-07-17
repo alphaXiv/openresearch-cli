@@ -529,16 +529,22 @@ pub fn list_worktree_files(repo: &Path) -> Result<Vec<String>> {
         ],
         &[],
     )?;
-    Ok(split_nul(&bytes))
+    let mut entries = split_nul(&bytes);
+    // `--others` reports a nested git repo as `dir/` — a directory, nothing
+    // servable as a file; drop those here so every client benefits.
+    entries.retain(|e| !e.ends_with('/'));
+    Ok(entries)
 }
 
 /// Resolve a branch name to its commit sha — the *local* ref first, then
 /// origin's: the code browser wants the agent's latest work, which lives
 /// locally before any push (the opposite preference of `branch_head_sha`,
-/// which serves jobs that clone from the remote). `Ok(None)` when neither
-/// exists. Only real branch names are accepted: anything that could read as
-/// a git option or a rev-suffix expression (`@{...}`, `^`, `~`, `:`,
-/// whitespace) is rejected up front rather than shelled out.
+/// which serves jobs that clone from the remote; `resolve_commitish` is the
+/// diff-side sibling that also accepts raw shas). `Ok(None)` when neither
+/// exists. Only real branch names are accepted: rev-suffix expressions
+/// (`@{...}`, `^`, `~`, `:`, whitespace) are rejected up front, and the
+/// leading-`-` check is belt-and-braces — the `refs/heads/` prefix already
+/// keeps the name out of option position.
 pub fn resolve_branch_commit(repo: &Path, name: &str) -> Result<Option<String>> {
     let suspicious = name.is_empty()
         || name.starts_with('-')
@@ -605,19 +611,31 @@ pub fn file_at_capped(
         .spawn()
         .map_err(|e| anyhow!("Could not run git: {}", e))?;
     let mut buf = Vec::new();
-    {
+    let read = {
         use std::io::Read as _;
         let stdout = child.stdout.take().expect("stdout was piped");
-        stdout
-            .take(limit + 1)
-            .read_to_end(&mut buf)
-            .map_err(|e| anyhow!("read failed: {}", e))?;
-        // Dropping the pipe here SIGPIPEs a still-streaming git; the kill
-        // below covers the race where it hasn't written since.
-    }
-    let _ = child.kill();
-    let _ = child.wait();
+        stdout.take(limit + 1).read_to_end(&mut buf)
+    };
     let truncated = buf.len() as u64 > limit;
+    // Reap the child before propagating any read error — no zombies. Kill
+    // only when it may still be streaming (read error, or we stopped at the
+    // cap): after a complete read EOF means git closed stdout and exits on
+    // its own, and killing it then could race its natural exit into a bogus
+    // signal-death status.
+    if read.is_err() || truncated {
+        let _ = child.kill();
+    }
+    let status = child.wait();
+    read.map_err(|e| anyhow!("read failed: {}", e))?;
+    if !truncated {
+        // A cat-file failure after the `-e` probe (the path names a tree via
+        // a crafted request, or the object vanished) must not masquerade as
+        // an empty file. When truncated we killed it — any status goes.
+        let status = status.map_err(|e| anyhow!("git cat-file blob: {}", e))?;
+        if !status.success() {
+            return Err(anyhow!("git cat-file blob {spec} failed"));
+        }
+    }
     buf.truncate(limit as usize);
     Ok(Some((
         String::from_utf8_lossy(&buf).into_owned(),

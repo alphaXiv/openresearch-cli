@@ -1010,11 +1010,11 @@ struct ProjectFileQuery {
 }
 
 /// One file for the UI file viewer. With `ref`: the committed content on that
-/// branch (`git show`), independent of any checkout. Without: the project's
-/// checkout — the chat session's worktree when `sessionId` is given, else the
-/// hub clone. Path is repo-relative; traversal outside the checkout is
-/// rejected. The response's `root` says which source actually answered, so
-/// the UI can flag fallback.
+/// branch (a streamed, capped `git cat-file` read), independent of any
+/// checkout. Without: the project's checkout — the chat session's worktree
+/// when `sessionId` is given, else the hub clone. Path is repo-relative;
+/// traversal outside the checkout is rejected. The response's `root` says
+/// which source actually answered, so the UI can flag fallback.
 async fn project_file(Path(id): Path<String>, Query(q): Query<ProjectFileQuery>) -> ApiResult {
     blocking_api(move || {
         use std::io::Read as _;
