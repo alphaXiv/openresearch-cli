@@ -227,11 +227,38 @@ impl Harness for Codex {
     }
 
     fn skill_target(&self) -> Option<PathBuf> {
-        Some(self.config_home()?.join("prompts").join("orx.md"))
+        // Codex now speaks native SKILL.md skills (`~/.agents/skills/`); the
+        // legacy `~/.codex/prompts/` path is deprecated and model-invisible. The
+        // primary target is the real skill; the legacy prompt still rides along
+        // via `extra_skill_targets` for older codex versions.
+        Some(
+            dirs::home_dir()?
+                .join(".agents")
+                .join("skills")
+                .join("orx")
+                .join("SKILL.md"),
+        )
     }
 
     fn skill_shim(&self) -> Option<&'static str> {
-        Some(super::CODEX_PROMPT)
+        // Native SKILL.md format, same body as Claude Code / OpenCode / Cursor.
+        Some(super::CLAUDE_SKILL)
+    }
+
+    fn extra_skill_targets(&self) -> Vec<(PathBuf, &'static str)> {
+        // Keep the legacy `/orx` prompt for codex versions that don't yet read
+        // `~/.agents/skills/`.
+        match dirs::home_dir() {
+            Some(home) => vec![(
+                home.join(".codex").join("prompts").join("orx.md"),
+                super::CODEX_PROMPT,
+            )],
+            None => Vec::new(),
+        }
+    }
+
+    fn session_skills_dir(&self) -> Option<&'static str> {
+        Some(".agents/skills")
     }
 }
 
@@ -586,8 +613,11 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
         .await?;
     let project = ctx.project.clone();
     let session_id = ctx.session_id.clone();
+    // The modular orx skills land in the harness's session-skills dir, fresh,
+    // for this session's agent to auto-load — source of truth is the trait.
+    let skills_dir = Codex.session_skills_dir();
     let (repo, playbook) =
-        tokio::task::spawn_blocking(move || ensure_playbook(&project, &session_id))
+        tokio::task::spawn_blocking(move || ensure_playbook(&project, &session_id, skills_dir))
             .await
             .map_err(|e| anyhow!("playbook task failed: {e}"))??;
     let playbook_md = std::fs::read_to_string(&playbook).unwrap_or_default();
@@ -1042,8 +1072,11 @@ async fn run_turn_exec(ctx: &mut TurnCtx) -> Result<()> {
     let bin = find_codex_required()?;
     let project = ctx.project.clone();
     let session_id = ctx.session_id.clone();
+    // The modular orx skills land in the harness's session-skills dir, fresh,
+    // for this session's agent to auto-load — source of truth is the trait.
+    let skills_dir = Codex.session_skills_dir();
     let (repo, playbook) =
-        tokio::task::spawn_blocking(move || ensure_playbook(&project, &session_id))
+        tokio::task::spawn_blocking(move || ensure_playbook(&project, &session_id, skills_dir))
             .await
             .map_err(|e| anyhow!("playbook task failed: {e}"))??;
 

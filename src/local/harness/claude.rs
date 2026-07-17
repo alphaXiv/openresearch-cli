@@ -286,6 +286,10 @@ impl Harness for ClaudeCode {
     fn skill_shim(&self) -> Option<&'static str> {
         Some(super::CLAUDE_SKILL)
     }
+
+    fn session_skills_dir(&self) -> Option<&'static str> {
+        Some(".claude/skills")
+    }
 }
 
 /// Session mode → Claude Code `--permission-mode` value. The shared wire ids are
@@ -563,8 +567,11 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     })?;
     let project = ctx.project.clone();
     let session_id = ctx.session_id.clone();
+    // The modular orx skills land in the harness's session-skills dir, fresh,
+    // for this session's agent to auto-load — source of truth is the trait.
+    let skills_dir = ClaudeCode.session_skills_dir();
     let (repo, playbook) =
-        tokio::task::spawn_blocking(move || ensure_playbook(&project, &session_id))
+        tokio::task::spawn_blocking(move || ensure_playbook(&project, &session_id, skills_dir))
             .await
             .map_err(|e| anyhow!("playbook task failed: {e}"))??;
 

@@ -28,25 +28,31 @@ fn installable() -> Vec<Box<dyn Harness>> {
         .collect()
 }
 
-/// Write (or overwrite) one harness's shim, creating parent dirs as needed.
-/// Overwriting is intentional: re-running keeps the shim current.
-async fn write_shim(harness: &dyn Harness) -> Result<PathBuf> {
-    let path = harness
+/// Write (or overwrite) one harness's shim files, creating parent dirs as
+/// needed. Overwriting is intentional: re-running keeps the shim current. A
+/// harness may write more than one file (Codex: the native skill + a legacy
+/// prompt); the primary target is returned first, extras after.
+async fn write_shim(harness: &dyn Harness) -> Result<Vec<PathBuf>> {
+    let primary = harness
         .skill_target()
         .ok_or_else(|| anyhow!("{} has no installable skill", harness.name()))?;
     let shim = harness
         .skill_shim()
         .ok_or_else(|| anyhow!("{} has no skill shim", harness.name()))?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).await?;
+    let mut written = Vec::new();
+    for (path, contents) in std::iter::once((primary, shim)).chain(harness.extra_skill_targets()) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(&path, contents).await?;
+        written.push(path);
     }
-    fs::write(&path, shim).await?;
-    Ok(path)
+    Ok(written)
 }
 
 /// Non-interactive OpenCode install, for the `orx up` agent bootstrap: the
 /// spawned opencode discovers `orx` via its skill tool.
-pub(crate) async fn install_opencode_shim() -> Result<PathBuf> {
+pub(crate) async fn install_opencode_shim() -> Result<Vec<PathBuf>> {
     let harness = registry()
         .into_iter()
         .find(|h| h.id() == "opencode")
@@ -88,15 +94,52 @@ pub async fn run(args: crate::InstallSkillsArgs) -> Result<()> {
     };
 
     for harness in targets {
-        let path = write_shim(harness).await?;
-        println!(
-            "\u{2713} Installed {} skill \u{2192} {}",
-            harness.name(),
-            path.display()
-        );
+        for path in write_shim(harness).await? {
+            println!(
+                "\u{2713} Installed {} skill \u{2192} {}",
+                harness.name(),
+                path.display()
+            );
+        }
+        if args.full {
+            for path in write_full_skills(harness).await? {
+                println!(
+                    "\u{2713} Installed {} skill \u{2192} {}",
+                    harness.name(),
+                    path.display()
+                );
+            }
+        }
     }
     println!("\nYour agent will auto-load it, or you can invoke it with /orx.");
     Ok(())
+}
+
+/// The agent's **global** skills directory — where a native `SKILL.md` skill
+/// dir per module goes. Derived from the primary shim target
+/// (`<skills-dir>/orx/SKILL.md`), so it tracks each harness's real layout
+/// (`~/.claude/skills`, `~/.agents/skills` for Codex, `$XDG/opencode/skills`,
+/// `~/.cursor/skills`).
+fn global_skills_dir(harness: &dyn Harness) -> Option<PathBuf> {
+    Some(harness.skill_target()?.parent()?.parent()?.to_path_buf())
+}
+
+/// Write the full set of modular `orx` skills into the harness's global skills
+/// dir (`--full`). Overwrites in place; returns the `SKILL.md` paths written.
+async fn write_full_skills(harness: &dyn Harness) -> Result<Vec<PathBuf>> {
+    use crate::local::agent_skills::{render, skills, SkillSet};
+
+    let base = global_skills_dir(harness)
+        .ok_or_else(|| anyhow!("{} has no global skills dir", harness.name()))?;
+    let mut written = Vec::new();
+    for skill in skills(SkillSet::Full) {
+        let dir = base.join(skill.name);
+        fs::create_dir_all(&dir).await?;
+        let path = dir.join("SKILL.md");
+        fs::write(&path, render(skill)).await?;
+        written.push(path);
+    }
+    Ok(written)
 }
 
 /// The CLI `--agent` alias for a harness. The chat id (`claude-code`) differs
@@ -120,18 +163,19 @@ fn tilde(path: &Path) -> String {
     }
 }
 
-/// The consent prompt's body: one line per detected agent, name → target file.
+/// The consent prompt's body: one line per detected agent target file (a
+/// harness with more than one — Codex — gets one line per file).
 fn describe_targets(harnesses: &[&dyn Harness]) -> String {
     let width = harnesses.iter().map(|h| h.name().len()).max().unwrap_or(0);
     harnesses
         .iter()
-        .filter_map(|h| {
-            let target = h.skill_target()?;
-            Some(format!(
-                "  {:<width$} \u{2192} {}",
-                h.name(),
-                tilde(&target)
-            ))
+        .flat_map(|h| {
+            let primary = h.skill_target();
+            let extras = h.extra_skill_targets();
+            primary
+                .into_iter()
+                .chain(extras.into_iter().map(|(p, _)| p))
+                .map(move |target| format!("  {:<width$} \u{2192} {}", h.name(), tilde(&target)))
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -173,12 +217,14 @@ pub async fn offer_install_after_login() {
     }
     if matches!(answer.trim().to_lowercase().as_str(), "" | "y" | "yes") {
         for harness in present {
-            if let Ok(path) = write_shim(harness).await {
-                println!(
-                    "\u{2713} Installed {} skill \u{2192} {}",
-                    harness.name(),
-                    tilde(&path)
-                );
+            if let Ok(paths) = write_shim(harness).await {
+                for path in paths {
+                    println!(
+                        "\u{2713} Installed {} skill \u{2192} {}",
+                        harness.name(),
+                        tilde(&path)
+                    );
+                }
             }
         }
     } else {
@@ -220,6 +266,55 @@ mod tests {
         for h in installable() {
             assert!(h.skill_shim().is_some(), "{} missing shim", h.id());
             assert!(h.config_home().is_some(), "{} missing config home", h.id());
+        }
+    }
+
+    /// Codex migrated to a native SKILL.md (`~/.agents/skills/orx/SKILL.md`) but
+    /// still writes the legacy `/orx` prompt alongside — two targets, listed in
+    /// the consent prompt.
+    #[test]
+    fn codex_writes_native_skill_and_legacy_prompt() {
+        let all = installable();
+        let codex = all.iter().find(|h| h.id() == "codex").unwrap().as_ref();
+
+        let primary = codex.skill_target().unwrap();
+        assert!(
+            primary.ends_with(".agents/skills/orx/SKILL.md"),
+            "primary target is the native skill, got {}",
+            primary.display()
+        );
+        let extras = codex.extra_skill_targets();
+        assert_eq!(extras.len(), 1, "one legacy prompt");
+        assert!(
+            extras[0].0.ends_with(".codex/prompts/orx.md"),
+            "legacy prompt path, got {}",
+            extras[0].0.display()
+        );
+
+        let body = describe_targets(&[codex]);
+        assert_eq!(body.lines().count(), 2, "both codex targets listed");
+    }
+
+    /// The `--full` global skills dir is the parent of the harness's skill dir
+    /// (`~/.claude/skills`, `~/.agents/skills` for codex, `$XDG/opencode/skills`).
+    #[test]
+    fn global_skills_dir_is_the_skills_parent() {
+        let all = installable();
+        for h in all.iter().map(Box::as_ref) {
+            let dir = global_skills_dir(h).unwrap();
+            // The primary shim target sits at <dir>/orx/SKILL.md.
+            assert_eq!(
+                h.skill_target().unwrap(),
+                dir.join("orx").join("SKILL.md"),
+                "{} global skills dir mismatch",
+                h.id()
+            );
+            assert!(
+                dir.ends_with("skills"),
+                "{} global skills dir should end in `skills`, got {}",
+                h.id(),
+                dir.display()
+            );
         }
     }
 }

@@ -188,6 +188,14 @@ fn playbook_md(project: &LocalProject) -> String {
          hf/modal, `--host` for ssh/slurm; k8s reads the committed manifest; local\n   \
          takes no flags)."
     };
+    // The modular skills installed into this session's worktree (see
+    // `agent_skills::ensure_session_skills`). Generated from the Local set so
+    // the playbook index and the files on disk can never drift.
+    let skills_list = super::agent_skills::skills(super::agent_skills::SkillSet::Local)
+        .iter()
+        .map(|s| format!("- **{}** — {}", s.name, s.description))
+        .collect::<Vec<_>>()
+        .join("\n");
     format!(
         r#"# OpenResearch local agent — {name}
 
@@ -216,6 +224,17 @@ Orient with `orx projects` and `orx runs {id}`.
 **If the experiment tree is empty** (a fresh project), create the baseline
 first: `orx create-experiment {id} --title "Baseline"` (no `--parent`). Give it
 the run command, run it once for reference numbers, then branch children off it.
+
+## Skills
+
+Focused how-to guides are installed as **native skills for this session** — your
+harness auto-loads them, and you can pull one up by name when a task calls for it:
+
+{skills_list}
+
+The cardinal rules, command surface, and auto-research loop below are always in
+effect; the skills expand the details (backend specifics, the k8s manifest, git
+recipes, report layout) so you load them only when you need them.
 
 ## Working alongside other agents
 
@@ -309,21 +328,11 @@ Carry one goal across many runs:
 6. **Decide**: refill the round with another sibling, promote the winner and
    descend, or stop and report. Write what you learned into `orx exp desc`.
 
-When a line of work concludes (or the user asks for a write-up), write a
-report **directly into the files dir**. Its layout mirrors the experiment
-tree — every top-level folder is named for an experiment slug:
-
-- Per-experiment output goes in the folder named for its slug:
-  `{files}/<experiment-slug>/report.md`, plus an `images/` subfolder for any
-  figures it references by relative path. One experiment, one folder — its
-  `report.md` is that experiment's findings.
-- Cross-experiment syntheses and anything not tied to one node (comparisons,
-  lit reviews) go under the reserved `project/` namespace as their own
-  report folders: `{files}/project/<topic>/report.md`.
-
-A report's first `# ` heading becomes its title. There is no upload step;
-anything under `{files}` (reports, figures, data files) appears in the
-dashboard's Files tab immediately, grouped by experiment.
+When a line of work concludes (or the user asks for a write-up), write a report
+**directly into the files dir** (`{files}`) — no upload step; anything under it
+appears in the dashboard's Files tab immediately, grouped by experiment. The
+layout mirrors the tree (one folder per experiment slug); the `orx-reports`
+skill has the folder structure and section guidance.
 
 When the user gives you a research task, see it through this loop — don't stop
 after a single step or hand back a half-finished attempt. End your turn only
@@ -369,83 +378,36 @@ small or CPU-scale runs and use a remote backend for anything heavy.
 ## Compute backends
 
 {backends_intro}
-All of them share the same contract — the job clones the experiment branch's
-GitHub tip and runs the fixed run command, and everything downstream
-(`orx exp wait` / `orx runs` / `orx logs` / `orx exp cancel`) works
-identically. A detached `orx supervise` mirrors status and logs; don't kill it.
+Backends: `hf` and `modal` (managed SKUs, `--flavor`), `k8s` (a manifest you
+commit on the branch), `ssh` and `slurm` (`--host`), `openresearch` (an
+ephemeral org box, `--flavor`), and `local` (this machine, no flags). All share
+one contract — the job clones the experiment branch's GitHub tip and runs the
+fixed run command, and everything downstream (`orx exp wait` / `orx runs` /
+`orx logs` / `orx exp cancel`) works identically. A detached `orx supervise`
+mirrors status and logs; don't kill it. `--timeout` (default `4h`) applies to
+`hf`/`modal`/`k8s`/`slurm`/`openresearch`; `--image` overrides the container on
+`hf`/`modal`.
 
-| Backend | Runs on | Shape comes from |
-|---|---|---|
-| `hf` | Hugging Face Jobs — billed per minute to the user's HF account (`HF_TOKEN`) | `--flavor`: `cpu-basic` / `cpu-upgrade` (CPU-only), `t4-small`, `t4-medium`, `l4x1`, `l4x4`, `l40sx1`, `a10g-small`, `a10g-large`, `a100-large`, `h100`, `h200`, … |
-| `modal` | Modal Sandboxes — billed per second to the user's Modal account (`MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` or `~/.modal.toml`) | `--flavor`: a Modal GPU (`t4`, `l4`, `a10g`, `a100`, `a100-80gb`, `l40s`, `h100`, `h200`; append `:N` for a count, e.g. `h100:2`) or `cpu` / `cpu-large` |
-| `k8s` | the user's own Kubernetes cluster — auth from their kubeconfig; context/namespace in Settings → Compute | a **manifest you commit on the experiment branch** (default `.orx/k8s.yaml`, or `--manifest <path>`) — see below |
-| `ssh` | a detached process on the user's own box — no scheduler, no container, the host's environment as-is | `--host`: an `~/.ssh/config` host alias |
-| `slurm` | a batch job on the user's Slurm cluster, submitted via `sbatch` on the login node over ssh | `--host`: the login node's `~/.ssh/config` alias (defaults from the slurm settings); `--flavor`: a GRES GPU request (`h100:2`; omit for CPU-only) |
-| `openresearch` | an **ephemeral OpenResearch box** billed to the user's org (needs `orx login` + a registered SSH key) — provisioned for the run, deleted when it ends; fixed CUDA+PyTorch+uv image | `--flavor`: a GPU id from `orx compute` (`h100_sxm`, `h100_sxm:2`) or a CPU flavor (`cpu5c`/`cpu5g`/`cpu5m`, `cpu5c:32`); plus `[--org <id>] [--disk GB] [--provider P]` |
-| `local` | a detached process on **this machine** — no scheduler, no container, this machine's environment as-is | nothing — no flags; the hardware is whatever this machine has |
-
-- `--timeout` (default `4h`) applies to `hf`/`modal`/`k8s`/`slurm`/
-  `openresearch`; set it to cover the whole run — a job killed at the timeout
-  reads as a failed run. Doesn't apply to `ssh` or `local` (the process runs
-  until it exits or is cancelled). On k8s a manifest-set
-  `activeDeadlineSeconds` wins over the flag.
-- `--image` overrides the container on `hf`/`modal` (default: CUDA pytorch on
-  GPU flavors, `python:3.12` on CPU). Doesn't apply to `ssh`/`slurm`/`local`
-  (the host's own environment), `k8s` (the manifest sets the image), or
-  `openresearch` (the platform's fixed image).
-
-### The k8s manifest contract
-
-There are no flavors or topology flags: **you write plain Kubernetes YAML**,
-commit it on the experiment branch, and orx applies it. Inspect the cluster
-yourself (`kubectl get nodes`, allocatable resources, GPU products) and write
-whatever the run needs — a single-pod 4-GPU Job, an Indexed Job spanning
-nodes with a headless Service and downward-API rank env, an auxiliary
-inference Deployment. The manifest inherits through the tree like all code,
-and changing it is a commit — visible in the diff like any experimental
-variable.
-
-Rules orx enforces at submit (loud, before anything runs):
-
-- **Exactly one Job** — its completion/failure is the run's outcome. With
-  several Jobs, label the primary `orx-primary: "true"`.
-- **Some container of that Job must run the injected script**: set
-  `command: ["bash", "-c", "$ORX_SCRIPT"]`. The `ORX_SCRIPT` env var (added
-  by orx) clones the branch tip and runs the experiment's fixed run command —
-  the run command stays the contract; the manifest only shapes where it runs.
-- Every resource needs `metadata.name` (no `generateName`) and no foreign
-  `metadata.namespace`. Put `{{{{ORX_RUN}}}}` in names — orx substitutes a
-  run-unique token so re-runs don't collide.
-
-orx injects the rest: run labels, the `orx-env` Secret (`envFrom`, holds the
-synced API keys + `HF_TOKEN`/`GITHUB_TOKEN`) on the primary Job, and defaults
-for `activeDeadlineSeconds`/`ttlSecondsAfterFinished`/`backoffLimit: 0` when
-unset. Auxiliary resources that need the env reference the `orx-env` Secret
-themselves. Cancel deletes exactly what the manifest created.
-
-The run log follows the primary Job's **leader pod** (completion index 0 for
-Indexed Jobs, else its sole pod) — print everything you'll need to analyze
-from there; other pods stay reachable via `kubectl logs`. Cross-node traffic
-rides the pod network — fine for loosely-coupled work (async RL,
-parameter-server); tightly-coupled per-step all-reduce wants a fast fabric
-the cluster may not have.
+**Load the specifics before launching on a backend you haven't used this
+session:** the `orx-compute` skill has the per-backend flavors, flags, and
+sizing discipline; the `orx-compute-k8s` skill has the full manifest contract
+orx enforces at submit. Fetch them with `orx skill compute` / `orx skill
+compute-k8s` if your harness hasn't surfaced them.
 
 ## Sizing compute
 
-- **Decide GPU vs CPU first.** API-driven evals, data prep, and CPU-bound
-  papers run fine (and far cheaper) on a CPU flavor.
-- **Pick the smallest flavor that fits** the model and a minimal batch; don't
-  reflexively grab the biggest.
-- **Let a real failure escalate you.** OOM or hopelessly-slow → move up a
-  tier. That's expected, not a mistake.
-- Raise `--timeout` (`--timeout 1d`) only for genuinely long runs.
+Decide GPU vs CPU first (CPU flavors are far cheaper for API-driven evals and
+data prep), pick the smallest flavor that fits, and let a real OOM/too-slow
+failure escalate you a tier. Per-flavor sizing detail lives in the `orx-compute`
+skill.
 
 ## Analyzing results
 
 Run logs are the only evidence channel in local mode. Make the run command
 print everything you'll need to stdout — final metrics, an `EVAL.md`-style
 summary, key config — and read it back with `orx logs <runId>` (use `--head` /
-`--range` for long logs). If a run's output isn't in its log, it's lost.
+`--range` for long logs). If a run's output isn't in its log, it's lost. The
+`orx-evidence` skill expands this.
 
 ## Asking the user
 
@@ -470,10 +432,16 @@ plan mode.
 fn exclude_agent_files(hub: &Path) {
     let path = hub.join(".git").join("info").join("exclude");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let missing: Vec<&str> = ["opencode.json", ".openresearch/"]
-        .into_iter()
-        .filter(|entry| !existing.lines().any(|l| l.trim() == *entry))
-        .collect();
+    let missing: Vec<&str> = [
+        "opencode.json",
+        ".openresearch/",
+        ".claude/skills/",
+        ".opencode/skills/",
+        ".agents/skills/",
+    ]
+    .into_iter()
+    .filter(|entry| !existing.lines().any(|l| l.trim() == *entry))
+    .collect();
     if missing.is_empty() {
         return;
     }
@@ -499,7 +467,16 @@ fn exclude_agent_files(hub: &Path) {
 /// legacy exec: first-turn context). Returns
 /// `(workdir, playbook)` — the worktree the harness runs in and the playbook
 /// path inside it.
-pub fn ensure_playbook(project: &LocalProject, session_id: &str) -> Result<(PathBuf, PathBuf)> {
+///
+/// `session_skills_dir` is the harness's worktree-relative native-skills dir
+/// (`.claude/skills`, `.opencode/skills`, `.agents/skills`); when `Some`, the
+/// modular `orx` skills are written there too, fresh alongside the playbook, so
+/// the session's own agent auto-loads them with zero drift.
+pub fn ensure_playbook(
+    project: &LocalProject,
+    session_id: &str,
+    session_skills_dir: Option<&str>,
+) -> Result<(PathBuf, PathBuf)> {
     let workdir = git::ensure_session_worktree(
         &project.github_owner,
         &project.github_repo,
@@ -513,6 +490,11 @@ pub fn ensure_playbook(project: &LocalProject, session_id: &str) -> Result<(Path
     }
     std::fs::write(&playbook, playbook_md(project))
         .map_err(|e| anyhow!("Could not write {}: {}", playbook.display(), e))?;
+    // Modular skills, written fresh beside the playbook (same freshness
+    // semantics) so this session's agent discovers them natively.
+    if let Some(dir) = session_skills_dir {
+        super::agent_skills::ensure_session_skills(&workdir, dir)?;
+    }
     // One shared exclude covers every worktree.
     exclude_agent_files(&git::clone_path(
         &project.github_owner,
@@ -534,7 +516,10 @@ fn write_agent_files(
     model: Option<&str>,
     session_id: &str,
 ) -> Result<(PathBuf, Option<PathBuf>)> {
-    let (repo, playbook) = ensure_playbook(project, session_id)?;
+    // Source of truth for the session-skills dir is the harness trait.
+    use crate::local::harness::Harness;
+    let skills_dir = crate::local::harness::opencode::OpenCode.session_skills_dir();
+    let (repo, playbook) = ensure_playbook(project, session_id, skills_dir)?;
     let config_override = if git::is_tracked(&repo, "opencode.json") {
         // Out-of-root config: absolute instructions path (no root to anchor it).
         let path = repo
@@ -803,5 +788,74 @@ impl AgentHost {
         for (_, mut agent) in self.inner.lock().await.drain() {
             let _ = agent.child.kill().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local::agent_skills::{self, SkillSet};
+
+    fn sample_project() -> LocalProject {
+        LocalProject {
+            id: "proj_test".into(),
+            name: "Test Project".into(),
+            slug: "test-project".into(),
+            github_owner: "acme".into(),
+            github_repo: "widget".into(),
+            baseline_branch: "main".into(),
+            repo_path: "/tmp/nonexistent".into(),
+            run_command: None,
+            paper_id: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    /// The playbook's "## Skills" index must list exactly the Local-set skills,
+    /// in order — regenerate-and-compare so it can never freeze out of sync with
+    /// `agent_skills::skills` (the same set written into the session worktree).
+    #[test]
+    fn playbook_skills_index_matches_local_set() {
+        let md = playbook_md(&sample_project());
+        let expected: Vec<String> = agent_skills::skills(SkillSet::Local)
+            .iter()
+            .map(|s| format!("- **{}** — {}", s.name, s.description))
+            .collect();
+
+        // The "## Skills" section body: between the heading and the next `## `.
+        let after = md
+            .split("## Skills\n")
+            .nth(1)
+            .expect("no ## Skills section");
+        let section = after.split("\n## ").next().unwrap();
+
+        let listed: Vec<String> = section
+            .lines()
+            .filter(|l| l.starts_with("- **"))
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            listed, expected,
+            "playbook Skills index drifted from Local set"
+        );
+    }
+
+    /// The slimmed playbook keeps its templated conditional logic — the
+    /// compute-default branch's placeholders must still resolve (no leftover
+    /// `{...}` braces from a botched edit).
+    #[test]
+    fn playbook_has_no_unresolved_placeholders() {
+        let md = playbook_md(&sample_project());
+        assert!(
+            !md.contains("{backends_intro}")
+                && !md.contains("{launch_step}")
+                && !md.contains("{files}"),
+            "playbook has an unresolved placeholder"
+        );
+        // Sanity: the slimmed pointers to the modules survived.
+        assert!(md.contains("orx-compute"));
+        assert!(md.contains("orx-reports"));
+        assert!(md.contains("orx-evidence"));
     }
 }
