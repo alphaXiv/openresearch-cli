@@ -1258,25 +1258,6 @@ textarea::placeholder {
 .send-btn.stop:hover:not(:disabled) {
   background: color-mix(in oklab, var(--surface) 88%, var(--text));
 }
-/* Turn blocked on the user's answer: an unread-style bell, not Stop. */
-.send-btn.awaiting-btn {
-  background: var(--accent-amber-subtle);
-  color: var(--accent-amber);
-  animation: awaiting-pulse 2s ease-in-out infinite;
-}
-.send-btn.awaiting-btn:hover:not(:disabled) {
-  background: color-mix(in oklab, var(--accent-amber-subtle) 88%, var(--accent-amber));
-  animation: none;
-}
-@keyframes awaiting-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent-amber) 35%, transparent);
-  }
-  50% {
-    box-shadow: 0 0 0 4px color-mix(in oklab, var(--accent-amber) 0%, transparent);
-  }
-}
 
 /* ---- markdown ---- */
 

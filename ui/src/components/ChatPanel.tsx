@@ -1,5 +1,4 @@
 import {
-  Bell,
   Check,
   ChevronRight,
   CornerDownLeft,
@@ -1548,22 +1547,11 @@ export function ChatPanel({
               title="Reasoning level for this chat"
               onSelect={setReasoningLevel}
             />
-            {awaitingInput ? (
-              // Blocked on the user's answer, not loading: an attention bell,
-              // not a Stop control. Click scrolls to the pending card (Esc
-              // still interrupts the held turn).
-              <button
-                className="send-btn awaiting-btn"
-                title="Waiting for your answer — click to jump to it"
-                aria-label="Waiting for your answer"
-                onClick={() => {
-                  const el = threadRef.current;
-                  el?.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-                }}
-              >
-                <Bell size={15} />
-              </button>
-            ) : busy ? (
+            {busy && !awaitingInput ? (
+              // Stop only while the agent is actively streaming. A turn held
+              // open on an unanswered card is waiting on the user — the card
+              // (and the status line) is the affordance, so the composer keeps
+              // its idle Send button. Esc still interrupts a held turn.
               <button className="send-btn stop" title="Stop" aria-label="Stop" onClick={stop}>
                 <X size={16} />
               </button>
