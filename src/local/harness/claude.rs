@@ -158,8 +158,13 @@ impl Harness for ClaudeCode {
     ) -> Result<ResumeAction> {
         if let Some(native_id) = &prompt.native_id {
             // The bridge request lives inside a running turn; once that turn is
-            // gone (interrupted / errored) the card is stale.
+            // gone the card is stale. Normally `PendingGuard` resolves it at
+            // turn teardown, but a process crash/restart skips that — leaving
+            // a zombie card that renders actionable and swallows every answer
+            // forever. Collapse it store-side before reporting the miss.
             if !ctx.is_busy().await {
+                ctx.host
+                    .resolve_zombie_prompt(&ctx.session_id, &answer.prompt_id);
                 return Err(anyhow!("this approval is no longer pending"));
             }
             let note = answer.note.as_deref().filter(|s| !s.trim().is_empty());
@@ -194,14 +199,11 @@ impl Harness for ClaudeCode {
                 // request — the model revises the plan in the same turn. With
                 // no note it's a plain REJECTION (the strip's Reject button):
                 // tell the model to stop, not to improvise a revision (or a
-                // "what should change?" question card).
+                // "what should change?" question card). The wording is
+                // `synthesize_resume`'s plan-deny arm verbatim — one source
+                // for both delivery shapes.
                 ("plan", false) => {
-                    let message = match note {
-                        Some(note) => format!("Keep refining the plan: {note}"),
-                        None => "The user rejected this plan. Stop planning and wait \
-                                 for further instructions."
-                            .to_string(),
-                    };
+                    let (message, _) = synthesize_resume("plan", answer);
                     ctx.host.settle_permission(
                         native_id,
                         crate::local::chat::PermissionDecision::Deny { message },
@@ -247,6 +249,16 @@ impl Harness for ClaudeCode {
         // A denied permission closes the card without resuming; every other
         // answer continues the session.
         if prompt.kind == "permission" && !answer.approve {
+            return Ok(ResumeAction::Nothing);
+        }
+        // Likewise a note-less plan REJECTION on an end-turn card: the turn is
+        // already over — resuming just to say "stop" would end in fresh text
+        // that `should_synthesize_plan` turns into ANOTHER card, so Reject
+        // could never dismiss the strip. Close the card with no resume.
+        if prompt.kind == "plan"
+            && !answer.approve
+            && answer.note.as_deref().is_none_or(|s| s.trim().is_empty())
+        {
             return Ok(ResumeAction::Nothing);
         }
         let (text, mode) = synthesize_resume(&prompt.kind, answer);
@@ -913,6 +925,18 @@ mod tests {
     fn plan_keep_planning_stays_in_plan_mode() {
         let (text, mode) = synthesize_resume("plan", &answer(false, None, &[], Some("tweak X")));
         assert!(text.contains("tweak X"));
+        assert_eq!(mode, Some(PermissionMode::Plan));
+    }
+
+    #[test]
+    fn plan_noteless_deny_is_a_rejection() {
+        // The strip's Reject: no note → "stop and wait" wording, still plan
+        // mode. The bridge deny arm reuses this string verbatim, and the
+        // end-turn path short-circuits to ResumeAction::Nothing before ever
+        // sending it — this pins the wording the bridge relays.
+        let (text, mode) = synthesize_resume("plan", &answer(false, None, &[], None));
+        assert!(text.contains("rejected"), "{text}");
+        assert!(text.contains("Stop planning"), "{text}");
         assert_eq!(mode, Some(PermissionMode::Plan));
     }
 

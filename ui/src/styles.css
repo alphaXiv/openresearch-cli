@@ -3636,7 +3636,8 @@ button.files-pill-link:hover {
 .prompt-outcome.chosen::before {
   content: "✓ ";
 }
-.prompt-outcome.revised {
+.prompt-outcome.revised,
+.prompt-outcome.rejected {
   color: var(--accent-amber);
 }
 .prompt-collapsed-body {
@@ -3718,11 +3719,6 @@ button.files-pill-link:hover {
 .plan-strip-revise-input:focus {
   border-color: var(--accent-blue);
 }
-.plan-strip-revise-submit {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
 .plan-strip-icon {
   color: var(--accent-blue);
   flex-shrink: 0;
@@ -3755,18 +3751,6 @@ button.files-pill-link:hover {
   color: var(--text);
   opacity: 1;
 }
-/* Split button halves (must out-rank the `.prompt-actions .btn-primary`
-   shorthands): flat inner corners on both sides of the seam, and the caret
-   drops its own left border so the divider is a single 1px line. */
-.plan-strip-actions .plan-strip-approve .btn-primary:first-child {
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
-}
-.plan-strip-actions .plan-strip-caret {
-  border-left: none;
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
-}
 /* The accept primary: solid dark (desktop's black button), not brand red.
    `--text`-on-`--base` inverts correctly in dark mode. */
 .plan-strip-actions .plan-strip-primary {
@@ -3779,28 +3763,25 @@ button.files-pill-link:hover {
   border-color: var(--text);
   color: var(--base);
 }
-/* Seam divider on the solid split button: a faint base-colored line. */
-.plan-strip-actions .plan-strip-primary.plan-strip-caret {
-  border-left: 1px solid color-mix(in oklab, var(--base) 35%, var(--text));
-}
 .plan-strip-approve {
   position: relative;
   display: flex;
 }
+/* Split button: flat inner corners; the caret drops its own left border and
+   draws a faint base-colored seam instead. (0,3,0)+ selectors so the
+   `.prompt-actions`/`.plan-strip-actions` shorthands can't re-round or
+   re-border the seam. */
 .plan-strip-approve .btn-primary:first-child {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
-.plan-strip-caret {
+.plan-strip-actions .plan-strip-caret {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
   padding: 0 6px;
-  /* Split button: the caret drops its own left border so the seam is the
-     left half's single 1px border, not a doubled line. */
-  border-left: none;
-  margin-left: 0;
   display: flex;
   align-items: center;
+  border-left: 1px solid color-mix(in oklab, var(--base) 35%, var(--text));
 }
 .plan-strip-menu {
   position: absolute;

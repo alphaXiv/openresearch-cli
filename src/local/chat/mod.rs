@@ -593,10 +593,10 @@ impl ChatHost {
             crate::local::harness::question_prompt(tool_name, Some(&tool_input))
                 .filter(|q| !q.options.is_empty())
         {
-            // Malformed question input — unparseable, or no options to click
-            // (the held card has no free-text input, so it would be
-            // unanswerable) — falls through to a permission card instead (the
-            // user can still allow/deny the raw tool call).
+            // Malformed question input — unparseable, or no options at all —
+            // falls through to a permission card instead: options are the
+            // question card's primary interface, and allow/deny on the raw
+            // tool call is a saner fallback than an options-less card.
             WirePrompt {
                 native_id: Some(prompt_id.clone()),
                 ..question
@@ -611,6 +611,7 @@ impl ChatHost {
             }
         };
 
+        let is_question = prompt.kind == "question";
         // The card rides its own assistant message: the running turn owns its
         // in-flight message's parts (a foreign part appended there would be
         // clobbered by the turn's next flush).
@@ -632,10 +633,6 @@ impl ChatHost {
         // mode, so it must not count as "saw a prompt" — a turn that asks a
         // question and then ends with its plan as plain text still needs the
         // synthesized plan card. Plan/permission cards keep counting.
-        let is_question = msg.parts[0]
-            .prompt
-            .as_ref()
-            .is_some_and(|p| p.kind == "question");
         if !is_question {
             self.bridge_prompted
                 .lock()
@@ -1080,6 +1077,16 @@ impl ChatHost {
                 }
                 Ok(())
             }
+        }
+    }
+
+    /// Resolve one card answerless and broadcast — for zombie native cards
+    /// whose held turn died without cleanup (process crash/restart, so
+    /// [`PendingGuard`] never ran). Collapses the card so it stops rendering
+    /// actionable and swallowing every answer. Best-effort by design.
+    pub fn resolve_zombie_prompt(&self, session_id: &str, prompt_id: &str) {
+        if let Ok(Some(msg)) = mark_prompt_resolved(&self.msg_write, session_id, prompt_id, None) {
+            self.emit("chat.message", message_json(&msg, session_id));
         }
     }
 

@@ -26,7 +26,7 @@ export function PlanStrip({
   /** Card synthesized from the turn's final text (no ExitPlanMode call). */
   synthesized: boolean;
   onView: () => void;
-  onApprove: (resumeMode: "auto" | "accept-edits" | "bypass") => void;
+  onApprove: (resumeMode: "auto" | "bypass") => void;
   onReject: () => void;
   /** Revision feedback; always non-empty (a blank submit sends a generic
    * "please revise" — note presence is what distinguishes revise from
@@ -55,8 +55,10 @@ export function PlanStrip({
   const submitRevision = () => {
     // A blank submit still means "revise": the wire distinguishes reject
     // (no note) from revise (note), so an empty field gets a generic nudge
-    // rather than accidentally reading as a hard rejection.
-    onRevise(note.trim() || "Please revise the plan.");
+    // rather than accidentally reading as a hard rejection. (The backend
+    // wraps it as "Keep refining the plan: <note>", so word it to read well
+    // there.)
+    onRevise(note.trim() || "no specific feedback — use your judgment");
     setNote("");
     setRevising(false);
   };
@@ -103,10 +105,7 @@ export function PlanStrip({
               Back
             </button>
             <span className="plan-strip-spacer" />
-            <button
-              className="btn-primary plan-strip-primary plan-strip-revise-submit"
-              onClick={submitRevision}
-            >
+            <button className="btn-primary plan-strip-primary" onClick={submitRevision}>
               Revise
               <CornerDownLeft size={13} />
             </button>
