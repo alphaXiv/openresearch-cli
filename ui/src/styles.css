@@ -869,6 +869,10 @@ textarea::placeholder {
   animation: pulse 1.2s infinite;
   flex-shrink: 0;
 }
+/* Turn held on an unanswered card: ready for the user — steady, no pulse. */
+.session-row .busy-dot.waiting {
+  animation: none;
+}
 /* Inline rename: the title span is replaced by an input sharing its box so the
    text doesn't jump. Take the row's full width and hide the kebab/time. */
 .session-row .session-title-input {

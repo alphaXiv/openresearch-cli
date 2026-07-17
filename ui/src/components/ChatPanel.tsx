@@ -358,9 +358,10 @@ function PromptCard({
         </details>
       );
     }
-    // question — one line: header/question + what was chosen. No echo
-    // (stale-resolved): neutral "Resolved", matching the plan row.
-    const chosen = (p.answers ?? []).join(", ");
+    // question — one line: header/question + what was chosen (or the typed
+    // custom answer). No echo at all (stale-resolved): neutral "Resolved",
+    // matching the plan row.
+    const chosen = (p.answers ?? []).join(", ") || p.note || "";
     return (
       <details className="prompt-collapsed">
         <summary>
@@ -652,6 +653,7 @@ function SessionRow({
   session,
   active,
   busy,
+  waiting,
   onOpen,
   onRename,
   onSetArchived,
@@ -660,6 +662,8 @@ function SessionRow({
   session: ChatSession;
   active: boolean;
   busy: boolean;
+  /** Turn held on an unanswered card: steady dot, not the working pulse. */
+  waiting: boolean;
   onOpen: () => void;
   onRename: (title: string) => void;
   onSetArchived: (archived: boolean) => void;
@@ -723,7 +727,9 @@ function SessionRow({
         }
       }}
     >
-      <span className="session-dot">{busy && <span className="busy-dot" />}</span>
+      <span className="session-dot">
+        {busy && <span className={`busy-dot ${waiting ? "waiting" : ""}`} />}
+      </span>
       {editing ? (
         <input
           ref={inputRef}
@@ -1015,16 +1021,18 @@ export function ChatPanel({
   const busy = activeId ? state.busySessions.has(activeId) : false;
   // A busy turn blocked on an unanswered HELD card (nativeId — a bridge or
   // inline mid-turn request) is waiting on the user, not the model. Drives
-  // the status line and the composer's bell (instead of the Stop button).
-  // End-turn cards (no nativeId) never coexist with a busy turn of their own,
-  // so keying on nativeId avoids false positives from stale cards.
-  const awaitingInput =
-    busy &&
-    messages.some((m) =>
+  // the status line, the composer button, and the rail dot. End-turn cards
+  // (no nativeId) never coexist with a busy turn of their own, so keying on
+  // nativeId avoids false positives from stale cards. (Sessions whose
+  // transcripts aren't loaded fall back to plain busy.)
+  const sessionWaiting = (id: string) =>
+    state.busySessions.has(id) &&
+    (state.messagesBySession[id] ?? []).some((m) =>
       m.parts.some(
         (p) => p.type === "prompt" && p.prompt && !p.prompt.resolved && p.prompt.nativeId,
       ),
     );
+  const awaitingInput = activeId ? sessionWaiting(activeId) : false;
   const activeSession = openSession;
 
   // The newest unresolved plan prompt, if any — it drives the docked strip
@@ -1044,6 +1052,23 @@ export function ChatPanel({
     }
     return null;
   }, [messages]);
+
+  // The newest unresolved interactive card (plan or question): typed composer
+  // text answers IT instead of racing the turn with a new message — a plan
+  // gets the text as revision feedback (keep planning), a question as a
+  // custom answer. Questions only route on Claude sessions: opencode rejects
+  // note-only replies (see reply_inline), so its options stay the interface.
+  const pendingPrompt = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      for (const part of messages[i].parts) {
+        if (part.type !== "prompt" || !part.prompt || part.prompt.resolved) continue;
+        const kind = part.prompt.kind;
+        if (kind === "plan" || (kind === "question" && activeSession?.harness === "claude-code"))
+          return { promptId: part.id, kind };
+      }
+    }
+    return null;
+  }, [messages, activeSession?.harness]);
 
   // Plan opens are stamped with the session like file opens are.
   const openPlan =
@@ -1088,7 +1113,21 @@ export function ChatPanel({
   async function send() {
     const text = draft.trim();
     const pending = attachments;
-    if ((!text && pending.length === 0) || busy) return;
+    if (!text && pending.length === 0) return;
+    // A pending card owns plain typed text (Claude-desktop behavior): a plan
+    // gets it as revision feedback, a question as a custom answer. This also
+    // works while the turn is HELD on the card — where a new message would
+    // be rejected as busy and silently dropped.
+    if (text && pendingPrompt && pending.length === 0) {
+      setDraft("");
+      respond(
+        pendingPrompt.kind === "plan"
+          ? { promptId: pendingPrompt.promptId, approve: false, note: text }
+          : { promptId: pendingPrompt.promptId, answers: [], note: text },
+      );
+      return;
+    }
+    if (busy) return;
     // `composerSelection` already resolves to the open session's settings (+ any
     // unsent tweak) or, for a new session, the global preference.
     const effective = composerSelection;
@@ -1279,6 +1318,7 @@ export function ChatPanel({
             session={s}
             active={s.id === activeId && mainView === "chat"}
             busy={state.busySessions.has(s.id)}
+            waiting={sessionWaiting(s.id)}
             onOpen={() => {
               setActiveId(s.id);
               onSelectMainView("chat");
@@ -1467,11 +1507,16 @@ export function ChatPanel({
             ref={composerRef}
             value={draft}
             placeholder={
-              // Follow `composerSelection` so the name tracks the picker for a
+              // A pending card owns typed text (see send()); say so. Otherwise
+              // follow `composerSelection` so the name tracks the picker for a
               // new session and the open session once one exists.
-              composerSelection
-                ? `Message ${HARNESS_LABELS[composerSelection.harness]}… ( / for skills)`
-                : "Ask the research agent… ( / for skills)"
+              pendingPrompt
+                ? pendingPrompt.kind === "plan"
+                  ? "Describe changes to request a plan revision…"
+                  : "Type a custom answer…"
+                : composerSelection
+                  ? `Message ${HARNESS_LABELS[composerSelection.harness]}… ( / for skills)`
+                  : "Ask the research agent… ( / for skills)"
             }
             rows={2}
             onPaste={onComposerPaste}
@@ -1548,10 +1593,6 @@ export function ChatPanel({
               onSelect={setReasoningLevel}
             />
             {busy && !awaitingInput ? (
-              // Stop only while the agent is actively streaming. A turn held
-              // open on an unanswered card is waiting on the user — the card
-              // (and the status line) is the affordance, so the composer keeps
-              // its idle Send button. Esc still interrupts a held turn.
               <button className="send-btn stop" title="Stop" aria-label="Stop" onClick={stop}>
                 <X size={16} />
               </button>
