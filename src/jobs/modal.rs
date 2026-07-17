@@ -549,10 +549,11 @@ pub async fn preflight() -> Result<()> {
     Ok(())
 }
 
-/// Best-effort probe: is a Modal interpreter present, is `modal` importable, and
-/// is a token configured (process env, the synced env file, or `~/.modal.toml`)?
-pub async fn detect() -> ModalStatus {
-    let token_source = if std::env::var("MODAL_TOKEN_ID").is_ok_and(|t| !t.trim().is_empty()) {
+/// Where a Modal token would come from, if anywhere: process env, the synced
+/// env file, or `~/.modal.toml`. Sync and cheap (env + fs only) — safe for the
+/// compute-summary endpoint, which must not pay `detect()`'s python probe.
+pub fn token_source() -> Option<&'static str> {
+    if std::env::var("MODAL_TOKEN_ID").is_ok_and(|t| !t.trim().is_empty()) {
         Some("env")
     } else if crate::config::synced_env_var("MODAL_TOKEN_ID").is_some() {
         Some("syncedEnv")
@@ -560,7 +561,13 @@ pub async fn detect() -> ModalStatus {
         Some("modalToml")
     } else {
         None
-    };
+    }
+}
+
+/// Best-effort probe: is a Modal interpreter present, is `modal` importable, and
+/// is a token configured (process env, the synced env file, or `~/.modal.toml`)?
+pub async fn detect() -> ModalStatus {
+    let token_source = token_source();
     let token_configured = token_source.is_some();
     let env_provisioned = managed_python().exists();
     let mk = |modal_importable, error| ModalStatus {

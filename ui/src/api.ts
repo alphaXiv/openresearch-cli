@@ -174,11 +174,13 @@ export const createExperiment = (projectId: string, body: NewExperiment) =>
 export const startRun = (
   experimentId: string,
   body: {
-    backend?: "hf" | "k8s" | "slurm" | "openresearch";
+    /** Omit to launch on the default compute target (Settings → Compute);
+     * with no default set the server falls back to `hf`. */
+    backend?: "local" | "hf" | "modal" | "k8s" | "ssh" | "slurm" | "openresearch";
     flavor?: string;
     manifest?: string;
     timeout?: string;
-    /** Slurm login node (~/.ssh/config alias); defaults to the slurm settings' host. */
+    /** ssh host alias, or the Slurm login node; defaults to the slurm settings' host. */
     host?: string;
     /** Org to bill the box to (openresearch only; omit = the sole org). */
     org?: string;
@@ -461,6 +463,71 @@ export interface SlurmPreflight {
 /** Live-test a login node: reachable, Slurm CLI + git present, partitions. */
 export const slurmPreflight = (host: string) =>
   post<SlurmPreflight>("/api/settings/slurm/preflight", { host });
+
+// --- settings: compute targets (unified list + default) ------------------------
+
+export type ComputeTargetId =
+  | "local"
+  | "hf"
+  | "modal"
+  | "k8s"
+  | "ssh"
+  | "slurm"
+  | "openresearch";
+
+/** Cheap fs/env probe only — "worth trying", not "healthy". Deep health lives
+ * in each backend's own settings endpoint, fetched when its row is expanded. */
+export interface ComputeTargetSummary {
+  id: ComputeTargetId;
+  configured: boolean;
+  summary: string;
+}
+
+export interface ComputeSettings {
+  defaultBackend: ComputeTargetId | null;
+  defaultFlavor: string | null;
+  targets: ComputeTargetSummary[];
+}
+
+export const getComputeSettings = () => get<ComputeSettings>("/api/settings/compute");
+
+/** Set (or clear, with backend: null) the default compute target. Responds
+ * with the full compute payload so the caller reconciles in one shot. */
+export const setComputeDefault = (body: {
+  backend: ComputeTargetId | null;
+  flavor?: string | null;
+}) => post<ComputeSettings>("/api/settings/compute/default", body);
+
+export interface LocalGpu {
+  name: string;
+  memMib: number | null;
+}
+
+/** What `--backend local` runs on: this machine's detected hardware. */
+export interface LocalMachine {
+  hostname: string;
+  os: string;
+  arch: string;
+  /** CPU brand string on macOS (e.g. "Apple M2 Pro"). */
+  chip: string | null;
+  cpuCount: number;
+  memBytes: number | null;
+  gpus: LocalGpu[];
+}
+
+export const getLocalMachine = () => get<LocalMachine>("/api/settings/local");
+
+export interface OpenResearchSettings {
+  loggedIn: boolean;
+  apiUrl: string | null;
+  orgs: string[];
+  /** null = signed in but the key check failed (see error). */
+  sshKeyRegistered: boolean | null;
+  error: string | null;
+}
+
+export const getOpenResearchSettings = () =>
+  get<OpenResearchSettings>("/api/settings/openresearch");
 
 /** The experiment a top-level files folder is named for (folder == slug). */
 export interface FileExperiment {

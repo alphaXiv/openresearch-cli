@@ -3023,6 +3023,117 @@ button.files-pill-link:hover {
   color: var(--muted);
 }
 
+/* compute target list (Settings → Compute) */
+.compute-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.compute-row {
+  background: var(--base);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.compute-row-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  user-select: none;
+}
+.compute-row-head:hover {
+  background: var(--surface);
+  border-radius: 10px;
+}
+.compute-row.open .compute-row-head:hover {
+  border-radius: 10px 10px 0 0;
+}
+.compute-row-logo {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+.compute-row-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  flex: none;
+}
+.compute-row-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+.compute-row-head .badge,
+.compute-make-default,
+.compute-default-pill {
+  flex: none;
+}
+/* Rendered as `badge compute-default-pill` — only the accent color differs. */
+.compute-default-pill {
+  color: var(--primary);
+  border-color: var(--primary);
+}
+.compute-chevron-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 6px;
+}
+.compute-chevron-btn:hover {
+  background: var(--panel);
+}
+.compute-chevron {
+  color: var(--muted);
+  transition: transform 120ms ease;
+}
+.compute-row.open .compute-chevron {
+  transform: rotate(180deg);
+}
+.compute-row-body {
+  border-top: 1px solid var(--border);
+  padding: 14px;
+}
+.compute-row-body .settings-card {
+  margin-bottom: 0;
+  margin-top: 14px;
+}
+.compute-default-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.compute-flavor-form {
+  margin-bottom: 14px;
+}
+.compute-flavor-form label {
+  max-width: 320px;
+}
+.compute-flavor-hint {
+  font-size: 12px;
+}
+/* Standing disclosure, not a warning — quiet muted text, no amber callout. */
+.compute-footnote {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.compute-footnote svg {
+  flex: none;
+  margin-top: 1px; /* optical align with the first text line */
+}
+
 /* harness sub-tabs */
 .harness-tabs {
   display: flex;

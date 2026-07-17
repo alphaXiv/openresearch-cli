@@ -115,7 +115,7 @@ export function GitHubMark({ size = 16 }: { size?: number }) {
 }
 
 /** The logo glyph for a backend kind. */
-function BackendLogo({ kind, size = 16 }: { kind: string; size?: number }) {
+export function BackendLogo({ kind, size = 16 }: { kind: string; size?: number }) {
   switch (kind) {
     case "modal_job":
       return <ModalLogo size={size} />;
