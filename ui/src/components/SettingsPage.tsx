@@ -1144,7 +1144,7 @@ function ComputeTab() {
               />
             ))}
           </div>
-          <p className="settings-note compute-footnote">
+          <p className="compute-footnote">
             The default target and flavor are included in the research agent&apos;s
             instructions — it launches runs there unless you name another backend. No other
             compute settings are shared with it.
