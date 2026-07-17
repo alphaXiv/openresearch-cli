@@ -266,7 +266,7 @@ export const getProjectFile = (projectId: string, path: string, opts: CheckoutRe
 export interface CodeTree {
   root: CheckoutRoot;
   /** The listed branch (`ref` mode), else the checked-out branch, else null
-   * (detached, e.g. a fresh worktree). */
+   * (detached HEAD). */
   branch: string | null;
   /** Repo-relative file paths (gitignored trees excluded), sorted. */
   entries: string[];
@@ -275,9 +275,8 @@ export interface CodeTree {
 }
 
 /** Flat file listing of the project — a branch's committed tree when `ref` is
- * given, else a chat session's worktree, else the hub clone — plus the branch
- * name. */
-export const getCodeTree = (projectId: string, opts: CheckoutRef = {}) => {
+ * given, else the hub clone's checkout — plus the branch name. */
+export const getCodeTree = (projectId: string, opts: { ref?: string } = {}) => {
   const qs = checkoutQuery(opts).toString();
   return get<CodeTree>(`/api/projects/${projectId}/code-tree${qs ? `?${qs}` : ""}`);
 };

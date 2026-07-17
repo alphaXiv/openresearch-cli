@@ -9,7 +9,7 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import { FolderTree, GitBranch, Terminal } from "lucide-react";
-import { GitHubMark } from "./BranchPill";
+import { GitHubMark } from "./BackendLogos";
 import { memo, useMemo } from "react";
 import { githubBranchUrl, timeAgo, type Experiment, type Project, type Run } from "../api";
 import type { ExperimentView } from "./DetailDrawer";
@@ -104,7 +104,7 @@ const ExpNode = memo(function ExpNode({ data }: NodeProps<ExpFlowNode>) {
         <span style={{ flex: 1 }} />
         {latestRun && <span>{timeAgo(latestRun.createdAt)}</span>}
       </div>
-      {/* Direct view shortcuts — changes always, terminal once there's a run. */}
+      {/* Direct view shortcuts — changes and code always, logs once there's a run. */}
       <div className="node-actions" onClick={(e) => e.stopPropagation()}>
         <button
           className="node-action"
@@ -117,7 +117,7 @@ const ExpNode = memo(function ExpNode({ data }: NodeProps<ExpFlowNode>) {
         {runs.length > 0 && (
           <button
             className="node-action"
-            title="Open terminal"
+            title="Open logs"
             onClick={() => onOpenView(exp.id, "terminal")}
           >
             <Terminal size={13} />
@@ -246,6 +246,7 @@ export function TreeView({
       defaultEdgeOptions={defaultEdgeOptions}
       nodesDraggable={false}
       nodesConnectable={false}
+      nodesFocusable={false}
       minZoom={0.15}
       fitView
       fitViewOptions={{ padding: 0.25, maxZoom: 1 }}

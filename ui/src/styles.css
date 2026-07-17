@@ -1414,15 +1414,12 @@ textarea::placeholder {
 /* Cards must stay `selectable` (ReactFlow sets pointer-events:none on nodes
  * that are neither draggable nor selectable, which would kill the action
  * buttons) — but selection itself means nothing here, so suppress its
- * pointer cursor and click outline. Specificity beats RF's stylesheet. */
+ * pointer cursor. Specificity beats RF's stylesheet. Focus/selected visuals
+ * need no override: nodesFocusable={false} removes the tab stop, RF's own
+ * CSS zeroes node focus outlines, and its .selected box-shadow only targets
+ * built-in node types, not custom ones. */
 .react-flow__node.react-flow__node-exp.selectable {
   cursor: default;
-}
-.react-flow__node.react-flow__node-exp.selectable.selected,
-.react-flow__node.react-flow__node-exp.selectable:focus,
-.react-flow__node.react-flow__node-exp.selectable:focus-visible {
-  outline: none;
-  box-shadow: none;
 }
 .exp-node {
   /* Keep in sync with NODE_W in TreeView.tsx (layout math uses it). */
@@ -1507,7 +1504,7 @@ textarea::placeholder {
   padding: 0 4px;
   flex-shrink: 0;
 }
-/* Direct view shortcuts (Changes / Terminal) at the card's foot. */
+/* Direct view shortcuts (Changes / Logs) at the card's foot. */
 .exp-node .node-actions {
   margin-top: 8px;
   padding-top: 6px;
@@ -1520,7 +1517,7 @@ textarea::placeholder {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  /* Tight: Changes + Terminal + Code + the GitHub icon share one fixed-width row. */
+  /* Tight: Changes + Logs + Code + the GitHub icon share one fixed-width row. */
   padding: 3px 6px;
   font-size: 10.5px;
   font-weight: 700;
@@ -3433,12 +3430,20 @@ button.files-pill-link:hover {
   align-items: flex-start;
   min-width: max-content;
 }
-.file-view-gutter {
+/* Identical font metrics + vertical padding are the 1:1 row-alignment
+   invariant — one rule so they can't drift apart. */
+.file-view-gutter,
+.file-view-code {
   margin: 0;
-  padding: 14px 10px 14px 14px;
+  padding-top: 14px;
+  padding-bottom: 14px;
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.55;
+}
+.file-view-gutter {
+  padding-left: 14px;
+  padding-right: 10px;
   text-align: right;
   color: var(--muted);
   user-select: none;
@@ -3450,11 +3455,8 @@ button.files-pill-link:hover {
   flex-shrink: 0;
 }
 .file-view-code {
-  margin: 0;
-  padding: 14px 16px;
-  font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.55;
+  padding-left: 16px;
+  padding-right: 16px;
   tab-size: 4;
   min-width: max-content;
 }
@@ -3775,7 +3777,7 @@ button.files-pill-link:hover {
   text-decoration: underline;
 }
 
-/* Code browser tab — live-worktree / branch file tree in flow layout (NOT
+/* Code browser tab — project-clone / branch file tree in flow layout (NOT
    .runs-table-wrap, which is position:absolute and would jump to (0,0)). */
 .code-tab {
   display: flex;
@@ -3787,13 +3789,19 @@ button.files-pill-link:hover {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 14px;
+  /* Match .file-view-header so Code ↔ file tab switches don't jump chrome. */
+  padding: 4px 12px;
   border-bottom: 1px solid var(--border-variant);
   flex-shrink: 0;
 }
 .code-tab-select {
   max-width: 280px;
   min-width: 0;
+  /* Compact metrics so the header's height matches .file-view-header's
+   * (whose tallest child is a 28px icon-btn) — the base select rule's
+   * 6px/14px would make Code <-> file tab switches jump the divider. */
+  padding: 3px 8px;
+  font-size: 12px;
 }
 .code-tab-note {
   padding: 8px 16px;

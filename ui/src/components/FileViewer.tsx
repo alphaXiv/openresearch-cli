@@ -132,9 +132,13 @@ export function FileViewer({
               </div>
             ) : (
               <div className="file-view-codewrap">
-                <pre className="file-view-gutter" aria-hidden="true">
-                  {Array.from({ length: lineCount }, (_, i) => i + 1).join("\n")}
-                </pre>
+                {/* No numbers for an empty file — an empty gutter is just a
+                    stray bordered strip. */}
+                {lineCount > 0 && (
+                  <pre className="file-view-gutter" aria-hidden="true">
+                    {Array.from({ length: lineCount }, (_, i) => i + 1).join("\n")}
+                  </pre>
+                )}
                 <pre className="file-view-code">
                   <code>{rendered}</code>
                 </pre>

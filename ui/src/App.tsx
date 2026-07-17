@@ -72,21 +72,16 @@ interface PlanViewDef {
   plan: string;
 }
 
-/** A code-browser view for one chat session: the live session worktree or an
- * experiment branch's committed tree. Source + expansion state live on the
- * def — CodeTab unmounts whenever another right-pane tab fronts it (e.g.
- * clicking a file), and remount must not rederive them. Discriminates on the
- * `code` flag (the other tab kinds discriminate on `view`/`path`/`kind`). */
+/** The project's code-browser tab (at most one): an experiment branch's
+ * committed tree, or the hub clone's checkout, opened from an experiment
+ * card's Code shortcut. Source + expansion state live here — CodeTab
+ * unmounts whenever another right-pane tab fronts it (e.g. clicking a
+ * file), and remount must not lose them. Discriminates on the `code` flag
+ * (the other tab kinds discriminate on `view`/`path`/`kind`). */
 interface CodeTabDef {
   code: true;
-  /** Owning chat session, or null for the project-level tab (opened from an
-   * experiment card's Code shortcut — browses branches via the hub clone). */
-  sessionId: string | null;
-  /** Source to browse: "" = live session worktree, else a branch name. */
+  /** Source to browse: "" = the project clone, else a branch name. */
   sel: string;
-  /** Whether `sel` was picked by the user — a seeded default silently falls
-   * back to live when its branch doesn't exist yet; a user pick never does. */
-  selPicked: boolean;
   /** Dirs the user flipped away from their depth default. */
   toggled: ReadonlySet<string>;
 }
@@ -179,7 +174,8 @@ export default function App() {
   const [expTabs, setExpTabs] = useState<ExpViewDef[]>([]);
   const [fileTabs, setFileTabs] = useState<FileViewDef[]>([]);
   const [planTabs, setPlanTabs] = useState<PlanViewDef[]>([]);
-  const [codeTabs, setCodeTabs] = useState<CodeTabDef[]>([]);
+  // At most one code-browser tab per project; null = not open.
+  const [codeTab, setCodeTab] = useState<CodeTabDef | null>(null);
   // The right pane is a floating panel: closable, edge-resizable, expandable
   // to (nearly) full screen. Width persists across sessions.
   const [panelOpen, setPanelOpen] = useState(true);
@@ -233,7 +229,7 @@ export default function App() {
     setExpTabs([]);
     setFileTabs([]);
     setPlanTabs([]);
-    setCodeTabs([]);
+    setCodeTab(null);
     setRightTab("experiments");
     listExperiments(projectId).then(setExperiments).catch(() => {});
     listRuns(projectId).then(setRuns).catch(() => {});
@@ -341,45 +337,31 @@ export default function App() {
     [planTabs, rightTab],
   );
 
-  // Card shortcut: browse a specific experiment branch in the project-level
-  // code tab (sessionId null), pinning the pick so it never falls back.
-  const openCodeTabForBranch = useCallback(
-    (branch: string) => {
-      const existing = codeTabs.find((t) => t.sessionId === null);
-      const tab: CodeTabDef = existing
-        ? { ...existing, sel: branch, selPicked: true }
-        : { code: true, sessionId: null, sel: branch, selPicked: true, toggled: new Set<string>() };
-      setCodeTabs((prev) =>
-        prev.some((t) => t.sessionId === null)
-          ? prev.map((t) => (t.sessionId === null ? tab : t))
-          : [...prev, tab],
-      );
-      setRightTab(tab);
-      setPanelOpen(true);
-    },
-    [codeTabs],
-  );
+  // Card shortcut: browse a specific experiment branch in the code tab.
+  // Functional updater + no deps: a stable identity, so the TreeView cards
+  // that receive this don't re-layout on every unrelated tab change.
+  const openCodeTabForBranch = useCallback((branch: string) => {
+    const opened: CodeTabDef = { code: true, sel: branch, toggled: new Set<string>() };
+    setCodeTab((prev) => (prev ? { ...prev, sel: branch } : opened));
+    // rightTab only discriminates on the `code` flag — the pane body always
+    // renders the live `codeTab` state, so this value's other fields are
+    // never read.
+    setRightTab(opened);
+    setPanelOpen(true);
+  }, []);
 
   // Source/expansion changes persist on the tab def, not in CodeTab state —
   // the component unmounts whenever another right-pane tab fronts it.
-  const updateCodeTab = useCallback(
-    (sessionId: string | null, patch: Partial<Omit<CodeTabDef, "code" | "sessionId">>) => {
-      setCodeTabs((prev) => prev.map((t) => (t.sessionId === sessionId ? { ...t, ...patch } : t)));
-    },
-    [],
-  );
+  const updateCodeTab = useCallback((patch: Partial<Omit<CodeTabDef, "code">>) => {
+    setCodeTab((prev) => (prev ? { ...prev, ...patch } : prev));
+  }, []);
 
-  const closeCodeTab = useCallback(
-    (tab: CodeTabDef) => {
-      const idx = codeTabs.findIndex((t) => t.sessionId === tab.sessionId);
-      if (idx === -1) return;
-      const next = codeTabs.filter((_, i) => i !== idx);
-      setCodeTabs(next);
-      if (typeof rightTab === "object" && "code" in rightTab && rightTab.sessionId === tab.sessionId)
-        setRightTab(next[Math.min(idx, next.length - 1)] ?? "experiments");
-    },
-    [codeTabs, rightTab],
-  );
+  const closeCodeTab = useCallback(() => {
+    setCodeTab(null);
+    setRightTab((cur) =>
+      typeof cur === "object" && "code" in cur ? "experiments" : cur,
+    );
+  }, []);
 
   // Drag the panel's left edge to resize; width persists across reloads.
   const resizePanel = (e: React.PointerEvent) => {
@@ -432,7 +414,7 @@ export default function App() {
   const expTab = typeof rightTab === "object" && "view" in rightTab ? rightTab : null;
   const fileTab = typeof rightTab === "object" && "path" in rightTab ? rightTab : null;
   const planTab = typeof rightTab === "object" && "kind" in rightTab ? rightTab : null;
-  const codeTab = typeof rightTab === "object" && "code" in rightTab ? rightTab : null;
+  const codeTabActive = typeof rightTab === "object" && "code" in rightTab;
   const activeProject = projects?.find((p) => p.id === projectId) ?? null;
   const tabExperiment = expTab ? (experiments.find((e) => e.id === expTab.id) ?? null) : null;
 
@@ -583,16 +565,16 @@ export default function App() {
                   onClose={() => closePlanTab(t)}
                 />
               ))}
-              {codeTabs.map((t) => (
+              {codeTab && (
                 <ClosableTab
-                  key={`code:${t.sessionId ?? "@project"}`}
-                  active={codeTab !== null && codeTab.sessionId === t.sessionId}
+                  key="code"
+                  active={codeTabActive}
                   label="Code"
                   icon={<FolderTree size={12} style={{ flexShrink: 0 }} />}
-                  onSelect={() => setRightTab(t)}
-                  onClose={() => closeCodeTab(t)}
+                  onSelect={() => setRightTab(codeTab)}
+                  onClose={closeCodeTab}
                 />
-              ))}
+              )}
             </div>
             <div className="panel-controls">
               <button
@@ -683,32 +665,21 @@ export default function App() {
                 />
               </div>
             </div>
-          ) : codeTab ? (
+          ) : codeTabActive ? (
             <div className="tab-body">
-              {projectId &&
-                activeProject &&
-                (() => {
-                  // rightTab holds the def as of selection; source/expansion
-                  // updates land in codeTabs — read the live entry.
-                  const def = codeTabs.find((t) => t.sessionId === codeTab.sessionId) ?? codeTab;
-                  return (
-                    <CodeTab
-                      key={`code:${def.sessionId ?? "@project"}`}
-                      projectId={projectId}
-                      sessionId={def.sessionId}
-                      project={activeProject}
-                      experiments={experiments}
-                      sel={def.sel}
-                      selPicked={def.selPicked}
-                      toggled={def.toggled}
-                      onSelChange={(sel, picked) =>
-                        updateCodeTab(def.sessionId, { sel, selPicked: picked })
-                      }
-                      onToggledChange={(toggled) => updateCodeTab(def.sessionId, { toggled })}
-                      onOpenFile={openFileTab}
-                    />
-                  );
-                })()}
+              {projectId && activeProject && codeTab && (
+                <CodeTab
+                  key="code"
+                  projectId={projectId}
+                  project={activeProject}
+                  experiments={experiments}
+                  sel={codeTab.sel}
+                  toggled={codeTab.toggled}
+                  onSelChange={(sel) => updateCodeTab({ sel })}
+                  onToggledChange={(toggled) => updateCodeTab({ toggled })}
+                  onOpenFile={openFileTab}
+                />
+              )}
             </div>
           ) : (
             <div className="tab-body">

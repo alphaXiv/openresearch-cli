@@ -1,15 +1,14 @@
-// A code browser for one chat session: either the live session worktree or
-// the committed tree of an experiment branch, picked from a header select.
-// Source + expansion state live on the App-side tab def (the component
-// unmounts whenever another right-pane tab fronts it). The tree is built
-// from git listings (gitignored trees excluded; the live view also shows
-// untracked new files). Clicking a file opens the existing FileViewer tab,
-// served from the same source.
+// The project's code browser: the committed tree of an experiment branch, or
+// the hub clone's checkout, picked from a header select (opened from an
+// experiment card's Code shortcut). Source + expansion state live on the
+// App-side tab def (the component unmounts whenever another right-pane tab
+// fronts it). The tree is built from git listings (gitignored trees
+// excluded). Clicking a file opens the existing FileViewer tab, served from
+// the same source.
 
 import {
   ChevronDown,
   ChevronRight,
-  ExternalLink,
   File as FileIcon,
   Folder,
   FolderOpen,
@@ -23,6 +22,7 @@ import {
   type Experiment,
   type Project,
 } from "../api";
+import { GitHubMark } from "./BackendLogos";
 
 /** A node in the nested tree derived from the flat path list. */
 interface DirNode {
@@ -58,8 +58,8 @@ function buildTree(entries: string[]): DirNode {
 
 // Open/closed is a depth rule plus a set of user exceptions: top-level dirs
 // default open, deeper ones default closed, and a toggle flips a dir away
-// from its default. No seeding pass — dirs appearing in later polls behave
-// exactly like their siblings.
+// from its default. No seeding pass — dirs appearing in later refreshes
+// behave exactly like their siblings.
 
 function DirRow({
   name,
@@ -168,33 +168,25 @@ function TreeLevel({
 
 export function CodeTab({
   projectId,
-  sessionId,
   project,
   experiments,
   sel,
-  selPicked,
   toggled,
   onSelChange,
   onToggledChange,
   onOpenFile,
 }: {
   projectId: string;
-  /** Chat session whose worktree the live view browses. */
-  /** null: project-level tab (card shortcut) — no live-worktree source. */
-  sessionId: string | null;
   /** Owning project — supplies owner/repo for the GitHub branch link. */
   project: Project;
   /** Project experiments — one selectable branch entry each (deduped). */
   experiments: Experiment[];
-  /** Source to browse: "" = live session worktree, else a branch name.
-   * Lives on the tab def so it survives unmount/remount. */
+  /** Source to browse: "" = the project clone, else a branch name. Lives on
+   * the tab def so it survives unmount/remount. */
   sel: string;
-  /** Whether `sel` was picked by the user (defaults may fall back to live
-   * when their branch doesn't exist yet; user picks never do). */
-  selPicked: boolean;
   /** Dirs flipped away from their depth default (lives on the tab def). */
   toggled: ReadonlySet<string>;
-  onSelChange: (sel: string, picked: boolean) => void;
+  onSelChange: (sel: string) => void;
   onToggledChange: (toggled: ReadonlySet<string>) => void;
   /** Open a file in the right pane's FileViewer, keyed to this source. */
   onOpenFile: (path: string, sessionId?: string, ref?: string) => void;
@@ -203,73 +195,40 @@ export function CodeTab({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   // A request id drops stale responses — from earlier sources, superseded
-  // polls, and (via the effect-cleanup bump) post-unmount completions. The
-  // in-flight flag only throttles the background poll.
+  // refreshes, and (via the effect-cleanup bump) post-unmount completions.
   const reqId = useRef(0);
-  const inFlight = useRef(false);
-  // The fallback callback/flag ride refs so `load`'s identity — and with it
-  // the fetch effect — only tracks real source changes.
-  const onSelChangeRef = useRef(onSelChange);
-  onSelChangeRef.current = onSelChange;
-  const selPickedRef = useRef(selPicked);
-  selPickedRef.current = selPicked;
 
-  const load = useCallback(
-    (showSpinner: boolean) => {
-      const id = ++reqId.current;
-      inFlight.current = true;
-      if (showSpinner) setLoading(true);
-      getCodeTree(projectId, sel ? { ref: sel } : { sessionId: sessionId ?? undefined })
-        .then((d) => {
-          if (id !== reqId.current) return;
-          setData(d);
-          setError(null);
-        })
-        .catch((e: Error) => {
-          if (id !== reqId.current) return;
-          // A seeded default is best-effort by definition (its branch may
-          // not exist yet — run just started) — fall back to live on any
-          // failure; live's own error path surfaces real problems. A branch
-          // the user picked keeps the error.
-          if (sel && !selPickedRef.current) {
-            onSelChangeRef.current("", false);
-            return;
-          }
-          // Spinner loads (initial fetch, manual Refresh) surface errors;
-          // background polls swallow them — transient, the next tick retries.
-          if (showSpinner) setError(e.message);
-        })
-        .finally(() => {
-          if (id === reqId.current) {
-            inFlight.current = false;
-            setLoading(false);
-          }
-        });
-    },
-    [projectId, sessionId, sel],
-  );
+  const load = useCallback(() => {
+    const id = ++reqId.current;
+    setLoading(true);
+    getCodeTree(projectId, sel ? { ref: sel } : {})
+      .then((d) => {
+        if (id !== reqId.current) return;
+        setData(d);
+        setError(null);
+      })
+      .catch((e: Error) => {
+        if (id !== reqId.current) return;
+        setError(e.message);
+      })
+      .finally(() => {
+        if (id === reqId.current) setLoading(false);
+      });
+  }, [projectId, sel]);
 
-  // Fetch on mount and whenever the source changes; a stale tree from the
-  // previous source must not linger under the new header. The cleanup bump
-  // invalidates in-flight responses on source change and unmount.
+  // Fetch on mount and whenever the source changes (plus manual Refresh —
+  // committed trees only move on commit, so there's no poll); a stale tree
+  // from the previous source must not linger under the new header. The
+  // cleanup bump invalidates in-flight responses on source change and
+  // unmount.
   useEffect(() => {
     setData(null);
     setError(null);
-    load(true);
+    load();
     return () => {
       reqId.current++;
     };
   }, [load]);
-
-  // Poll only the live view (the agent writes files as it works); a branch's
-  // committed tree changes on commit — the manual Refresh covers that.
-  useEffect(() => {
-    if (sel) return;
-    const timer = setInterval(() => {
-      if (!inFlight.current) load(false);
-    }, 5000);
-    return () => clearInterval(timer);
-  }, [sel, load]);
 
   const tree = useMemo(() => (data ? buildTree(data.entries) : null), [data]);
 
@@ -295,7 +254,7 @@ export function CodeTab({
     return options;
   }, [experiments]);
 
-  // GitHub link target: the picked branch, or whatever the live view has
+  // GitHub link target: the picked branch, or whatever the clone has
   // checked out (none while detached).
   const linkBranch = sel || data?.branch || null;
 
@@ -306,12 +265,15 @@ export function CodeTab({
         <select
           className="input sm code-tab-select"
           value={sel}
-          onChange={(e) => onSelChange(e.target.value, true)}
+          onChange={(e) => onSelChange(e.target.value)}
           title="Source to browse"
         >
-          <option value="">
-            {sessionId ? "live — session worktree" : "project clone"}
-          </option>
+          <option value="">project clone</option>
+          {/* A pinned branch can drop out of the options (its experiment's
+              branchName changed under us) — keep the select truthful. */}
+          {sel && !branchOptions.some((o) => o.branch === sel) && (
+            <option value={sel}>{sel}</option>
+          )}
           {branchOptions.map((o) => (
             <option key={o.branch} value={o.branch}>
               {o.label}
@@ -326,7 +288,7 @@ export function CodeTab({
             rel="noopener noreferrer"
             title={`Open ${linkBranch} on GitHub`}
           >
-            <ExternalLink size={13} />
+            <GitHubMark size={13} />
           </a>
         )}
         <span style={{ flex: 1 }} />
@@ -334,16 +296,11 @@ export function CodeTab({
           className="icon-btn"
           title="Refresh"
           aria-label="Refresh"
-          onClick={() => load(true)}
+          onClick={load}
         >
           {loading ? <span className="spinner" /> : <RotateCw size={13} />}
         </button>
       </div>
-      {sessionId !== null && !sel && data?.root === "clone" && (
-        <div className="code-tab-note">
-          This session's worktree isn't available — showing the project clone.
-        </div>
-      )}
       {data?.truncated && <div className="code-tab-note">listing truncated</div>}
       {error && tree && <div className="code-tab-note">Refresh failed: {error}</div>}
       <div className="code-tab-body">
@@ -359,7 +316,7 @@ export function CodeTab({
               depth={0}
               toggled={toggled}
               onToggle={toggle}
-              onOpenFile={(path) => onOpenFile(path, sessionId ?? undefined, sel || undefined)}
+              onOpenFile={(path) => onOpenFile(path, undefined, sel || undefined)}
             />
           </div>
         )}

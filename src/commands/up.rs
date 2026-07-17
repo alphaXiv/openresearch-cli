@@ -941,10 +941,8 @@ fn resolve_checkout_root(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CodeTreeQuery {
-    /// Chat session whose worktree to list. Absent (or the worktree already
-    /// pruned) falls back to the hub clone. Ignored when `ref` is given.
-    session_id: Option<String>,
-    /// Branch to list the committed tree of, instead of a live checkout.
+    /// Branch to list the committed tree of; absent lists the hub clone's
+    /// checkout.
     r#ref: Option<String>,
 }
 
@@ -953,8 +951,7 @@ const CODE_TREE_LIMIT: usize = 20_000;
 
 /// Flat file listing for the UI code browser. With `ref`: the committed tree
 /// of that branch (local ref first, then origin's), independent of any
-/// checkout. Without: the live checkout — the chat session's worktree when
-/// `sessionId` is given, else the hub clone — via `git ls-files`, so
+/// checkout. Without: the hub clone's checkout via `git ls-files`, so
 /// gitignored trees are excluded and untracked-but-new files are included.
 /// Paths are repo-relative; the client builds the nested tree.
 async fn project_code_tree(Path(id): Path<String>, Query(q): Query<CodeTreeQuery>) -> ApiResult {
@@ -963,20 +960,18 @@ async fn project_code_tree(Path(id): Path<String>, Query(q): Query<CodeTreeQuery
         let project = store
             .get_local_project(&id)?
             .ok_or_else(|| not_found("project"))?;
+        // Branch refs live in the shared object DB — the hub clone resolves
+        // them all; no per-session root here (file reads still take one).
+        let (root, root_kind) = resolve_checkout_root(&store, &project, None)?;
         let ref_name = q.r#ref.as_deref().map(str::trim).filter(|s| !s.is_empty());
         let (root_kind, branch, mut entries) = match ref_name {
             Some(name) => {
-                // Branch refs live in the shared object DB — the hub clone
-                // resolves them regardless of which worktree the session has.
-                let (root, _) = resolve_checkout_root(&store, &project, None)?;
                 let sha = local::git::resolve_branch_commit(&root, name)?
                     .ok_or_else(|| not_found("branch"))?;
                 let entries = local::git::list_tree_files(&root, &sha)?;
                 ("branch", Some(name.to_string()), entries)
             }
             None => {
-                let (root, root_kind) =
-                    resolve_checkout_root(&store, &project, q.session_id.as_deref())?;
                 let branch = local::git::current_branch(&root);
                 let entries = local::git::list_worktree_files(&root)?;
                 (root_kind, branch, entries)
