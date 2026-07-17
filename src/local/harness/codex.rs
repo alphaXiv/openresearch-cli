@@ -581,7 +581,9 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
     // request ids restart per child, so a click on a stale card could be
     // delivered to a live request minted later. Resolve them all before this
     // turn can surface anything.
-    ctx.host.resolve_stale_prompts(&ctx.session_id).await?;
+    ctx.host
+        .resolve_stale_prompts(&ctx.session_id, false)
+        .await?;
     let project = ctx.project.clone();
     let session_id = ctx.session_id.clone();
     let (repo, playbook) =

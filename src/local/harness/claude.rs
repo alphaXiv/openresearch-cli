@@ -4,8 +4,10 @@
 //! multi-turn via `--resume` against Claude Code's own session store. The
 //! playbook rides `--append-system-prompt-file`; the permission mode is
 //! `--permission-mode` from the session's setting (`auto`/`bypass` — see
-//! `options`). AskUserQuestion / ExitPlanMode surface as interactive cards; the
-//! turn ends on them and the user's answer resumes the session.
+//! `options`). AskUserQuestion / ExitPlanMode surface as interactive cards: the
+//! turn ends on them and the user's answer resumes the session — except in
+//! plan mode, where the mcp-gate bridge holds both open mid-turn and the
+//! answer continues the same turn.
 //!
 //! Detection: `~/.claude.json` carries the signed-in OAuth account (no secrets
 //! read); `ANTHROPIC_API_KEY` is the api-key fallback.
@@ -156,8 +158,13 @@ impl Harness for ClaudeCode {
     ) -> Result<ResumeAction> {
         if let Some(native_id) = &prompt.native_id {
             // The bridge request lives inside a running turn; once that turn is
-            // gone (interrupted / errored) the card is stale.
+            // gone the card is stale. Normally `PendingGuard` resolves it at
+            // turn teardown, but a process crash/restart skips that — leaving
+            // a zombie card that renders actionable and swallows every answer
+            // forever. Collapse it store-side before reporting the miss.
             if !ctx.is_busy().await {
+                ctx.host
+                    .resolve_zombie_prompt(&ctx.session_id, &answer.prompt_id);
                 return Err(anyhow!("this approval is no longer pending"));
             }
             let note = answer.note.as_deref().filter(|s| !s.trim().is_empty());
@@ -188,13 +195,15 @@ impl Harness for ClaudeCode {
                     )?;
                     Ok(ResumeAction::Handled)
                 }
-                // Keep planning: deny the held ExitPlanMode with the refinement
-                // as the reason — the model revises the plan in the same turn.
+                // Deny the held ExitPlanMode. With a note it's a revision
+                // request — the model revises the plan in the same turn. With
+                // no note it's a plain REJECTION (the strip's Reject button):
+                // tell the model to stop, not to improvise a revision (or a
+                // "what should change?" question card). The wording is
+                // `synthesize_resume`'s plan-deny arm verbatim — one source
+                // for both delivery shapes.
                 ("plan", false) => {
-                    let message = match note {
-                        Some(note) => format!("Keep refining the plan: {note}"),
-                        None => "The user wants the plan revised before approving.".to_string(),
-                    };
+                    let (message, _) = synthesize_resume("plan", answer);
                     ctx.host.settle_permission(
                         native_id,
                         crate::local::chat::PermissionDecision::Deny { message },
@@ -210,6 +219,29 @@ impl Harness for ClaudeCode {
                     let (text, mode) = synthesize_resume("plan", answer);
                     Ok(ResumeAction::SendMessage { text, mode })
                 }
+                // Mid-turn question (a bridge-held AskUserQuestion): the held
+                // tool call is denied with the user's answer as the message —
+                // the model reads the answer from the denial and continues the
+                // same turn. (Allowing the tool instead would run it headless,
+                // which returns no answer — the model would guess and move on
+                // rather than block; that's the bug this arm exists to avoid.)
+                ("question", _) => {
+                    let (text, _) = synthesize_resume("question", answer);
+                    if text.trim().is_empty() {
+                        return Err(anyhow!("select an option (or add a note) to answer"));
+                    }
+                    ctx.host.settle_permission(
+                        native_id,
+                        crate::local::chat::PermissionDecision::Deny {
+                            message: format!(
+                                "The user answered: {text}. Treat this as their answer and \
+                                 continue — do not ask this question again. (Only the first \
+                                 question of the call was shown; ask any others separately.)"
+                            ),
+                        },
+                    )?;
+                    Ok(ResumeAction::Handled)
+                }
                 _ => Err(anyhow!("unsupported prompt kind for a bridge card")),
             };
         }
@@ -217,6 +249,16 @@ impl Harness for ClaudeCode {
         // A denied permission closes the card without resuming; every other
         // answer continues the session.
         if prompt.kind == "permission" && !answer.approve {
+            return Ok(ResumeAction::Nothing);
+        }
+        // Likewise a note-less plan REJECTION on an end-turn card: the turn is
+        // already over — resuming just to say "stop" would end in fresh text
+        // that `should_synthesize_plan` turns into ANOTHER card, so Reject
+        // could never dismiss the strip. Close the card with no resume.
+        if prompt.kind == "plan"
+            && !answer.approve
+            && answer.note.as_deref().is_none_or(|s| s.trim().is_empty())
+        {
             return Ok(ResumeAction::Nothing);
         }
         let (text, mode) = synthesize_resume(&prompt.kind, answer);
@@ -358,7 +400,9 @@ fn claude_effort(level: Option<&str>) -> Option<&str> {
 /// resume strategy: a prompt ends the turn and the answer becomes a *new user
 /// message* that continues via `--resume`. `resume_mode` on the answer is a
 /// harness-agnostic wire id; unknown/absent ids fall through to the per-kind
-/// default (or the session's mode, applied downstream).
+/// default (or the session's mode, applied downstream). The question arm is
+/// also reused as a plain text builder by the bridge's mid-turn question
+/// resume (the denial message that carries the answer).
 fn synthesize_resume(kind: &str, req: &PromptAnswer) -> (String, Option<PermissionMode>) {
     let note = req.note.as_deref().filter(|s| !s.trim().is_empty());
     let chosen = req.resume_mode.as_deref().and_then(PermissionMode::from_id);
@@ -372,10 +416,15 @@ fn synthesize_resume(kind: &str, req: &PromptAnswer) -> (String, Option<Permissi
             (text, chosen.or(Some(PermissionMode::Auto)))
         }
         "plan" => {
-            // "Keep planning" — stay in plan mode with the refinement.
+            // Stay in plan mode. With a note it's a revision request; without
+            // one it's a plain rejection — stop, don't guess at revisions.
             let text = note
                 .map(|n| format!("Keep refining the plan: {n}"))
-                .unwrap_or_else(|| "Please revise the plan.".to_string());
+                .unwrap_or_else(|| {
+                    "The user rejected this plan. Stop planning and wait for \
+                     further instructions."
+                        .to_string()
+                });
             (text, Some(PermissionMode::Plan))
         }
         "permission" => {
@@ -440,8 +489,10 @@ fn plan_prompt(name: &str, input: Option<&Value>) -> Option<WirePrompt> {
 
 /// AskUserQuestion → a `question` prompt. Claude's schema is
 /// `{questions: [{question, header, options: [{label, description}], multiSelect}]}`;
-/// we surface the first question (the composer answers one at a time).
-fn question_prompt(name: &str, input: Option<&Value>) -> Option<WirePrompt> {
+/// we surface the first question (the composer answers one at a time). Also
+/// used by the plan-mode bridge (`ChatHost::request_permission`, via the
+/// harness re-export) to build the held mid-turn question card.
+pub(crate) fn question_prompt(name: &str, input: Option<&Value>) -> Option<WirePrompt> {
     if name != "AskUserQuestion" {
         return None;
     }
@@ -528,7 +579,8 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     ])
     // AskUserQuestion and ExitPlanMode are now surfaced to the user as
     // interactive cards (see plan_prompt / question_prompt) instead of being
-    // disallowed; the turn ends on them and the answer resumes the session.
+    // disallowed; the turn ends on them and the answer resumes the session —
+    // unless the plan-mode bridge is active, which holds them open mid-turn.
     .arg("--append-system-prompt-file")
     .arg(&playbook)
     .current_dir(&repo)
@@ -610,6 +662,11 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     // can't suppress this turn's fallback.
     let plan_mode = ctx.permission_mode == Some(PermissionMode::Plan);
     let _ = ctx.host.take_bridge_prompted(&ctx.session_id);
+    // Sweep zombie HELD cards (native_id) a crashed/restarted process left
+    // unresolved: they can never be answered again, and once this turn makes
+    // the session busy one could capture the composer's typed-text routing.
+    // End-turn cards are deliberately left alone — they resume via --resume.
+    let _ = ctx.host.resolve_stale_prompts(&ctx.session_id, true).await;
     let mut saw_prompt = false;
     let mut turn_errored = false;
     let mut last_text = String::new();
@@ -661,17 +718,17 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                             // ExitPlanMode / AskUserQuestion surface as interactive
                             // prompt cards instead of plain tool rows, and the
                             // user's choice resumes the session. With the bridge
-                            // active, ExitPlanMode's card comes from the bridge
-                            // instead (a held, mid-turn-answerable card), so the
-                            // tool_use renders as a plain tool row — two cards
-                            // for one plan would race each other.
-                            let bridged_plan = bridge_active && name == "ExitPlanMode";
-                            if let Some(prompt) = (!bridged_plan)
-                                .then(|| {
-                                    plan_prompt(name, input)
-                                        .or_else(|| question_prompt(name, input))
-                                })
-                                .flatten()
+                            // active, BOTH cards come from the bridge instead
+                            // (held, mid-turn-answerable) and the tool_use
+                            // renders NOTHING: a tool row would duplicate the
+                            // card — and the denial that carries the user's
+                            // answer back would paint it as a spurious error
+                            // row once the tool_result lands.
+                            if bridge_active && matches!(name, "ExitPlanMode" | "AskUserQuestion") {
+                                continue;
+                            }
+                            if let Some(prompt) =
+                                plan_prompt(name, input).or_else(|| question_prompt(name, input))
                             {
                                 saw_prompt = true;
                                 ctx.upsert_part(WirePart::prompt(id, prompt));
@@ -772,8 +829,10 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     // and no ExitPlanMode call. Headless leaves no way out of plan mode then —
     // only a plan-card answer switches the resume mode, so a chat "yes" would
     // resume still read-only. Synthesize a card from the final text so
-    // approval always has a handle. A card the bridge surfaced mid-turn counts
-    // as "saw a prompt" (e.g. keep-planning continued this same turn).
+    // approval always has a handle. A plan/permission card the bridge surfaced
+    // mid-turn counts as "saw a prompt" (e.g. keep-planning continued this
+    // same turn); a mid-turn *question* deliberately does not — its answer is
+    // no exit recourse, and the turn may still end with a texty plan.
     let saw_prompt = saw_prompt || ctx.host.take_bridge_prompted(&ctx.session_id);
     if should_synthesize_plan(plan_mode, saw_prompt, turn_errored, &last_text) {
         ctx.upsert_part(WirePart::prompt(
@@ -871,6 +930,18 @@ mod tests {
     fn plan_keep_planning_stays_in_plan_mode() {
         let (text, mode) = synthesize_resume("plan", &answer(false, None, &[], Some("tweak X")));
         assert!(text.contains("tweak X"));
+        assert_eq!(mode, Some(PermissionMode::Plan));
+    }
+
+    #[test]
+    fn plan_noteless_deny_is_a_rejection() {
+        // The strip's Reject: no note → "stop and wait" wording, still plan
+        // mode. The bridge deny arm reuses this string verbatim, and the
+        // end-turn path short-circuits to ResumeAction::Nothing before ever
+        // sending it — this pins the wording the bridge relays.
+        let (text, mode) = synthesize_resume("plan", &answer(false, None, &[], None));
+        assert!(text.contains("rejected"), "{text}");
+        assert!(text.contains("Stop planning"), "{text}");
         assert_eq!(mode, Some(PermissionMode::Plan));
     }
 

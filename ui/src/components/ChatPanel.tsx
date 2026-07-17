@@ -309,7 +309,10 @@ function ToolGroup({ parts, onOpenFile }: { parts: ChatPart[]; onOpenFile?: (pat
 }
 
 /** Interactive card for a plan / permission / question prompt. Approving (or
- * answering) resumes the session; the card renders read-only once resolved. */
+ * answering) resumes the session. Once resolved, cards mirror Claude Code:
+ * a permission leaves no trace, a plan collapses to an expandable
+ * "Proposed plan" row, a question collapses to a compact record of the
+ * chosen answer — all inline at the card's chronological position. */
 function PromptCard({
   part,
   onRespond,
@@ -323,10 +326,79 @@ function PromptCard({
 }) {
   const p = part.prompt as ChatPrompt;
   const [picked, setPicked] = useState<string[]>([]);
-  const done = p.resolved || !onRespond;
+  // Read-only host (no onRespond): actions disabled or hidden, card visible.
+  const done = !onRespond;
 
   const respond = (answer: Omit<PromptAnswer, "promptId">) =>
     onRespond?.({ promptId: part.id, ...answer });
+
+  // Resolved rendering, keyed off `resolved` alone (`done` also covers
+  // read-only hosts, where an *unresolved* card must stay visible).
+  if (p.resolved) {
+    if (p.kind === "permission") return null;
+    if (p.kind === "plan") {
+      // No echo (`approved` absent — stale-card cleanup, pre-echo history):
+      // neutral "Resolved", not a checkmark implying approval. A denial with
+      // a note asked for changes; without one it was a plain rejection.
+      const outcome =
+        p.approved === true
+          ? "Plan approved"
+          : p.approved === false
+            ? p.note
+              ? "Revision requested"
+              : "Rejected"
+            : "Resolved";
+      const outcomeClass =
+        p.approved === true
+          ? "approved"
+          : p.approved === false
+            ? p.note
+              ? "revised"
+              : "rejected"
+            : "";
+      return (
+        <details className="prompt-collapsed">
+          <summary>
+            <span className="prompt-collapsed-title">
+              {p.synthesized ? "Plan" : "Proposed plan"}
+            </span>
+            <span className={`prompt-outcome ${outcomeClass}`}>{outcome}</span>
+          </summary>
+          <div className="prompt-collapsed-body">
+            <Md text={p.plan ?? ""} onOpenFile={onOpenFile} />
+            {p.note && <div className="prompt-collapsed-note">{p.note}</div>}
+          </div>
+        </details>
+      );
+    }
+    // question — one line: header/question + what was chosen (or the typed
+    // custom answer). No echo at all (stale-resolved): neutral "Resolved",
+    // matching the plan row.
+    const chosen = (p.answers ?? []).join(", ") || p.note || "";
+    return (
+      <details className="prompt-collapsed">
+        <summary>
+          <span className="prompt-collapsed-title">{p.header || p.question || "Question"}</span>
+          <span className={`prompt-outcome ${chosen ? "chosen" : ""}`}>{chosen || "Resolved"}</span>
+        </summary>
+        <div className="prompt-collapsed-body">
+          {/* The summary title already shows the question when there's no header. */}
+          {p.header && p.question && <div className="prompt-q">{p.question}</div>}
+          {(p.options ?? []).length > 0 && (
+            <ul className="prompt-collapsed-options">
+              {(p.options ?? []).map((o) => (
+                <li key={o.label} className={p.answers?.includes(o.label) ? "sel" : ""}>
+                  {o.label}
+                </li>
+              ))}
+            </ul>
+          )}
+          {/* A note-only answer is already the summary outcome — don't echo it twice. */}
+          {p.note && p.note !== chosen && <div className="prompt-collapsed-note">{p.note}</div>}
+        </div>
+      </details>
+    );
+  }
 
   if (p.kind === "plan") {
     // With a plan-strip host (onOpenPlan), the docked strip owns the approval
@@ -336,7 +408,7 @@ function PromptCard({
     // harness-agnostic permission-mode wire ids).
     const docked = !!onOpenPlan;
     return (
-      <div className={`prompt-card plan ${done ? "resolved" : ""}`}>
+      <div className={`prompt-card plan ${done ? "readonly" : ""}`}>
         <div className="prompt-head">
           {p.synthesized ? "Plan mode — ready to proceed?" : "Proposed plan"}
         </div>
@@ -348,25 +420,20 @@ function PromptCard({
             View full plan
           </button>
         )}
-        {done ? (
-          <div className="prompt-resolved">Resolved</div>
-        ) : (
-          !docked && (
-            <div className="prompt-actions">
-              <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "auto" })}>
-                Approve &amp; run
-              </button>
-              <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "accept-edits" })}>
-                Approve &amp; accept edits
-              </button>
-              <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "bypass" })}>
-                Approve &amp; bypass all
-              </button>
-              <button className="btn-ghost" onClick={() => respond({ approve: false })}>
-                Keep planning
-              </button>
-            </div>
-          )
+        {/* Strip-less fallback (unreachable in the main app — App always
+            provides onOpenPlan): same action semantics as the strip. */}
+        {!done && !docked && (
+          <div className="prompt-actions">
+            <button className="btn-primary" onClick={() => respond({ approve: true, resumeMode: "auto" })}>
+              Accept and auto mode
+            </button>
+            <button className="btn-ghost" onClick={() => respond({ approve: true, resumeMode: "bypass" })}>
+              Accept and bypass all
+            </button>
+            <button className="btn-ghost" onClick={() => respond({ approve: false })}>
+              Reject
+            </button>
+          </div>
         )}
       </div>
     );
@@ -382,15 +449,13 @@ function PromptCard({
     const reason =
       (typeof p.toolInput?.reason === "string" && p.toolInput.reason) || "";
     return (
-      <div className={`prompt-card permission ${done ? "resolved" : ""}`}>
+      <div className={`prompt-card permission ${done ? "readonly" : ""}`}>
         <div className="prompt-head">
           Permission needed: <code>{p.tool}</code>
         </div>
         {summary && <div className="prompt-sub">{summary}</div>}
         {reason && <div className="prompt-sub">{reason}</div>}
-        {done ? (
-          <div className="prompt-resolved">Resolved</div>
-        ) : (
+        {!done && (
           // No resumeMode: the harness picks the right one for an approval.
           // Claude resumes under `bypass` (the only mode that actually grants a
           // blocked tool — acceptEdits would re-deny Bash); inline harnesses
@@ -418,7 +483,7 @@ function PromptCard({
         : [label],
     );
   return (
-    <div className={`prompt-card question ${done ? "resolved" : ""}`}>
+    <div className={`prompt-card question ${done ? "readonly" : ""}`}>
       {p.header && <div className="prompt-head">{p.header}</div>}
       {p.question && <div className="prompt-q">{p.question}</div>}
       <div className="prompt-options">
@@ -448,9 +513,21 @@ function PromptCard({
           </button>
         </div>
       )}
-      {done && <div className="prompt-resolved">Resolved</div>}
     </div>
   );
+}
+
+/** Whether a message renders anything once resolved-permission cards vanish —
+ * a bridge permission card rides its own message, so resolving it leaves the
+ * message empty and it must drop out of the transcript entirely. */
+function messageHasVisibleContent(m: ChatMessage): boolean {
+  if (m.role === "user") return true;
+  return m.parts.some((part) => {
+    if (part.type === "prompt")
+      return !!part.prompt && !(part.prompt.resolved && part.prompt.kind === "permission");
+    if (part.type === "text" || part.type === "reasoning") return !!part.text;
+    return true; // tool, image, …
+  });
 }
 
 function Message({
@@ -589,6 +666,7 @@ function SessionRow({
   session,
   active,
   busy,
+  waiting,
   onOpen,
   onRename,
   onSetArchived,
@@ -597,6 +675,8 @@ function SessionRow({
   session: ChatSession;
   active: boolean;
   busy: boolean;
+  /** Turn held on an unanswered card: steady dot, not the working pulse. */
+  waiting: boolean;
   onOpen: () => void;
   onRename: (title: string) => void;
   onSetArchived: (archived: boolean) => void;
@@ -660,7 +740,9 @@ function SessionRow({
         }
       }}
     >
-      <span className="session-dot">{busy && <span className="busy-dot" />}</span>
+      <span className="session-dot">
+        {busy && <span className={`busy-dot ${waiting ? "waiting" : ""}`} />}
+      </span>
       {editing ? (
         <input
           ref={inputRef}
@@ -950,6 +1032,21 @@ export function ChatPanel({
 
   const messages = activeId ? (state.messagesBySession[activeId] ?? []) : [];
   const busy = activeId ? state.busySessions.has(activeId) : false;
+  // A busy turn blocked on an unanswered HELD card (nativeId — a bridge or
+  // inline mid-turn request) is waiting on the user, not the model. Drives
+  // the status line and the rail dot (the composer button is keyed on
+  // `pendingQuestion` instead — what send() can actually service). End-turn
+  // cards (no nativeId) never coexist with a busy turn of their own, so
+  // keying on nativeId avoids false positives from stale cards. (Sessions
+  // whose transcripts aren't loaded fall back to plain busy.)
+  const sessionWaiting = (id: string) =>
+    state.busySessions.has(id) &&
+    (state.messagesBySession[id] ?? []).some((m) =>
+      m.parts.some(
+        (p) => p.type === "prompt" && p.prompt && !p.prompt.resolved && p.prompt.nativeId,
+      ),
+    );
+  const awaitingInput = activeId ? sessionWaiting(activeId) : false;
   const activeSession = openSession;
 
   // The newest unresolved plan prompt, if any — it drives the docked strip
@@ -969,6 +1066,44 @@ export function ChatPanel({
     }
     return null;
   }, [messages]);
+
+  // The newest ANSWERABLE unresolved question card's part id: typed composer
+  // text answers IT as a custom answer, instead of racing the held turn with
+  // a new message (which the busy guard would reject/drop). Plan cards have
+  // their own inline revise textarea (PlanStrip) and don't route through
+  // here. Claude sessions only: opencode rejects note-only replies (see
+  // reply_inline), so its options stay the interface. A held (nativeId) card
+  // is answerable only while its turn is alive — a zombie left by a process
+  // restart must not capture the composer (its own buttons error and the
+  // backend collapses it on the first attempt).
+  const pendingQuestion = useMemo(() => {
+    if (!activeId || activeSession?.harness !== "claude-code") return null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      for (const part of messages[i].parts) {
+        if (part.type !== "prompt" || !part.prompt || part.prompt.resolved) continue;
+        if (part.prompt.kind !== "question") continue;
+        if (part.prompt.nativeId && !state.busySessions.has(activeId)) return null;
+        return part.id;
+      }
+    }
+    return null;
+  }, [messages, activeSession?.harness, activeId, state.busySessions]);
+
+  // A submitted plan revision, until its replacement card arrives: hides the
+  // outgoing card's strip so it never sits there looking actionable while
+  // the model rewrites the plan (the transcript's Working… spinner is the
+  // feedback). Cleared when the session's turn ends or a DIFFERENT plan card
+  // shows up in the same session — pendingPlan derives from the ACTIVE
+  // session, so the replaced check must not fire on a session switch.
+  const [revising, setRevising] = useState<{ sessionId: string; promptId: string } | null>(null);
+  const revisingPlan = revising && revising.sessionId === activeId ? revising : null;
+  useEffect(() => {
+    if (!revising) return;
+    const stillBusy = state.busySessions.has(revising.sessionId);
+    const replaced =
+      revising.sessionId === activeId && pendingPlan && pendingPlan.promptId !== revising.promptId;
+    if (!stillBusy || replaced) setRevising(null);
+  }, [revising, pendingPlan, state.busySessions, activeId]);
 
   // Plan opens are stamped with the session like file opens are.
   const openPlan =
@@ -1013,7 +1148,19 @@ export function ChatPanel({
   async function send() {
     const text = draft.trim();
     const pending = attachments;
-    if ((!text && pending.length === 0) || busy) return;
+    if (!text && pending.length === 0) return;
+    // A pending question card owns plain typed text as a custom answer
+    // (Claude-desktop behavior). This also works while the turn is HELD on
+    // the card — where a new message would be rejected as busy and silently
+    // dropped. A failed answer restores the draft so the text isn't lost.
+    if (text && pendingQuestion && pending.length === 0) {
+      setDraft("");
+      void respond({ promptId: pendingQuestion, answers: [], note: text }).then((ok) => {
+        if (!ok) setDraft((cur) => cur || text);
+      });
+      return;
+    }
+    if (busy) return;
     // `composerSelection` already resolves to the open session's settings (+ any
     // unsent tweak) or, for a new session, the global preference.
     const effective = composerSelection;
@@ -1145,13 +1292,41 @@ export function ChatPanel({
     forgetSession(session.id);
   }
 
-  function respond(answer: PromptAnswer) {
-    if (!activeId) return;
+  /** Deliver a card answer; resolves `false` when delivery failed (so a
+   * caller can e.g. restore a consumed draft). */
+  function respond(answer: PromptAnswer): Promise<boolean> {
+    if (!activeId) return Promise.resolve(false);
+    const sid = activeId;
     // The resumed turn streams over SSE; optimistically mark busy.
-    dispatch({ type: "busy", sessionId: activeId, busy: true });
-    void respondChat(activeId, answer).catch(() => {
-      if (activeId) dispatch({ type: "busy", sessionId: activeId, busy: false });
-    });
+    dispatch({ type: "busy", sessionId: sid, busy: true });
+    return respondChat(sid, answer)
+      .then(() => true)
+      .catch(() => false)
+      .finally(() => {
+        // Reconcile with the store: if this tab's copy of the card was stale
+        // (e.g. the held turn timed out and resolved it while our SSE was
+        // dropped), the answer no-ops server-side and nothing re-broadcasts —
+        // without this the card stays actionable forever and every answer
+        // silently dead-ends. Busy is reconciled from the server for THIS
+        // session only (a whole-set replace could stomp another session's
+        // just-started optimistic flag), so the optimistic dispatch above
+        // can't wedge true after a no-op or failure.
+        getChatMessages(sid)
+          .then((messages) => dispatch({ type: "seed", sessionId: sid, messages }))
+          .catch(() => {});
+        listChatSessions(projectId)
+          .then((list) =>
+            dispatch({
+              type: "busy",
+              sessionId: sid,
+              busy: !!list.find((s) => s.id === sid)?.busy,
+            }),
+          )
+          // On a failed fetch keep the optimistic flag: clearing busy while a
+          // Handled resume is still streaming would hide Working…/Stop for
+          // the rest of the turn (nothing re-asserts busy mid-stream).
+          .catch(() => {});
+      });
   }
 
   const visibleSessions = sessions.filter((s) =>
@@ -1204,6 +1379,7 @@ export function ChatPanel({
             session={s}
             active={s.id === activeId && mainView === "chat"}
             busy={state.busySessions.has(s.id)}
+            waiting={sessionWaiting(s.id)}
             onOpen={() => {
               setActiveId(s.id);
               onSelectMainView("chat");
@@ -1321,7 +1497,7 @@ export function ChatPanel({
           <div className="chat-thread-inner" ref={threadInnerRef}>
             {/* Stamp the session onto file opens: the agent runs in this
                 session's worktree, so that's where its paths point. */}
-            {messages.map((m) => (
+            {messages.filter(messageHasVisibleContent).map((m) => (
               <Message
                 key={m.id}
                 message={m}
@@ -1330,36 +1506,47 @@ export function ChatPanel({
                 onOpenPlan={openPlan}
               />
             ))}
-            {busy && (
-              <div className="working">
-                <span className="spinner" /> Working…
-              </div>
-            )}
+            {busy &&
+              (awaitingInput ? (
+                <div className="working awaiting">Waiting for your input…</div>
+              ) : (
+                <div className="working">
+                  <span className="spinner" /> Working…
+                </div>
+              ))}
           </div>
         </div>
       )}
 
       {/* Docked while a plan awaits a decision, so the approval controls never
           scroll away. Actions mirror the (now compact) inline card's wire. */}
-      {pendingPlan && (
-        <PlanStrip
-          plan={pendingPlan.plan}
-          synthesized={pendingPlan.synthesized}
-          onView={() => openPlan?.(pendingPlan.plan, pendingPlan.promptId)}
-          onApprove={(resumeMode) =>
-            respond({ promptId: pendingPlan.promptId, approve: true, resumeMode })
-          }
-          onKeepPlanning={() => {
-            // The composer draft rides along as the refinement note — typing
-            // feedback then clicking "Keep planning" is the natural gesture.
-            const note = draft.trim();
-            respond({ promptId: pendingPlan.promptId, approve: false, note: note || undefined });
-            if (note) setDraft("");
-          }}
-        />
-      )}
-
       <div className="composer">
+        {/* Inside the composer so the composer's popovers (mode/model pickers,
+            z 50 within this stacking context) layer above the strip — as a
+            sibling, the composer's own z-index: 4 capped them below it. */}
+        {/* Hidden while a submitted revision is in flight so the outgoing
+            card never sits there looking actionable; the revised card swaps
+            in when it arrives (effect above). The transcript status covers
+            the interim ("Waiting for your input…" for a beat until the old
+            card's resolve broadcast lands, then Working…). */}
+        {pendingPlan && !(revisingPlan && pendingPlan.promptId === revisingPlan.promptId) && (
+          <PlanStrip
+            synthesized={pendingPlan.synthesized}
+            onView={() => openPlan?.(pendingPlan.plan, pendingPlan.promptId)}
+            onApprove={(resumeMode) =>
+              respond({ promptId: pendingPlan.promptId, approve: true, resumeMode })
+            }
+            // Plain rejection — no note; the model stops and waits.
+            onReject={() => respond({ promptId: pendingPlan.promptId, approve: false })}
+            // The strip owns its own revise textarea (Claude-desktop style);
+            // the note comes back on submit, always non-empty (note presence
+            // is what distinguishes revise from reject on the wire).
+            onRevise={(note) => {
+              if (activeId) setRevising({ sessionId: activeId, promptId: pendingPlan.promptId });
+              respond({ promptId: pendingPlan.promptId, approve: false, note });
+            }}
+          />
+        )}
         <div className="composer-box">
           {skillMenuOpen && (
             <SkillMenu
@@ -1389,11 +1576,14 @@ export function ChatPanel({
             ref={composerRef}
             value={draft}
             placeholder={
-              // Follow `composerSelection` so the name tracks the picker for a
-              // new session and the open session once one exists.
-              composerSelection
-                ? `Message ${HARNESS_LABELS[composerSelection.harness]}… ( / for skills)`
-                : "Ask the research agent… ( / for skills)"
+              // A pending question card owns typed text (see send()); say so.
+              // Otherwise follow `composerSelection` so the name tracks the
+              // picker for a new session and the open session once one exists.
+              pendingQuestion
+                ? "Type a custom answer…"
+                : composerSelection
+                  ? `Message ${HARNESS_LABELS[composerSelection.harness]}… ( / for skills)`
+                  : "Ask the research agent… ( / for skills)"
             }
             rows={2}
             onPaste={onComposerPaste}
@@ -1469,7 +1659,12 @@ export function ChatPanel({
               title="Reasoning level for this chat"
               onSelect={setReasoningLevel}
             />
-            {busy ? (
+            {busy && !pendingQuestion ? (
+              // Stop whenever the turn is busy and typed text has nowhere to
+              // go — actively streaming, or held on a plan/permission card
+              // (their cards are the affordance; send() can't service them).
+              // Send stays only when it actually works: idle, or a held
+              // QUESTION card that owns typed text.
               <button className="send-btn stop" title="Stop" aria-label="Stop" onClick={stop}>
                 <X size={16} />
               </button>

@@ -74,7 +74,8 @@ pub struct WireQuestionOption {
 pub struct WirePrompt {
     /// `plan` | `permission` | `question`.
     pub kind: String,
-    /// Whether this prompt has been answered (answered cards render read-only).
+    /// Whether this prompt has been answered (resolved permission cards
+    /// vanish; resolved plan/question cards collapse to a one-line row).
     #[serde(default)]
     pub resolved: bool,
     /// plan: the proposed plan markdown.
@@ -101,11 +102,24 @@ pub struct WirePrompt {
     #[serde(default)]
     pub multi_select: bool,
     /// The harness-native id used to reply over a live protocol (opencode's
-    /// permission/question request id). Internal to the backend resume path —
-    /// the UI never reads it and only echoes the `WirePart` id. `None` for
-    /// end-turn harnesses (Claude), which resume by message, not by reply id.
+    /// permission/question request id, the Claude bridge's held request id).
+    /// The backend resume path routes on it; the UI reads only its *presence*
+    /// (a held mid-turn card — the turn is blocked on this answer) and echoes
+    /// the `WirePart` id when answering. `None` for end-turn cards, which
+    /// resume by message, not by reply id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_id: Option<String>,
+    /// Answer echo, stamped when the user resolves the card so the collapsed
+    /// rendering can show the outcome (and it survives a reload):
+    /// questions record the chosen labels, plan/permission whether it was
+    /// approved, and any freeform note rides along. Absent on cards resolved
+    /// without an answer (stale-card cleanup, cancelled bridge requests).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub answers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -339,7 +353,8 @@ fn plan_auto_policy(tool_name: &str, tool_input: &Value) -> Option<PermissionDec
 /// `request_permission` — answered, timed out, or the handler future dropped
 /// mid-await (the HTTP connection died with the claude child). Removes the
 /// pending entry and resolves the card so it can't be answered into the void.
-/// Resolving an already-resolved card is an idempotent re-persist.
+/// Re-resolving an already-answered card is a no-op (`mark_prompt_resolved`
+/// skips it) so this late pass can't shadow an echo-stamped broadcast.
 struct PendingGuard {
     host: Arc<ChatHost>,
     session_id: String,
@@ -353,9 +368,12 @@ impl Drop for PendingGuard {
             .lock()
             .unwrap()
             .remove(&self.prompt_id);
-        if let Ok(Some(msg)) =
-            mark_prompt_resolved(&self.host.msg_write, &self.session_id, &self.prompt_id)
-        {
+        if let Ok(Some(msg)) = mark_prompt_resolved(
+            &self.host.msg_write,
+            &self.session_id,
+            &self.prompt_id,
+            None,
+        ) {
             self.host
                 .emit("chat.message", message_json(&msg, &self.session_id));
         }
@@ -550,7 +568,13 @@ impl ChatHost {
 
         // Tier 2 — the user decides. ExitPlanMode becomes the plan card (the
         // hook routes it here with an "ask" so headless can't self-approve);
-        // everything else — gray-area Bash, MCP tools, … — a permission card.
+        // AskUserQuestion becomes the QUESTION card itself, held mid-turn —
+        // gating it behind a permission card would be a pointless double
+        // interaction, and *allowing* it is worse: headless the tool returns
+        // no answer, so the model guesses and keeps going instead of blocking.
+        // Holding the call is the only shape that actually blocks the turn on
+        // the user's answer. Everything else — gray-area Bash, MCP tools, … —
+        // a permission card.
         let prompt_id = format!("perm_{}", uuid::Uuid::new_v4());
         let prompt = if tool_name == "ExitPlanMode" {
             WirePrompt {
@@ -565,6 +589,18 @@ impl ChatHost {
                 native_id: Some(prompt_id.clone()),
                 ..Default::default()
             }
+        } else if let Some(question) =
+            crate::local::harness::question_prompt(tool_name, Some(&tool_input))
+                .filter(|q| !q.options.is_empty())
+        {
+            // Malformed question input — unparseable, or no options at all —
+            // falls through to a permission card instead: options are the
+            // question card's primary interface, and allow/deny on the raw
+            // tool call is a saner fallback than an options-less card.
+            WirePrompt {
+                native_id: Some(prompt_id.clone()),
+                ..question
+            }
         } else {
             WirePrompt {
                 kind: "permission".into(),
@@ -575,6 +611,7 @@ impl ChatHost {
             }
         };
 
+        let is_question = prompt.kind == "question";
         // The card rides its own assistant message: the running turn owns its
         // in-flight message's parts (a foreign part appended there would be
         // clobbered by the turn's next flush).
@@ -592,10 +629,16 @@ impl ChatHost {
             created_at: msg.created_at,
         })?;
         self.emit("chat.message", message_json(&msg, session_id));
-        self.bridge_prompted
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string());
+        // A question card answered mid-turn is NOT an exit recourse from plan
+        // mode, so it must not count as "saw a prompt" — a turn that asks a
+        // question and then ends with its plan as plain text still needs the
+        // synthesized plan card. Plan/permission cards keep counting.
+        if !is_question {
+            self.bridge_prompted
+                .lock()
+                .unwrap()
+                .insert(session_id.to_string());
+        }
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending_permissions.lock().unwrap().insert(
@@ -985,13 +1028,15 @@ impl ChatHost {
             .resume_from_prompt(&resume_ctx, &prompt, &req)
             .await?;
 
-        // Mark resolved and broadcast the updated card so it renders read-only
-        // on every client immediately (send_message only emits the new user
-        // message, never the mutated assistant one).
-        let resolved_msg = mark_prompt_resolved(&self.msg_write, &req.session_id, &req.prompt_id)?
-            .ok_or_else(|| anyhow!("prompt not found"))?;
-        self.emit("chat.message", message_json(&resolved_msg, &req.session_id));
-
+        // Each arm delivers the answer FIRST and only then marks the card
+        // resolved (`resolve_prompt_card`). The old order (resolve, then
+        // deliver) had a stranding failure mode: if `send_message` was
+        // rejected — e.g. the session was still busy because a held bridge
+        // request kept the turn alive — the card was already read-only but
+        // the answer was dropped, leaving no recourse but an interrupt.
+        // Resolving after a successful delivery keeps a failed answer
+        // retryable: nothing has been mutated, the card is still actionable.
+        // (The resolve itself is best-effort — see `resolve_prompt_card`.)
         match action {
             ResumeAction::SendMessage { text, mode } => {
                 // A native (mid-turn) card may resume while its turn is still
@@ -1010,16 +1055,20 @@ impl ChatHost {
                     reasoning_level: None,
                 };
                 self.send_message(&req.session_id, text, overrides, Vec::new())
-                    .await
+                    .await?;
+                self.resolve_prompt_card(&req);
+                Ok(())
             }
             ResumeAction::Handled => {
                 // The inline reply unblocked the still-running turn; it keeps
                 // streaming and will `finish_turn` itself. Leave `busy` alone.
+                self.resolve_prompt_card(&req);
                 Ok(())
             }
             ResumeAction::Nothing => {
                 // Card closed with no resume (e.g. a denied Claude permission);
                 // broadcast idle so `busy` clears in the UI.
+                self.resolve_prompt_card(&req);
                 if let Ok(Some(session)) = Store::open()?.get_chat_session(&req.session_id) {
                     self.emit(
                         "chat.session",
@@ -1028,6 +1077,33 @@ impl ChatHost {
                 }
                 Ok(())
             }
+        }
+    }
+
+    /// Resolve one card answerless and broadcast — for zombie native cards
+    /// whose held turn died without cleanup (process crash/restart, so
+    /// [`PendingGuard`] never ran). Collapses the card so it stops rendering
+    /// actionable and swallowing every answer. Best-effort by design.
+    pub fn resolve_zombie_prompt(&self, session_id: &str, prompt_id: &str) {
+        if let Ok(Some(msg)) = mark_prompt_resolved(&self.msg_write, session_id, prompt_id, None) {
+            self.emit("chat.message", message_json(&msg, session_id));
+        }
+    }
+
+    /// Mark an answered card resolved (stamping the answer echo) and broadcast
+    /// the updated message so it re-renders collapsed on every client
+    /// immediately (send_message only emits the new user message, never the
+    /// mutated assistant one). Best-effort: by the time this runs the answer
+    /// has already been delivered, so a (store-only) failure is logged rather
+    /// than surfaced — an Err from `respond` would make the UI's catch clear
+    /// `busy` on a turn that is actually still streaming.
+    fn resolve_prompt_card(&self, req: &PromptAnswer) {
+        let resolved =
+            mark_prompt_resolved(&self.msg_write, &req.session_id, &req.prompt_id, Some(req))
+                .and_then(|m| m.ok_or_else(|| anyhow!("prompt not found")));
+        match resolved {
+            Ok(msg) => self.emit("chat.message", message_json(&msg, &req.session_id)),
+            Err(e) => eprintln!("orx up: answered prompt not marked resolved: {e}"),
         }
     }
 
@@ -1194,10 +1270,27 @@ fn unresolved_prompt(session_id: &str, prompt_id: &str) -> Result<Option<WirePro
     Ok(None)
 }
 
-/// Flip the `resolved` flag on the prompt part with `prompt_id` in the session's
-/// last assistant message that carries it, persist it, and return the mutated
-/// message (so the caller can broadcast a `chat.message` and the card renders
-/// read-only). `None` if no such prompt part exists.
+/// Flip a prompt to resolved and stamp the answer echo (see
+/// [`WirePrompt::answers`]) so the collapsed card can show the outcome.
+/// `None` (stale-card cleanup, cancelled bridge requests) leaves any earlier
+/// echo intact — a re-resolve must not erase it.
+fn stamp_resolved(prompt: &mut WirePrompt, answer: Option<&PromptAnswer>) {
+    prompt.resolved = true;
+    if let Some(answer) = answer {
+        prompt.answers = answer.answers.clone();
+        prompt.approved = Some(answer.approve);
+        prompt.note = answer.note.clone().filter(|n| !n.trim().is_empty());
+    }
+}
+
+/// Resolve the prompt part with `prompt_id` in the session's last assistant
+/// message that carries it ([`stamp_resolved`] with `answer`), persist it, and
+/// return the mutated message (so the caller can broadcast a `chat.message`
+/// and the card re-renders collapsed). `None` if no such prompt part exists,
+/// or if it was already resolved and there's no answer to stamp — an
+/// answerless re-resolve (stale-card cleanup) has nothing to change, and
+/// skipping the write keeps its late broadcast from shadowing an echo-stamped
+/// one a client already received.
 ///
 /// The read→modify→write runs under `msg_write` so it's atomic against a
 /// still-running turn's `flush` reconcile-and-persist of the same message (see
@@ -1206,6 +1299,7 @@ fn mark_prompt_resolved(
     msg_write: &std::sync::Mutex<()>,
     session_id: &str,
     prompt_id: &str,
+    answer: Option<&PromptAnswer>,
 ) -> Result<Option<WireMessage>> {
     let _guard = msg_write.lock().unwrap();
     let store = Store::open()?;
@@ -1219,7 +1313,10 @@ fn mark_prompt_resolved(
             .find(|p| p.id == prompt_id && p.prompt.is_some())
         {
             if let Some(prompt) = part.prompt.as_mut() {
-                prompt.resolved = true;
+                if prompt.resolved && answer.is_none() {
+                    return Ok(None);
+                }
+                stamp_resolved(prompt, answer);
             }
             store.upsert_chat_message(&StoredChatMessage {
                 id: msg.id.clone(),
@@ -1239,21 +1336,27 @@ fn mark_prompt_resolved(
     Ok(None)
 }
 
-/// Resolve every still-unresolved prompt card of a session, store-side.
+/// Resolve still-unresolved prompt cards of a session, store-side.
 ///
 /// For inline-approval harnesses whose prompts die with their turn (codex: a
 /// JSON-RPC request the process has since abandoned), a leftover unresolved
 /// card is a zombie — unanswerable, and worse, its reply id can collide with a
 /// fresh child's restarting request ids, so a click on the dead card could be
-/// delivered to a *different, live* request. Called at codex turn entry to
-/// close both. NOT for end-turn harnesses (Claude): their unresolved cards
-/// deliberately outlive turns and resume via a new message.
+/// delivered to a *different, live* request. Called at codex turn entry
+/// (`native_only: false`) to close both.
+///
+/// End-turn harnesses (Claude) sweep with `native_only: true`: their
+/// UN-held cards deliberately outlive turns and resume via a new message, but
+/// a *held* (`native_id`) card can never outlive its process — one left
+/// unresolved is a crash/restart artifact that would otherwise capture the
+/// composer once the fresh turn makes the session busy again.
 ///
 /// Same `msg_write` contract as `mark_prompt_resolved`. Returns the updated
 /// messages so the caller can broadcast them.
 fn resolve_stale_prompts(
     msg_write: &std::sync::Mutex<()>,
     session_id: &str,
+    native_only: bool,
 ) -> Result<Vec<WireMessage>> {
     let _guard = msg_write.lock().unwrap();
     let store = Store::open()?;
@@ -1266,8 +1369,8 @@ fn resolve_stale_prompts(
         let mut changed = false;
         for part in parts.iter_mut() {
             if let Some(prompt) = part.prompt.as_mut() {
-                if !prompt.resolved {
-                    prompt.resolved = true;
+                if !prompt.resolved && (!native_only || prompt.native_id.is_some()) {
+                    stamp_resolved(prompt, None);
                     changed = true;
                 }
             }
@@ -1293,8 +1396,8 @@ fn resolve_stale_prompts(
 
 impl ChatHost {
     /// [`resolve_stale_prompts`] + broadcast, for harness turn-entry use.
-    pub async fn resolve_stale_prompts(&self, session_id: &str) -> Result<()> {
-        for msg in resolve_stale_prompts(&self.msg_write, session_id)? {
+    pub async fn resolve_stale_prompts(&self, session_id: &str, native_only: bool) -> Result<()> {
+        for msg in resolve_stale_prompts(&self.msg_write, session_id, native_only)? {
             self.emit("chat.message", message_json(&msg, session_id));
         }
         Ok(())
@@ -1490,10 +1593,13 @@ impl TurnCtx {
         Ok(())
     }
 
-    /// Merge the persisted `resolved` state of prompt parts into the in-memory
+    /// Merge the persisted resolution state of prompt parts into the in-memory
     /// assistant message, so a concurrent `respond` that resolved a card isn't
-    /// clobbered by this turn's next flush. Only ever flips `false`→`true`
-    /// (a card never un-resolves), so it's safe regardless of ordering.
+    /// clobbered by this turn's next flush. Only ever flips `false`→`true` and
+    /// fills an empty echo (`answers`/`approved`/`note`) — never the reverse —
+    /// so it's safe regardless of ordering: the in-memory copy normally never
+    /// carries an echo of its own, and dropping the stored one here would
+    /// erase the stamped outcome on the next flush.
     fn adopt_resolved_prompts(&mut self, store: &Store) {
         let Ok(Some(stored)) = store.get_chat_message(&self.assistant.id) else {
             return;
@@ -1503,16 +1609,22 @@ impl TurnCtx {
             let Some(prompt) = part.prompt.as_mut() else {
                 continue;
             };
-            if prompt.resolved {
-                continue;
-            }
-            let resolved_in_store = persisted
+            let stored_prompt = persisted
                 .iter()
                 .find(|p| p.id == part.id)
-                .and_then(|p| p.prompt.as_ref())
-                .is_some_and(|p| p.resolved);
-            if resolved_in_store {
-                prompt.resolved = true;
+                .and_then(|p| p.prompt.as_ref());
+            let Some(stored_prompt) = stored_prompt.filter(|p| p.resolved) else {
+                continue;
+            };
+            prompt.resolved = true;
+            // Adopt the echo even when this copy is already resolved but
+            // echo-less (codex's turn loop resolves its in-memory card
+            // without one) — else this flush would persist the bare copy
+            // over the stamped outcome.
+            if prompt.answers.is_empty() && prompt.approved.is_none() && prompt.note.is_none() {
+                prompt.answers = stored_prompt.answers.clone();
+                prompt.approved = stored_prompt.approved;
+                prompt.note = stored_prompt.note.clone();
             }
         }
     }
@@ -1680,6 +1792,15 @@ mod bridge_tests {
             &json!({"url": "https://example.com"})
         )));
         assert!(allow(plan_auto_policy("WebSearch", &json!({"query": "x"}))));
+        // AskUserQuestion: tier 2, but its card is the QUESTION itself, held
+        // mid-turn (see `request_permission`) — auto-allowing would run the
+        // tool headless, which returns no answer, so the model would guess
+        // instead of blocking on the user.
+        assert!(plan_auto_policy(
+            "AskUserQuestion",
+            &json!({"questions": [{"question": "Which?", "options": []}]})
+        )
+        .is_none());
         // File edits: denied — this branch IS plan mode's edit block once a
         // permission tool is configured.
         for tool in ["Write", "Edit", "MultiEdit", "NotebookEdit"] {
@@ -1691,5 +1812,57 @@ mod bridge_tests {
         // ExitPlanMode and unknown tools: the user's call — card.
         assert!(plan_auto_policy("ExitPlanMode", &json!({"plan": "x"})).is_none());
         assert!(plan_auto_policy("mcp__foo__bar", &json!({})).is_none());
+    }
+
+    fn answer(answers: &[&str], approve: bool, note: Option<&str>) -> PromptAnswer {
+        PromptAnswer {
+            session_id: "s".into(),
+            prompt_id: "p".into(),
+            approve,
+            resume_mode: None,
+            answers: answers.iter().map(|s| s.to_string()).collect(),
+            note: note.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn stamp_resolved_records_the_answer_echo() {
+        let mut prompt = WirePrompt {
+            kind: "question".into(),
+            ..Default::default()
+        };
+        stamp_resolved(
+            &mut prompt,
+            Some(&answer(&["Core patching science"], true, Some("go deep"))),
+        );
+        assert!(prompt.resolved);
+        assert_eq!(prompt.answers, vec!["Core patching science"]);
+        assert_eq!(prompt.approved, Some(true));
+        assert_eq!(prompt.note.as_deref(), Some("go deep"));
+
+        // A whitespace-only note is dropped, a denial echoes approved=false.
+        let mut prompt = WirePrompt {
+            kind: "permission".into(),
+            ..Default::default()
+        };
+        stamp_resolved(&mut prompt, Some(&answer(&[], false, Some("   "))));
+        assert!(prompt.resolved);
+        assert_eq!(prompt.approved, Some(false));
+        assert_eq!(prompt.note, None);
+    }
+
+    #[test]
+    fn stamp_resolved_without_answer_preserves_an_earlier_echo() {
+        // A stale-card cleanup (PendingGuard drop, resolve_stale_prompts) runs
+        // with no answer; re-resolving must not erase what the user chose.
+        let mut prompt = WirePrompt {
+            kind: "question".into(),
+            ..Default::default()
+        };
+        stamp_resolved(&mut prompt, Some(&answer(&["A"], true, None)));
+        stamp_resolved(&mut prompt, None);
+        assert!(prompt.resolved);
+        assert_eq!(prompt.answers, vec!["A"]);
+        assert_eq!(prompt.approved, Some(true));
     }
 }

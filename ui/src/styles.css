@@ -699,6 +699,17 @@ textarea::placeholder {
   position: relative;
 }
 
+/* Right-pane plan tab: a plain, padded document surface — the plan is a
+   markdown file, not a card, so no tinted background. */
+.plan-tab-content {
+  overflow-y: auto;
+  background: var(--base);
+  padding: 18px 24px;
+}
+.plan-tab-content .md {
+  max-width: var(--readable-col);
+}
+
 /* Segmented control: a clearly-darker track (the theme's creams all blend
    into each other) with a raised white pill on the active segment. */
 .seg {
@@ -857,6 +868,10 @@ textarea::placeholder {
   background: var(--primary);
   animation: pulse 1.2s infinite;
   flex-shrink: 0;
+}
+/* Turn held on an unanswered card: ready for the user — steady, no pulse. */
+.session-row .busy-dot.waiting {
+  animation: none;
 }
 /* Inline rename: the title span is replaced by an input sharing its box so the
    text doesn't jump. Take the row's full width and hide the kebab/time. */
@@ -1119,6 +1134,10 @@ textarea::placeholder {
   color: var(--subtext);
   font-size: 12.5px;
   padding: 2px 0 8px;
+}
+/* Turn held open on an unanswered card: waiting on the user, not the model. */
+.working.awaiting {
+  font-style: italic;
 }
 
 .spinner {
@@ -3626,8 +3645,10 @@ button.files-pill-link:hover {
 .prompt-card.question {
   border-left-color: var(--accent-purple);
 }
-/* A resolved card is read-only history: mute it further. */
-.prompt-card.resolved {
+/* A card in a read-only host (no respond handler): muted, buttons disabled.
+   Resolved cards never render as .prompt-card at all — permission cards
+   vanish, plan/question cards collapse to .prompt-collapsed rows. */
+.prompt-card.readonly {
   opacity: 0.6;
 }
 
@@ -3757,27 +3778,87 @@ button.files-pill-link:hover {
   cursor: default;
 }
 
-.prompt-resolved {
-  font-size: 11px;
-  font-weight: 600;
+/* Resolved plan/question cards collapse to a one-line expandable row at their
+   chronological position (Claude-desktop style); resolved permission cards
+   render nothing at all. Same visual family as `.reasoning`. */
+.prompt-collapsed {
   color: var(--muted);
+  font-size: 13px;
+  margin: 4px 0;
+}
+.prompt-collapsed summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.prompt-collapsed summary::-webkit-details-marker {
+  display: none;
+}
+.prompt-collapsed summary::after {
+  content: "›";
+  color: var(--muted);
+  transition: transform 80ms ease;
+}
+.prompt-collapsed[open] summary::after {
+  transform: rotate(90deg);
+}
+.prompt-collapsed-title {
+  font-weight: 600;
+  word-break: break-word;
+}
+.prompt-outcome {
+  font-size: 12px;
+  color: var(--subtext);
+  word-break: break-word;
+}
+.prompt-outcome.approved,
+.prompt-outcome.chosen {
+  color: var(--accent-green);
+}
+.prompt-outcome.approved::before,
+.prompt-outcome.chosen::before {
+  content: "✓ ";
+}
+.prompt-outcome.revised,
+.prompt-outcome.rejected {
+  color: var(--accent-amber);
+}
+.prompt-collapsed-body {
+  margin-top: 6px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+  font-size: 13px;
+  color: var(--subtext);
+}
+.prompt-collapsed-options {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.prompt-collapsed-options .sel {
+  color: var(--text);
+  font-weight: 600;
+}
+.prompt-collapsed-note {
+  margin-top: 6px;
+  font-style: italic;
 }
 
 /* --- plan strip (docked above the composer while a plan awaits a decision) --- */
 
 .plan-strip {
-  /* Solid card floating over the composer's ::before fade. */
+  /* Lives INSIDE .composer (so the composer's picker popovers stack above
+     it). Claude-desktop shape: title line on top, a row of buttons below. */
   position: relative;
-  z-index: 5;
-  max-width: var(--readable-col);
-  width: calc(100% - 32px);
-  margin: 0 auto 6px;
-  padding: 9px 12px;
+  width: 100%;
+  margin: 0 0 10px;
+  padding: 11px 13px;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent-blue);
   border-radius: 8px;
@@ -3786,52 +3867,107 @@ button.files-pill-link:hover {
 }
 .plan-strip-info {
   display: flex;
-  align-items: center;
-  gap: 9px;
+  align-items: baseline;
+  gap: 8px;
   min-width: 0;
+}
+.plan-strip-open {
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent-blue);
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.plan-strip-open:hover {
+  text-decoration: underline;
+}
+.plan-strip-spacer {
   flex: 1;
+}
+/* Revise mode: a standalone bordered textarea (the strip itself has none —
+   unlike the borderless composer textarea, this needs to read as its own
+   input), focus ring on :focus like any other text field. */
+.plan-strip-revise-input {
+  width: 100%;
+  resize: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 13px;
+  font-family: inherit;
+  background: var(--base);
+  color: var(--text);
+}
+.plan-strip-revise-input:focus {
+  border-color: var(--accent-blue);
 }
 .plan-strip-icon {
   color: var(--accent-blue);
   flex-shrink: 0;
-}
-.plan-strip-text {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
+  align-self: center;
 }
 .plan-strip-title {
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
-}
-.plan-strip-excerpt {
-  font-size: 12px;
-  color: var(--muted);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
+/* Button styling comes from the shared `.prompt-actions` rules, but the
+   strip is monochrome (no brand red): black text, black borders, quiet
+   hover. `--text` keeps it theme-correct in dark mode. The spacer splits
+   reject/revise (left) from the accepts (right); when the pane is too
+   narrow the accept group wraps to its own right-aligned line. */
 .plan-strip-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
+  gap: 6px 8px;
+  justify-content: flex-end;
+}
+.plan-strip-actions .btn-primary,
+.plan-strip-actions .btn-ghost {
+  background: transparent;
+  border: 1px solid var(--text);
+  color: var(--text);
+}
+.plan-strip-actions .btn-primary:hover:not(:disabled),
+.plan-strip-actions .btn-ghost:hover:not(:disabled) {
+  background: var(--surface-2, rgb(0 0 0 / 5%));
+  border-color: var(--text);
+  color: var(--text);
+  opacity: 1;
+}
+/* The accept primary: solid dark (desktop's black button), not brand red.
+   `--text`-on-`--base` inverts correctly in dark mode. */
+.plan-strip-actions .plan-strip-primary {
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--base);
+}
+.plan-strip-actions .plan-strip-primary:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--text) 85%, var(--base));
+  border-color: var(--text);
+  color: var(--base);
 }
 .plan-strip-approve {
   position: relative;
   display: flex;
 }
+/* Split button: flat inner corners; the caret drops its own left border and
+   draws a faint base-colored seam instead. (0,3,0)+ selectors so the
+   `.prompt-actions`/`.plan-strip-actions` shorthands can't re-round or
+   re-border the seam. */
 .plan-strip-approve .btn-primary:first-child {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
-.plan-strip-caret {
+.plan-strip-actions .plan-strip-caret {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
-  padding: 0 5px;
-  margin-left: 1px;
+  padding: 0 6px;
   display: flex;
   align-items: center;
+  border-left: 1px solid color-mix(in oklab, var(--base) 35%, var(--text));
 }
 .plan-strip-menu {
   position: absolute;

@@ -713,6 +713,15 @@ export interface ChatPrompt {
   header?: string;
   options?: ChatQuestionOption[];
   multiSelect?: boolean;
+  /** Answer echo, stamped on resolve: chosen labels (questions), whether the
+   * card was approved (plan/permission), and any freeform note. Absent on
+   * cards resolved without an answer (stale-card cleanup). */
+  answers?: string[];
+  approved?: boolean;
+  note?: string;
+  /** Backend resume routing id. Presence marks a HELD mid-turn card (the
+   * turn is blocked open waiting on this answer); absent on end-turn cards. */
+  nativeId?: string;
 }
 
 export interface ChatPart {
