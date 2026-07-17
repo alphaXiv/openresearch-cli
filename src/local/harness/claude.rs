@@ -692,17 +692,16 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
                             // prompt cards instead of plain tool rows, and the
                             // user's choice resumes the session. With the bridge
                             // active, BOTH cards come from the bridge instead
-                            // (held, mid-turn-answerable), so the tool_use
-                            // renders as a plain tool row — two cards for one
-                            // call would race each other.
-                            let bridged =
-                                bridge_active && matches!(name, "ExitPlanMode" | "AskUserQuestion");
-                            if let Some(prompt) = (!bridged)
-                                .then(|| {
-                                    plan_prompt(name, input)
-                                        .or_else(|| question_prompt(name, input))
-                                })
-                                .flatten()
+                            // (held, mid-turn-answerable) and the tool_use
+                            // renders NOTHING: a tool row would duplicate the
+                            // card — and the denial that carries the user's
+                            // answer back would paint it as a spurious error
+                            // row once the tool_result lands.
+                            if bridge_active && matches!(name, "ExitPlanMode" | "AskUserQuestion") {
+                                continue;
+                            }
+                            if let Some(prompt) =
+                                plan_prompt(name, input).or_else(|| question_prompt(name, input))
                             {
                                 saw_prompt = true;
                                 ctx.upsert_part(WirePart::prompt(id, prompt));

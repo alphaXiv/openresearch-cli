@@ -699,6 +699,17 @@ textarea::placeholder {
   position: relative;
 }
 
+/* Right-pane plan tab: a plain, padded document surface — the plan is a
+   markdown file, not a card, so no tinted background. */
+.plan-tab-content {
+  overflow-y: auto;
+  background: var(--base);
+  padding: 18px 24px;
+}
+.plan-tab-content .md {
+  max-width: var(--readable-col);
+}
+
 /* Segmented control: a clearly-darker track (the theme's creams all blend
    into each other) with a raised white pill on the active segment. */
 .seg {
