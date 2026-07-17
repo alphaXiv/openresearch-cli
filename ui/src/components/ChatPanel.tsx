@@ -1,4 +1,5 @@
 import {
+  Bell,
   Check,
   ChevronRight,
   CornerDownLeft,
@@ -1013,6 +1014,18 @@ export function ChatPanel({
 
   const messages = activeId ? (state.messagesBySession[activeId] ?? []) : [];
   const busy = activeId ? state.busySessions.has(activeId) : false;
+  // A busy turn blocked on an unanswered HELD card (nativeId — a bridge or
+  // inline mid-turn request) is waiting on the user, not the model. Drives
+  // the status line and the composer's bell (instead of the Stop button).
+  // End-turn cards (no nativeId) never coexist with a busy turn of their own,
+  // so keying on nativeId avoids false positives from stale cards.
+  const awaitingInput =
+    busy &&
+    messages.some((m) =>
+      m.parts.some(
+        (p) => p.type === "prompt" && p.prompt && !p.prompt.resolved && p.prompt.nativeId,
+      ),
+    );
   const activeSession = openSession;
 
   // The newest unresolved plan prompt, if any — it drives the docked strip
@@ -1394,17 +1407,7 @@ export function ChatPanel({
               />
             ))}
             {busy &&
-              // A busy turn with an unanswered HELD card (nativeId — a
-              // bridge/inline mid-turn request) is not "working" — it's
-              // blocked open waiting on the user. Say so instead of spinning.
-              // End-turn cards (no nativeId) never coexist with a busy turn
-              // of their own, so keying on nativeId avoids false positives
-              // from stale unanswered cards of earlier turns.
-              (messages.some((m) =>
-                m.parts.some(
-                  (p) => p.type === "prompt" && p.prompt && !p.prompt.resolved && p.prompt.nativeId,
-                ),
-              ) ? (
+              (awaitingInput ? (
                 <div className="working awaiting">Waiting for your input…</div>
               ) : (
                 <div className="working">
@@ -1545,7 +1548,22 @@ export function ChatPanel({
               title="Reasoning level for this chat"
               onSelect={setReasoningLevel}
             />
-            {busy ? (
+            {awaitingInput ? (
+              // Blocked on the user's answer, not loading: an attention bell,
+              // not a Stop control. Click scrolls to the pending card (Esc
+              // still interrupts the held turn).
+              <button
+                className="send-btn awaiting-btn"
+                title="Waiting for your answer — click to jump to it"
+                aria-label="Waiting for your answer"
+                onClick={() => {
+                  const el = threadRef.current;
+                  el?.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+                }}
+              >
+                <Bell size={15} />
+              </button>
+            ) : busy ? (
               <button className="send-btn stop" title="Stop" aria-label="Stop" onClick={stop}>
                 <X size={16} />
               </button>
