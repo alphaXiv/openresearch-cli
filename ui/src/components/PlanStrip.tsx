@@ -12,9 +12,9 @@ import { useEffect, useRef, useState } from "react";
  *    change? (optional)") with Back/Revise buttons — self-contained, not a
  *    detour through the main composer.
  *  - Accept and auto mode (primary): approve + resume under Auto — the
- *    default accept action. The caret menu holds the two guarded tiers:
- *    accept-edits (edits allowed, everything else still gated) and
- *    bypass-everything.
+ *    default accept action. The caret menu holds Accept and bypass all
+ *    (skip every gate, not just Auto's). No plain "accept-edits" tier here —
+ *    the app has no story for partial (edits-only) approval.
  *  - Open plan: link in the title row → the right-pane plan tab. */
 export function PlanStrip({
   synthesized,
@@ -129,14 +129,6 @@ export function PlanStrip({
             </button>
             {menuOpen && (
               <div className="plan-strip-menu">
-                <button
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onApprove("accept-edits");
-                  }}
-                >
-                  Accept
-                </button>
                 <button
                   onClick={() => {
                     setMenuOpen(false);
