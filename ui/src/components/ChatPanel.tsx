@@ -338,9 +338,16 @@ function PromptCard({
     if (p.kind === "permission") return null;
     if (p.kind === "plan") {
       // No echo (`approved` absent — stale-card cleanup, pre-echo history):
-      // neutral "Resolved", not a checkmark implying approval.
+      // neutral "Resolved", not a checkmark implying approval. A denial with
+      // a note asked for changes; without one it was a plain rejection.
       const outcome =
-        p.approved === true ? "Plan approved" : p.approved === false ? "Revision requested" : "Resolved";
+        p.approved === true
+          ? "Plan approved"
+          : p.approved === false
+            ? p.note
+              ? "Revision requested"
+              : "Rejected"
+            : "Resolved";
       const outcomeClass =
         p.approved === true ? "approved" : p.approved === false ? "revised" : "";
       return (
@@ -1459,25 +1466,25 @@ export function ChatPanel({
 
       {/* Docked while a plan awaits a decision, so the approval controls never
           scroll away. Actions mirror the (now compact) inline card's wire. */}
-      {pendingPlan && (
-        <PlanStrip
-          plan={pendingPlan.plan}
-          synthesized={pendingPlan.synthesized}
-          onView={() => openPlan?.(pendingPlan.plan, pendingPlan.promptId)}
-          onApprove={(resumeMode) =>
-            respond({ promptId: pendingPlan.promptId, approve: true, resumeMode })
-          }
-          onKeepPlanning={() => {
-            // The composer draft rides along as the refinement note — typing
-            // feedback then clicking "Keep planning" is the natural gesture.
-            const note = draft.trim();
-            respond({ promptId: pendingPlan.promptId, approve: false, note: note || undefined });
-            if (note) setDraft("");
-          }}
-        />
-      )}
-
       <div className="composer">
+        {/* Inside the composer so the composer's popovers (mode/model pickers,
+            z 50 within this stacking context) layer above the strip — as a
+            sibling, the composer's own z-index: 4 capped them below it. */}
+        {pendingPlan && (
+          <PlanStrip
+            plan={pendingPlan.plan}
+            synthesized={pendingPlan.synthesized}
+            onView={() => openPlan?.(pendingPlan.plan, pendingPlan.promptId)}
+            onApprove={(resumeMode) =>
+              respond({ promptId: pendingPlan.promptId, approve: true, resumeMode })
+            }
+            // Plain rejection — no note; the model stops and waits.
+            onReject={() => respond({ promptId: pendingPlan.promptId, approve: false })}
+            // Revision feedback is typed: focus the composer, whose send()
+            // routes the text to this card as the keep-planning note.
+            onRevise={() => composerRef.current?.focus()}
+          />
+        )}
         <div className="composer-box">
           {skillMenuOpen && (
             <SkillMenu

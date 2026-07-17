@@ -3662,13 +3662,11 @@ button.files-pill-link:hover {
 /* --- plan strip (docked above the composer while a plan awaits a decision) --- */
 
 .plan-strip {
-  /* Solid card floating over the composer's ::before fade. Claude-desktop
-     shape: title line on top, a row of buttons below. */
+  /* Lives INSIDE .composer (so the composer's picker popovers stack above
+     it). Claude-desktop shape: title line on top, a row of buttons below. */
   position: relative;
-  z-index: 5;
-  max-width: var(--readable-col);
-  width: calc(100% - 32px);
-  margin: 0 auto 6px;
+  width: 100%;
+  margin: 0 0 10px;
   padding: 11px 13px;
   display: flex;
   flex-direction: column;
@@ -3685,6 +3683,23 @@ button.files-pill-link:hover {
   align-items: baseline;
   gap: 8px;
   min-width: 0;
+}
+.plan-strip-open {
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent-blue);
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.plan-strip-open:hover {
+  text-decoration: underline;
+}
+.plan-strip-spacer {
+  flex: 1;
 }
 .plan-strip-icon {
   color: var(--accent-blue);
@@ -3706,9 +3721,12 @@ button.files-pill-link:hover {
 }
 /* Button styling comes from the shared `.prompt-actions` rules, but the
    strip is monochrome (no brand red): black text, black borders, quiet
-   hover. `--text` keeps it theme-correct in dark mode. */
+   hover. `--text` keeps it theme-correct in dark mode. The spacer splits
+   reject/revise (left) from the accepts (right); when the pane is too
+   narrow the accept group wraps to its own right-aligned line. */
 .plan-strip-actions {
-  gap: 8px;
+  gap: 6px 8px;
+  justify-content: flex-end;
 }
 .plan-strip-actions .btn-primary,
 .plan-strip-actions .btn-ghost {
@@ -3734,6 +3752,22 @@ button.files-pill-link:hover {
   border-left: none;
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
+}
+/* The accept primary: solid dark (desktop's black button), not brand red.
+   `--text`-on-`--base` inverts correctly in dark mode. */
+.plan-strip-actions .plan-strip-primary {
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--base);
+}
+.plan-strip-actions .plan-strip-primary:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--text) 85%, var(--base));
+  border-color: var(--text);
+  color: var(--base);
+}
+/* Seam divider on the solid split button: a faint base-colored line. */
+.plan-strip-actions .plan-strip-primary.plan-strip-caret {
+  border-left: 1px solid color-mix(in oklab, var(--base) 35%, var(--text));
 }
 .plan-strip-approve {
   position: relative;

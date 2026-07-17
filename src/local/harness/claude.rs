@@ -190,12 +190,17 @@ impl Harness for ClaudeCode {
                     )?;
                     Ok(ResumeAction::Handled)
                 }
-                // Keep planning: deny the held ExitPlanMode with the refinement
-                // as the reason — the model revises the plan in the same turn.
+                // Deny the held ExitPlanMode. With a note it's a revision
+                // request — the model revises the plan in the same turn. With
+                // no note it's a plain REJECTION (the strip's Reject button):
+                // tell the model to stop, not to improvise a revision (or a
+                // "what should change?" question card).
                 ("plan", false) => {
                     let message = match note {
                         Some(note) => format!("Keep refining the plan: {note}"),
-                        None => "The user wants the plan revised before approving.".to_string(),
+                        None => "The user rejected this plan. Stop planning and wait \
+                                 for further instructions."
+                            .to_string(),
                     };
                     ctx.host.settle_permission(
                         native_id,
@@ -399,10 +404,15 @@ fn synthesize_resume(kind: &str, req: &PromptAnswer) -> (String, Option<Permissi
             (text, chosen.or(Some(PermissionMode::Auto)))
         }
         "plan" => {
-            // "Keep planning" — stay in plan mode with the refinement.
+            // Stay in plan mode. With a note it's a revision request; without
+            // one it's a plain rejection — stop, don't guess at revisions.
             let text = note
                 .map(|n| format!("Keep refining the plan: {n}"))
-                .unwrap_or_else(|| "Please revise the plan.".to_string());
+                .unwrap_or_else(|| {
+                    "The user rejected this plan. Stop planning and wait for \
+                     further instructions."
+                        .to_string()
+                });
             (text, Some(PermissionMode::Plan))
         }
         "permission" => {

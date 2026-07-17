@@ -4,20 +4,33 @@ import { useEffect, useRef, useState } from "react";
 /** Docked strip above the composer while a plan awaits the user's decision.
  * It owns the plan actions (the inline card renders compact, buttonless) so
  * the approval controls never scroll away with the transcript. Disappears when
- * the prompt resolves (the server re-emits the message with `resolved`). */
+ * the prompt resolves (the server re-emits the message with `resolved`).
+ *
+ * Claude-desktop parity — the actions mean:
+ *  - Reject: plain rejection, no feedback; the model stops and waits.
+ *  - Revise…: focuses the composer; typed text is sent as revision feedback
+ *    (the composer routes it to this card — see ChatPanel's send()).
+ *  - Accept: guarded approve — resume under accept-edits (edits allowed,
+ *    everything else still gated). Closest headless analog to desktop's plain
+ *    Accept, since mid-turn prompting only exists under the plan-mode bridge.
+ *  - Accept and auto mode (primary): approve + resume under Auto.
+ *    The caret holds the bypass-everything variant.
+ *  - Open plan: link in the title row → the right-pane plan tab. */
 export function PlanStrip({
   plan,
   synthesized,
   onView,
   onApprove,
-  onKeepPlanning,
+  onReject,
+  onRevise,
 }: {
   plan: string;
   /** Card synthesized from the turn's final text (no ExitPlanMode call). */
   synthesized: boolean;
   onView: () => void;
   onApprove: (resumeMode: "auto" | "accept-edits" | "bypass") => void;
-  onKeepPlanning: () => void;
+  onReject: () => void;
+  onRevise: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -38,25 +51,35 @@ export function PlanStrip({
       .map((l) => l.replace(/^#+\s*/, "").trim())
       .find((l) => l.length > 0) ?? "";
 
-  // Claude-desktop shape: a title line, then a row of real buttons below.
-  // The actions div reuses `.prompt-actions` so the buttons share every other
-  // card's button styling instead of rendering as bare text.
   return (
     <div className="plan-strip">
       <div className="plan-strip-info">
         <ScrollText size={14} className="plan-strip-icon" />
         <span className="plan-strip-title">
-          {synthesized ? "Ready to proceed?" : "Plan ready"}
+          {synthesized ? "Claude is ready to proceed" : "Claude proposed a plan"}
         </span>
         {excerpt && <span className="plan-strip-excerpt">{excerpt}</span>}
+        <button className="plan-strip-open" onClick={onView}>
+          Open plan
+        </button>
       </div>
       <div className="prompt-actions plan-strip-actions">
+        <button className="btn-ghost" onClick={onReject}>
+          Reject
+        </button>
+        <button className="btn-ghost" onClick={onRevise}>
+          Revise…
+        </button>
+        <span className="plan-strip-spacer" />
+        <button className="btn-ghost" onClick={() => onApprove("accept-edits")}>
+          Accept
+        </button>
         <div className="plan-strip-approve" ref={menuRef}>
-          <button className="btn-primary" onClick={() => onApprove("auto")}>
-            Approve &amp; run
+          <button className="btn-primary plan-strip-primary" onClick={() => onApprove("auto")}>
+            Accept and auto mode
           </button>
           <button
-            className="btn-primary plan-strip-caret"
+            className="btn-primary plan-strip-primary plan-strip-caret"
             aria-label="More approval options"
             onClick={() => setMenuOpen((o) => !o)}
           >
@@ -67,28 +90,14 @@ export function PlanStrip({
               <button
                 onClick={() => {
                   setMenuOpen(false);
-                  onApprove("accept-edits");
-                }}
-              >
-                Approve &amp; accept edits
-              </button>
-              <button
-                onClick={() => {
-                  setMenuOpen(false);
                   onApprove("bypass");
                 }}
               >
-                Approve &amp; bypass all
+                Accept and bypass all
               </button>
             </div>
           )}
         </div>
-        <button className="btn-ghost" onClick={onKeepPlanning}>
-          Keep planning
-        </button>
-        <button className="btn-ghost" onClick={onView}>
-          View plan
-        </button>
       </div>
     </div>
   );
