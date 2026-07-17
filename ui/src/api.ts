@@ -174,11 +174,12 @@ export const createExperiment = (projectId: string, body: NewExperiment) =>
 export const startRun = (
   experimentId: string,
   body: {
-    backend?: "hf" | "k8s" | "slurm" | "openresearch";
+    /** Omit to launch on the default compute target (Settings → Compute). */
+    backend?: "local" | "hf" | "modal" | "k8s" | "ssh" | "slurm" | "openresearch";
     flavor?: string;
     manifest?: string;
     timeout?: string;
-    /** Slurm login node (~/.ssh/config alias); defaults to the slurm settings' host. */
+    /** ssh host alias, or the Slurm login node; defaults to the slurm settings' host. */
     host?: string;
     /** Org to bill the box to (openresearch only; omit = the sole org). */
     org?: string;

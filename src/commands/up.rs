@@ -696,7 +696,13 @@ async fn run_experiment(
     } else {
         serde_json::from_slice(&body).map_err(bad_request)?
     };
-    let backend = req.backend.as_deref().unwrap_or("hf").to_string();
+    // Resolve the persisted default target (Settings → Compute) when the
+    // request doesn't name a backend; `hf` stays the last-resort fallback so
+    // existing clients keep their historical behavior when no default is set.
+    let mut backend_opt = req.backend;
+    let mut flavor = req.flavor;
+    local::apply_compute_default(&mut backend_opt, &mut flavor);
+    let backend = backend_opt.unwrap_or_else(|| "hf".to_string());
     let args = crate::ExpRunArgs {
         exp_id: id,
         gpu: None,
@@ -707,7 +713,7 @@ async fn run_experiment(
         vcpus: None,
         sandbox: None,
         backend: Some(backend.clone()),
-        flavor: req.flavor,
+        flavor,
         org: req.org,
         host: req.host,
         manifest: req.manifest,
@@ -718,11 +724,14 @@ async fn run_experiment(
     // Same code paths as CLI `orx exp run --backend <b>` on a local experiment.
     let run = match backend.as_str() {
         "hf" => local::hf::submit_local_hf(&args).await,
+        "modal" => local::modal::submit_local_modal(&args).await,
         "k8s" => local::k8s::submit_local_k8s(&args).await,
+        "ssh" => local::ssh::submit_local_ssh(&args).await,
         "slurm" => local::slurm::submit_local_slurm(&args).await,
         "openresearch" => local::openresearch::submit_local_openresearch(&args).await,
+        "local" => local::localrun::submit_local_run(&args).await,
         other => Err(anyhow!(
-            "Unknown backend '{other}'. Supported: hf, k8s, slurm, openresearch."
+            "Unknown backend '{other}'. Supported: local, hf, modal, k8s, ssh, slurm, openresearch."
         )),
     }
     .map_err(bad_request)?;
