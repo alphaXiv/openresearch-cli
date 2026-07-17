@@ -44,17 +44,21 @@ interface ExpViewDef {
 
 const sameExpTab = (a: ExpViewDef, b: ExpViewDef) => a.id === b.id && a.view === b.view;
 
-/** A project file open as a right-panel tab (clicked in chat tool rows). */
+/** A project file open as a right-panel tab (clicked in chat tool rows or the
+ * code browser). */
 interface FileViewDef {
   path: string;
   /** Chat session whose worktree holds the file (absent → hub clone). */
   sessionId?: string;
+  /** Branch whose committed copy to show (code browser in branch mode);
+   * overrides the live checkout. */
+  ref?: string;
 }
 
 const sameFileTab = (a: FileViewDef, b: FileViewDef) =>
-  a.path === b.path && a.sessionId === b.sessionId;
+  a.path === b.path && a.sessionId === b.sessionId && a.ref === b.ref;
 
-const fileTabKey = (t: FileViewDef) => `${t.sessionId ?? ""}:${t.path}`;
+const fileTabKey = (t: FileViewDef) => `${t.sessionId ?? ""}:${t.ref ?? ""}:${t.path}`;
 
 /** A proposed plan open as a right-panel tab (from the chat plan strip/card).
  * The markdown is already client-side (it rode the prompt part), so the tab
@@ -276,10 +280,11 @@ export default function App() {
   // session (or viewed file's session) the click came from — see
   // parseFilePath for how it resolves against the reported path.
   const openFileTab = useCallback(
-    (rawPath: string, contextSessionId?: string) => {
+    (rawPath: string, contextSessionId?: string, ref?: string) => {
       const repoPath = projects?.find((p) => p.id === projectId)?.repoPath;
       const tab = parseFilePath(rawPath, repoPath, contextSessionId);
       if (!tab) return;
+      if (ref) tab.ref = ref;
       setFileTabs((prev) => (prev.some((t) => sameFileTab(t, tab)) ? prev : [...prev, tab]));
       setRightTab(tab);
       setPanelOpen(true);
@@ -642,6 +647,7 @@ export default function App() {
                   projectId={projectId}
                   path={fileTab.path}
                   sessionId={fileTab.sessionId}
+                  gitRef={fileTab.ref}
                   onOpenFile={openFileTab}
                 />
               )}
@@ -665,6 +671,8 @@ export default function App() {
                   projectId={projectId}
                   sessionId={codeTab.sessionId}
                   project={activeProject}
+                  experiments={experiments}
+                  runs={runs}
                   onOpenFile={openFileTab}
                 />
               )}

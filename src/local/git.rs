@@ -523,3 +523,36 @@ pub fn list_worktree_files(repo: &Path) -> Result<Vec<String>> {
         .map(|s| String::from_utf8_lossy(s).into_owned())
         .collect())
 }
+
+/// Resolve a branch name to its commit sha — the local ref first (where the
+/// agent works), then origin's. `Ok(None)` when neither exists. Names that
+/// could read as git options are rejected up front rather than shelled out.
+pub fn resolve_branch_commit(repo: &Path, name: &str) -> Result<Option<String>> {
+    if name.starts_with('-') || name.is_empty() {
+        return Ok(None);
+    }
+    for prefix in ["refs/heads/", "refs/remotes/origin/"] {
+        let full = format!("{prefix}{name}");
+        if let Ok(sha) = git(Some(repo), &["rev-parse", "--verify", "--quiet", &full]) {
+            if !sha.is_empty() {
+                return Ok(Some(sha));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Every path in the tree of a commit (`git ls-tree -r -z --name-only`) —
+/// the committed state, independent of any checkout. Repo-relative, unsorted.
+pub fn list_tree_files(repo: &Path, sha: &str) -> Result<Vec<String>> {
+    let bytes = git_bytes(
+        repo,
+        &["ls-tree", "-r", "-z", "--name-only", sha, "--"],
+        &[],
+    )?;
+    Ok(bytes
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect())
+}

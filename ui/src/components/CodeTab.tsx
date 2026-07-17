@@ -1,19 +1,27 @@
-// A code browser over one chat session's worktree: a collapsible file tree
-// built from `git ls-files` (so gitignored trees are excluded and untracked
-// new files are included), plus a GitHub branch link. Clicking a file opens
-// the existing FileViewer tab, served from the same session worktree.
+// A code browser for one chat session: either the live session worktree or
+// the committed tree of an experiment branch, picked from a header select.
+// The tree is built from git listings (gitignored trees excluded; the live
+// view also shows untracked new files). Clicking a file opens the existing
+// FileViewer tab, served from the same source.
 
 import {
   ChevronDown,
   ChevronRight,
+  ExternalLink,
   File as FileIcon,
   Folder,
   FolderOpen,
   RotateCw,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getCodeTree, type CodeTree, type Project } from "../api";
-import { BranchPill } from "./BranchPill";
+import {
+  getCodeTree,
+  githubBranchUrl,
+  type CodeTree,
+  type Experiment,
+  type Project,
+  type Run,
+} from "../api";
 
 /** A node in the nested tree derived from the flat path list. */
 interface DirNode {
@@ -45,6 +53,14 @@ function buildTree(entries: string[]): DirNode {
     node.files.push(parts[parts.length - 1]);
   }
   return root;
+}
+
+/** The branch of the experiment owning the project's most recent run — what
+ * the user most likely wants to browse — or "" (live worktree) without runs. */
+function defaultSelection(experiments: Experiment[], runs: Run[]): string {
+  if (runs.length === 0) return "";
+  const latest = runs.reduce((a, b) => (b.createdAt > a.createdAt ? b : a));
+  return experiments.find((e) => e.id === latest.experimentId)?.branchName ?? "";
 }
 
 // Open/closed is a depth rule plus a set of user exceptions: top-level dirs
@@ -161,24 +177,35 @@ export function CodeTab({
   projectId,
   sessionId,
   project,
+  experiments,
+  runs,
   onOpenFile,
 }: {
   projectId: string;
-  /** Chat session whose worktree this browses. */
+  /** Chat session whose worktree the live view browses. */
   sessionId: string;
   /** Owning project — supplies owner/repo for the GitHub branch link. */
   project: Project;
-  /** Open a file in the right pane's FileViewer, keyed to this session. */
-  onOpenFile: (path: string, sessionId?: string) => void;
+  /** Project experiments — one selectable branch entry each (deduped). */
+  experiments: Experiment[];
+  /** Project runs — pick the default branch (latest run's experiment). */
+  runs: Run[];
+  /** Open a file in the right pane's FileViewer, keyed to this source. */
+  onOpenFile: (path: string, sessionId?: string, ref?: string) => void;
 }) {
   const [data, setData] = useState<CodeTree | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // "" = the live session worktree; anything else = a branch name whose
+  // committed tree is browsed. Defaults to the latest-run experiment's branch.
+  const [sel, setSel] = useState(() => defaultSelection(experiments, runs));
   // Dirs the user flipped away from their depth default (see DirRow).
   const [toggled, setToggled] = useState<Set<string>>(new Set());
-  // Unmount guard (FileViewer's cancelled-flag pattern) + in-flight guard so
-  // a slow response doesn't stack polls.
+  // Unmount guard (FileViewer's cancelled-flag pattern); a request id keeps
+  // stale responses from clobbering a newer selection; the in-flight flag
+  // only throttles the background poll (user actions always fetch).
   const mounted = useRef(true);
+  const reqId = useRef(0);
   const inFlight = useRef(false);
   const dataRef = useRef<CodeTree | null>(null);
 
@@ -191,12 +218,12 @@ export function CodeTab({
 
   const load = useCallback(
     (showSpinner: boolean) => {
-      if (inFlight.current) return;
+      const id = ++reqId.current;
       inFlight.current = true;
       if (showSpinner) setLoading(true);
-      getCodeTree(projectId, sessionId)
+      getCodeTree(projectId, sel ? { ref: sel } : { sessionId })
         .then((d) => {
-          if (!mounted.current) return;
+          if (!mounted.current || id !== reqId.current) return;
           dataRef.current = d;
           setData(d);
           setError(null);
@@ -205,26 +232,34 @@ export function CodeTab({
           // Background poll failures are transient (the next tick retries) —
           // keep rendering the last-good tree; only surface an error when
           // there's nothing to show yet.
-          if (mounted.current && !dataRef.current) setError(e.message);
+          if (mounted.current && id === reqId.current && !dataRef.current) setError(e.message);
         })
         .finally(() => {
           inFlight.current = false;
-          if (mounted.current) setLoading(false);
+          if (mounted.current && id === reqId.current) setLoading(false);
         });
     },
-    [projectId, sessionId],
+    [projectId, sessionId, sel],
   );
 
-  // Load on mount / session change.
+  // Fetch on mount and whenever the source changes; a stale tree from the
+  // previous source must not linger under the new header.
   useEffect(() => {
+    dataRef.current = null;
+    setData(null);
+    setError(null);
     load(true);
   }, [load]);
 
-  // Poll while visible so files the agent just wrote show up.
+  // Poll only the live view (the agent writes files as it works); a branch's
+  // committed tree changes on commit — the manual Refresh covers that.
   useEffect(() => {
-    const timer = setInterval(() => load(false), 5000);
+    if (sel) return;
+    const timer = setInterval(() => {
+      if (!inFlight.current) load(false);
+    }, 5000);
     return () => clearInterval(timer);
-  }, [load]);
+  }, [sel, load]);
 
   const tree = useMemo(() => (data ? buildTree(data.entries) : null), [data]);
 
@@ -237,13 +272,48 @@ export function CodeTab({
     });
   }, []);
 
+  // One entry per branch: several experiments (e.g. baselines) can share one.
+  const branchOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const options: { branch: string; label: string }[] = [];
+    for (const e of experiments) {
+      if (seen.has(e.branchName)) continue;
+      seen.add(e.branchName);
+      options.push({ branch: e.branchName, label: e.slug });
+    }
+    return options;
+  }, [experiments]);
+
+  // GitHub link target: the picked branch, or whatever the live view has
+  // checked out (none while detached).
+  const linkBranch = sel || data?.branch || null;
+
   return (
     <div className="code-tab">
       <div className="code-tab-header">
-        {data?.branch ? (
-          <BranchPill owner={project.githubOwner} repo={project.githubRepo} branch={data.branch} />
-        ) : (
-          <span className="code-tab-branch-none">{data ? "no branch checked out" : "…"}</span>
+        <select
+          className="input sm code-tab-select"
+          value={sel}
+          onChange={(e) => setSel(e.target.value)}
+          title="Source to browse"
+        >
+          <option value="">live — session worktree</option>
+          {branchOptions.map((o) => (
+            <option key={o.branch} value={o.branch}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        {linkBranch && (
+          <a
+            className="icon-btn"
+            href={githubBranchUrl(project.githubOwner, project.githubRepo, linkBranch)}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={`Open ${linkBranch} on GitHub`}
+          >
+            <ExternalLink size={13} />
+          </a>
         )}
         <span style={{ flex: 1 }} />
         <button
@@ -255,7 +325,7 @@ export function CodeTab({
           {loading ? <span className="spinner" /> : <RotateCw size={13} />}
         </button>
       </div>
-      {data?.root === "clone" && (
+      {!sel && data?.root === "clone" && (
         <div className="code-tab-note">session worktree unavailable — showing the hub clone</div>
       )}
       {data?.truncated && <div className="code-tab-note">listing truncated</div>}
@@ -274,7 +344,7 @@ export function CodeTab({
               depth={0}
               toggled={toggled}
               onToggle={toggle}
-              onOpenFile={(path) => onOpenFile(path, sessionId)}
+              onOpenFile={(path) => onOpenFile(path, sessionId, sel || undefined)}
             />
           </div>
         )}

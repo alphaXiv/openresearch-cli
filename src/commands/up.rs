@@ -942,27 +942,46 @@ fn resolve_checkout_root(
 #[serde(rename_all = "camelCase")]
 struct CodeTreeQuery {
     /// Chat session whose worktree to list. Absent (or the worktree already
-    /// pruned) falls back to the hub clone.
+    /// pruned) falls back to the hub clone. Ignored when `ref` is given.
     session_id: Option<String>,
+    /// Branch to list the committed tree of, instead of a live checkout.
+    r#ref: Option<String>,
 }
 
 /// Cap on entries returned by the code-tree listing.
 const CODE_TREE_LIMIT: usize = 20_000;
 
-/// Flat file listing of the project's checkout — the chat session's worktree
-/// when `sessionId` is given, else the hub clone — plus the checked-out branch
-/// name, for the UI code browser. Paths are repo-relative (`git ls-files`, so
-/// gitignored trees are excluded and untracked-but-new files are included).
-/// The client builds the nested tree.
+/// Flat file listing for the UI code browser. With `ref`: the committed tree
+/// of that branch (local ref first, then origin's), independent of any
+/// checkout. Without: the live checkout — the chat session's worktree when
+/// `sessionId` is given, else the hub clone — via `git ls-files`, so
+/// gitignored trees are excluded and untracked-but-new files are included.
+/// Paths are repo-relative; the client builds the nested tree.
 async fn project_code_tree(Path(id): Path<String>, Query(q): Query<CodeTreeQuery>) -> ApiResult {
     blocking_api(move || {
         let store = Store::open()?;
         let project = store
             .get_local_project(&id)?
             .ok_or_else(|| not_found("project"))?;
-        let (root, root_kind) = resolve_checkout_root(&store, &project, q.session_id.as_deref())?;
-        let branch = local::git::current_branch(&root);
-        let mut entries = local::git::list_worktree_files(&root)?;
+        let ref_name = q.r#ref.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let (root_kind, branch, mut entries) = match ref_name {
+            Some(name) => {
+                // Branch refs live in the shared object DB — the hub clone
+                // resolves them regardless of which worktree the session has.
+                let (root, _) = resolve_checkout_root(&store, &project, None)?;
+                let sha = local::git::resolve_branch_commit(&root, name)?
+                    .ok_or_else(|| not_found("branch"))?;
+                let entries = local::git::list_tree_files(&root, &sha)?;
+                ("branch", Some(name.to_string()), entries)
+            }
+            None => {
+                let (root, root_kind) =
+                    resolve_checkout_root(&store, &project, q.session_id.as_deref())?;
+                let branch = local::git::current_branch(&root);
+                let entries = local::git::list_worktree_files(&root)?;
+                (root_kind, branch, entries)
+            }
+        };
         entries.sort();
         // During a merge conflict `ls-files --cached` emits an unmerged path
         // once per stage — collapse to one entry (they'd be duplicate keys).
@@ -984,14 +1003,18 @@ async fn project_code_tree(Path(id): Path<String>, Query(q): Query<CodeTreeQuery
 struct ProjectFileQuery {
     path: String,
     /// Chat session whose worktree holds the file. Absent (or the worktree
-    /// already pruned) falls back to the hub clone.
+    /// already pruned) falls back to the hub clone. Ignored when `ref` is given.
     session_id: Option<String>,
+    /// Branch to read the committed file from, instead of a live checkout.
+    r#ref: Option<String>,
 }
 
-/// One file from the project's checkout — the chat session's worktree when
-/// `sessionId` is given, else the hub clone — for the UI file viewer. Path is
-/// repo-relative; traversal outside the checkout is rejected. The response's
-/// `root` says which checkout actually answered, so the UI can flag fallback.
+/// One file for the UI file viewer. With `ref`: the committed content on that
+/// branch (`git show`), independent of any checkout. Without: the project's
+/// checkout — the chat session's worktree when `sessionId` is given, else the
+/// hub clone. Path is repo-relative; traversal outside the checkout is
+/// rejected. The response's `root` says which source actually answered, so
+/// the UI can flag fallback.
 async fn project_file(Path(id): Path<String>, Query(q): Query<ProjectFileQuery>) -> ApiResult {
     blocking_api(move || {
         use std::io::Read as _;
@@ -1012,6 +1035,41 @@ async fn project_file(Path(id): Path<String>, Query(q): Query<ProjectFileQuery>)
         let project = store
             .get_local_project(&id)?
             .ok_or_else(|| not_found("project"))?;
+        let ref_name = q.r#ref.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        if let Some(name) = ref_name {
+            let (root, _) = resolve_checkout_root(&store, &project, None)?;
+            let sha = local::git::resolve_branch_commit(&root, name)?
+                .ok_or_else(|| not_found("branch"))?;
+            return match local::git::file_at(&root, &sha, &rel) {
+                Ok(content) => {
+                    let truncated = content.len() as u64 > FILE_READ_LIMIT;
+                    let content = if truncated {
+                        // Lossy re-decode: the cap can land mid multibyte char.
+                        String::from_utf8_lossy(&content.as_bytes()[..FILE_READ_LIMIT as usize])
+                            .into_owned()
+                    } else {
+                        content
+                    };
+                    Ok(Json(json!({
+                        "path": rel, "content": content, "truncated": truncated,
+                        "notFound": false, "root": "branch",
+                    })))
+                }
+                // `git show <sha>:<path>` on a missing path fails with
+                // "does not exist in" (or "exists on disk, but not in" when
+                // only the checkout has it) — that's a not-found, not a 500.
+                Err(e)
+                    if e.to_string().contains("does not exist")
+                        || e.to_string().contains("exists on disk, but not in") =>
+                {
+                    Ok(Json(json!({
+                        "path": rel, "content": "", "truncated": false,
+                        "notFound": true, "root": "branch",
+                    })))
+                }
+                Err(e) => Err(ApiError::from(e)),
+            };
+        }
         let (root, root_kind) = resolve_checkout_root(&store, &project, q.session_id.as_deref())?;
         let not_found_json = json!({
             "path": rel, "content": "", "truncated": false, "notFound": true, "root": root_kind,

@@ -229,29 +229,44 @@ export const getCommitDiff = (experimentId: string, sha: string) =>
 export const getWorkingTree = (projectId: string) =>
   get<WorkingTree>(`/api/projects/${projectId}/working-tree`);
 
+/** Which source answered a checkout read: a session's live worktree, the hub
+ * clone (also the worktree-pruned fallback), or a branch's committed tree. */
+export type CheckoutRoot = "worktree" | "clone" | "branch";
+
+/** Source selector for checkout reads: `ref` picks a branch's committed
+ * state (sessionId is then ignored server-side); `sessionId` alone picks the
+ * session's live worktree; neither picks the hub clone. */
+export interface CheckoutRef {
+  sessionId?: string;
+  ref?: string;
+}
+
+const checkoutQuery = (opts: CheckoutRef, params: URLSearchParams = new URLSearchParams()) => {
+  if (opts.sessionId) params.set("sessionId", opts.sessionId);
+  if (opts.ref) params.set("ref", opts.ref);
+  return params;
+};
+
 export interface ProjectFile {
   path: string;
   content: string;
   truncated: boolean;
   notFound: boolean;
-  /** Which checkout answered — the session's worktree, or the hub clone
-   * (also the fallback when the session's worktree has been pruned). */
-  root: "worktree" | "clone";
+  root: CheckoutRoot;
 }
 
-/** One file from the project checkout (a chat session's worktree when
- * `sessionId` is given, else the hub clone), capped server-side (~512 KB). */
-export const getProjectFile = (projectId: string, path: string, sessionId?: string) =>
+/** One file from the project — a branch's committed copy when `ref` is given,
+ * else a chat session's worktree, else the hub clone — capped server-side
+ * (~512 KB). */
+export const getProjectFile = (projectId: string, path: string, opts: CheckoutRef = {}) =>
   get<ProjectFile>(
-    `/api/projects/${projectId}/file?path=${encodeURIComponent(path)}` +
-      (sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""),
+    `/api/projects/${projectId}/file?${checkoutQuery(opts, new URLSearchParams({ path }))}`,
   );
 
 export interface CodeTree {
-  /** Which checkout answered — the session's worktree, or the hub clone
-   * (also the fallback when the session's worktree has been pruned). */
-  root: "worktree" | "clone";
-  /** Checked-out branch, or null when detached (fresh worktree). */
+  root: CheckoutRoot;
+  /** The listed branch (`ref` mode), else the checked-out branch, else null
+   * (detached, e.g. a fresh worktree). */
   branch: string | null;
   /** Repo-relative file paths (gitignored trees excluded), sorted. */
   entries: string[];
@@ -259,13 +274,13 @@ export interface CodeTree {
   truncated: boolean;
 }
 
-/** Flat file listing of the project checkout (a chat session's worktree when
- * `sessionId` is given, else the hub clone) plus the checked-out branch. */
-export const getCodeTree = (projectId: string, sessionId?: string) =>
-  get<CodeTree>(
-    `/api/projects/${projectId}/code-tree` +
-      (sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ""),
-  );
+/** Flat file listing of the project — a branch's committed tree when `ref` is
+ * given, else a chat session's worktree, else the hub clone — plus the branch
+ * name. */
+export const getCodeTree = (projectId: string, opts: CheckoutRef = {}) => {
+  const qs = checkoutQuery(opts).toString();
+  return get<CodeTree>(`/api/projects/${projectId}/code-tree${qs ? `?${qs}` : ""}`);
+};
 
 /** A GitHub `tree` URL for a branch. Branch names contain `/` (`orx/<slug>`),
  * so encode each path segment — never the whole string, which would escape the
