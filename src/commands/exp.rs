@@ -974,7 +974,12 @@ async fn local_desc(
 
 /// Local `exp run`: external backends only — HF Jobs, Modal, k8s, ssh, slurm,
 /// or a detached process on this machine (`local`).
-async fn local_launch(args: ExpRunArgs) -> Result<()> {
+async fn local_launch(mut args: ExpRunArgs) -> Result<()> {
+    // Fill backend/flavor from the persisted default (Settings → Compute)
+    // BEFORE the flag validations below, so e.g. `--host box1` with a default
+    // of `ssh` is a valid launch, and before `backend_label` is captured, so
+    // telemetry records the resolved backend.
+    crate::local::apply_compute_default(&mut args.backend, &mut args.flavor);
     if args.manifest.is_some() && args.backend.as_deref() != Some("k8s") {
         return Err(anyhow!("--manifest only applies with --backend k8s."));
     }
@@ -1003,8 +1008,10 @@ async fn local_launch(args: ExpRunArgs) -> Result<()> {
             other
         )),
         None => Err(anyhow!(
-            "Local experiments run on compute you pick per launch. \
-             Pass `--backend hf --flavor <flavor>` (e.g. --flavor a10g-small), \
+            "No --backend given and no default compute target is set. \
+             Set a default in the dashboard (`orx up` → Settings → Compute → Make default), \
+             or pass one per launch: \
+             `--backend hf --flavor <flavor>` (e.g. --flavor a10g-small), \
              `--backend modal --flavor <flavor>` (e.g. --flavor a10g), \
              `--backend k8s` (runs the manifest committed on the branch — \
              default .orx/k8s.yaml, or --manifest <path>), \

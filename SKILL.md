@@ -434,7 +434,8 @@ orx create-experiment <projectId> --title "Baseline v2" --baseline
 Each experiment node has a **run command** (the shell command that trains/evaluates
 it) and is launched on **compute** you choose at run time. Compute is *not* stored
 on the node — you pick a GPU, a CPU-only instance, or an existing sandbox each time
-you launch.
+you launch (local projects may instead carry a default target — see "The default
+compute target" below).
 
 ```sh
 orx exp status <expId>                 # status, branch, parent, run command, latest run + commit, local diff recipe
@@ -484,13 +485,25 @@ Rules and notes:
   Follow progress with `orx runs <projectId>` and `orx logs <runId>`, or block
   with `orx exp wait` (below).
 
+### The default compute target (local projects)
+
+The user may set a **default compute target** in the `orx up` dashboard
+(Settings → Compute → Make default); it is machine-wide and applies to every
+local project. When one is set, `orx exp run <expId>` with no `--backend`
+launches there, with the saved default flavor — omitting the flag is how you
+use it (flavor-required backends still need `--flavor` if no default flavor
+is saved). When none is set, local launches require an explicit `--backend`; the
+compute choice is the user's, so ask. Server projects are unaffected: managed
+compute (`--gpu`/`--cpu`/`--sandbox`) stays their default.
+
 ### Running on Hugging Face Jobs — `--backend hf`
 
 **Managed compute (`--gpu`/`--cpu`/`--sandbox`) is the default. Use
 `--backend hf` ONLY when the user explicitly asks for Hugging Face Jobs**
-(e.g. "run this on HF", "use my huggingface account") or the project context
-says to prefer it. A connected HF token by itself is NOT a signal to switch —
-it just means the option exists. When in doubt, launch on managed compute.
+(e.g. "run this on HF", "use my huggingface account"), it is the configured
+default target (orx up Settings → Compute), or the project context says to
+prefer it. A connected HF token by itself is NOT a signal to switch — it just
+means the option exists. When in doubt, launch on managed compute.
 
 With `--backend hf`, the job runs on the user's own HF account (requires
 `HF_TOKEN` in the environment — orgs that connect their HF account in compute
@@ -529,9 +542,10 @@ Rules and notes:
 
 **Same rule as HF: managed compute is the default. Use `--backend modal` ONLY
 when the user explicitly asks for Modal** ("run this on Modal", "use my Modal
-account"). Modal runs on the user's own Modal account, billed there per second;
-no OpenResearch balance is spent. It runs the job in a Modal **Sandbox** (an
-ephemeral container that scales to zero when the run ends).
+account") or it is the configured default target. Modal runs on the user's
+own Modal account, billed there per second; no OpenResearch balance is spent.
+It runs the job in a Modal **Sandbox** (an ephemeral container that scales to
+zero when the run ends).
 
 orx auto-provisions a managed `modal` environment on the first Modal launch (no
 pip-install needed). You only need a Modal token — `MODAL_TOKEN_ID` +
@@ -565,10 +579,10 @@ Rules and notes:
 ### Running on your Kubernetes cluster — `--backend k8s`
 
 **Same rule: use `--backend k8s` ONLY when the user explicitly asks to run on
-their cluster** ("run this on k8s", "use our cluster"). Local projects
-(`orx up`) only for now. Auth comes from the local kubeconfig — orx never
-stores cluster credentials; the context/namespace live in `orx up` Settings →
-Compute.
+their cluster** ("run this on k8s", "use our cluster") or it is the
+configured default target. Local projects (`orx up`) only for now. Auth
+comes from the local kubeconfig — orx never stores cluster credentials; the
+context/namespace live in `orx up` Settings → Compute.
 
 **There are no flavors: the run's shape is a Kubernetes manifest you commit
 on the experiment branch** (default `.orx/k8s.yaml`, or `--manifest <path>`).
@@ -629,10 +643,11 @@ The contract orx enforces at submit (loud, before anything runs):
 ### Running on your own box — `--backend ssh`
 
 **Same rule: use `--backend ssh` ONLY when the user explicitly asks to run on
-their own machine/server** ("run this on my box", "use my GPU server"). Local
-projects (`orx up`) only for now. It runs the experiment as a detached
-background process on a host from your `~/.ssh/config`, over `ssh` — no
-scheduler, no container, the host's own environment.
+their own machine/server** ("run this on my box", "use my GPU server") or it
+is the configured default target (`--host <alias>` is still required per
+launch). Local projects (`orx up`) only for now. It runs the experiment as a
+detached background process on a host from your `~/.ssh/config`, over `ssh` —
+no scheduler, no container, the host's own environment.
 
 ```sh
 orx exp run <expId> --backend ssh --host my-gpu-box     # ~/.ssh/config alias
@@ -656,10 +671,10 @@ Rules and notes:
 ### Running on this machine — `--backend local`
 
 **Same rule: use `--backend local` ONLY when the user explicitly asks to run
-locally** ("run it on this machine", "just run it here"). Local projects
-(`orx up`) only. It runs the experiment as a detached background process on
-the machine running orx — no scheduler, no container, this machine's own
-environment.
+locally** ("run it on this machine", "just run it here") or it is the
+configured default target. Local projects (`orx up`) only. It runs the
+experiment as a detached background process on the machine running orx — no
+scheduler, no container, this machine's own environment.
 
 ```sh
 orx exp run <expId> --backend local

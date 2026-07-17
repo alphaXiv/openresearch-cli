@@ -167,6 +167,7 @@ fn router(state: AppState) -> Router {
             get(experiment_commit_diff),
         )
         .route("/api/projects/{id}/working-tree", get(project_working_tree))
+        .route("/api/projects/{id}/code-tree", get(project_code_tree))
         .route("/api/projects/{id}/file", get(project_file))
         .route(
             "/api/projects/{id}/files",
@@ -216,6 +217,10 @@ fn router(state: AppState) -> Router {
             get(slurm_settings).post(set_slurm_settings),
         )
         .route("/api/settings/slurm/preflight", post(slurm_preflight))
+        .route("/api/settings/compute", get(compute_settings))
+        .route("/api/settings/compute/default", post(set_compute_default))
+        .route("/api/settings/local", get(local_machine_settings))
+        .route("/api/settings/openresearch", get(openresearch_settings))
         .route("/api/harnesses", get(list_harnesses))
         .route("/api/skills", get(list_skills))
         .route(
@@ -696,7 +701,14 @@ async fn run_experiment(
     } else {
         serde_json::from_slice(&body).map_err(bad_request)?
     };
-    let backend = req.backend.as_deref().unwrap_or("hf").to_string();
+    // Resolve the persisted default target (Settings → Compute) when the
+    // request doesn't name a backend; `hf` stays the last-resort fallback so
+    // existing clients keep their historical behavior when no default is set.
+    // Empty strings mean "unset", matching the /compute/default endpoint.
+    let mut backend_opt = req.backend.filter(|b| !b.trim().is_empty());
+    let mut flavor = req.flavor.filter(|f| !f.trim().is_empty());
+    local::apply_compute_default(&mut backend_opt, &mut flavor);
+    let backend = backend_opt.unwrap_or_else(|| "hf".to_string());
     let args = crate::ExpRunArgs {
         exp_id: id,
         gpu: None,
@@ -707,7 +719,7 @@ async fn run_experiment(
         vcpus: None,
         sandbox: None,
         backend: Some(backend.clone()),
-        flavor: req.flavor,
+        flavor,
         org: req.org,
         host: req.host,
         manifest: req.manifest,
@@ -718,11 +730,14 @@ async fn run_experiment(
     // Same code paths as CLI `orx exp run --backend <b>` on a local experiment.
     let run = match backend.as_str() {
         "hf" => local::hf::submit_local_hf(&args).await,
+        "modal" => local::modal::submit_local_modal(&args).await,
         "k8s" => local::k8s::submit_local_k8s(&args).await,
+        "ssh" => local::ssh::submit_local_ssh(&args).await,
         "slurm" => local::slurm::submit_local_slurm(&args).await,
         "openresearch" => local::openresearch::submit_local_openresearch(&args).await,
+        "local" => local::localrun::submit_local_run(&args).await,
         other => Err(anyhow!(
-            "Unknown backend '{other}'. Supported: hf, k8s, slurm, openresearch."
+            "Unknown backend '{other}'. Supported: local, hf, modal, k8s, ssh, slurm, openresearch."
         )),
     }
     .map_err(bad_request)?;
@@ -893,19 +908,122 @@ async fn project_working_tree(Path(id): Path<String>) -> ApiResult {
 /// Cap on file bytes served to the viewer (mirrors openresearch.sh).
 const FILE_READ_LIMIT: u64 = 512_000;
 
+/// Resolve which on-disk checkout answers a file/code request for a project.
+///
+/// The chat session's worktree is where the agent actually works, so it can
+/// hold files the hub clone's checkout never sees. When `session_id` is given
+/// it must be this project's session (the authorization boundary, which also
+/// pins the worktree dir to a store-issued id); a missing worktree (pruned, or
+/// never created) degrades to the clone rather than erroring, but any other
+/// worktree failure is reported, not papered over. Returns the canonicalized
+/// root and whether it is the `"worktree"` or the `"clone"`.
+fn resolve_checkout_root(
+    store: &Store,
+    project: &local::model::LocalProject,
+    session_id: Option<&str>,
+) -> std::result::Result<(std::path::PathBuf, &'static str), ApiError> {
+    let session_id = session_id.map(str::trim).filter(|s| !s.is_empty());
+    let worktree = match session_id {
+        Some(s) => {
+            let session = store
+                .get_chat_session(s)?
+                .filter(|sess| sess.project_id == project.id)
+                .ok_or_else(|| not_found("chat session"))?;
+            let dir = local::git::session_worktree_path(
+                &project.github_owner,
+                &project.github_repo,
+                &session.id,
+            );
+            match std::fs::canonicalize(&dir) {
+                Ok(p) => Some(p),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(ApiError::from(anyhow!("session worktree unavailable: {e}"))),
+            }
+        }
+        None => None,
+    };
+    match worktree {
+        Some(r) => Ok((r, "worktree")),
+        None => Ok((
+            std::fs::canonicalize(&project.repo_path)
+                .map_err(|e| ApiError::from(anyhow!("repo clone unavailable: {e}")))?,
+            "clone",
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodeTreeQuery {
+    /// Branch to list the committed tree of; absent lists the hub clone's
+    /// checkout.
+    r#ref: Option<String>,
+}
+
+/// Cap on entries returned by the code-tree listing.
+const CODE_TREE_LIMIT: usize = 20_000;
+
+/// Flat file listing for the UI code browser. With `ref`: the committed tree
+/// of that branch (local ref first, then origin's), independent of any
+/// checkout. Without: the hub clone's checkout via `git ls-files`, so
+/// gitignored trees are excluded and untracked-but-new files are included.
+/// Paths are repo-relative; the client builds the nested tree.
+async fn project_code_tree(Path(id): Path<String>, Query(q): Query<CodeTreeQuery>) -> ApiResult {
+    blocking_api(move || {
+        let store = Store::open()?;
+        let project = store
+            .get_local_project(&id)?
+            .ok_or_else(|| not_found("project"))?;
+        // Branch refs live in the shared object DB — the hub clone resolves
+        // them all; no per-session root here (file reads still take one).
+        let (root, root_kind) = resolve_checkout_root(&store, &project, None)?;
+        let ref_name = q.r#ref.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let (root_kind, branch, mut entries) = match ref_name {
+            Some(name) => {
+                let sha = local::git::resolve_branch_commit(&root, name)?
+                    .ok_or_else(|| not_found("branch"))?;
+                let entries = local::git::list_tree_files(&root, &sha)?;
+                ("branch", Some(name.to_string()), entries)
+            }
+            None => {
+                let branch = local::git::current_branch(&root);
+                let entries = local::git::list_worktree_files(&root)?;
+                (root_kind, branch, entries)
+            }
+        };
+        entries.sort();
+        // During a merge conflict `ls-files --cached` emits an unmerged path
+        // once per stage — collapse to one entry (they'd be duplicate keys).
+        entries.dedup();
+        let truncated = entries.len() > CODE_TREE_LIMIT;
+        entries.truncate(CODE_TREE_LIMIT);
+        Ok(Json(json!({
+            "root": root_kind,
+            "branch": branch,
+            "entries": entries,
+            "truncated": truncated,
+        })))
+    })
+    .await
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProjectFileQuery {
     path: String,
     /// Chat session whose worktree holds the file. Absent (or the worktree
-    /// already pruned) falls back to the hub clone.
+    /// already pruned) falls back to the hub clone. Ignored when `ref` is given.
     session_id: Option<String>,
+    /// Branch to read the committed file from, instead of a live checkout.
+    r#ref: Option<String>,
 }
 
-/// One file from the project's checkout — the chat session's worktree when
-/// `sessionId` is given, else the hub clone — for the UI file viewer. Path is
-/// repo-relative; traversal outside the checkout is rejected. The response's
-/// `root` says which checkout actually answered, so the UI can flag fallback.
+/// One file for the UI file viewer. With `ref`: the committed content on that
+/// branch (a streamed, capped `git cat-file` read), independent of any
+/// checkout. Without: the project's checkout — the chat session's worktree
+/// when `sessionId` is given, else the hub clone. Path is repo-relative;
+/// traversal outside the checkout is rejected. The response's `root` says
+/// which source actually answered, so the UI can flag fallback.
 async fn project_file(Path(id): Path<String>, Query(q): Query<ProjectFileQuery>) -> ApiResult {
     blocking_api(move || {
         use std::io::Read as _;
@@ -926,46 +1044,26 @@ async fn project_file(Path(id): Path<String>, Query(q): Query<ProjectFileQuery>)
         let project = store
             .get_local_project(&id)?
             .ok_or_else(|| not_found("project"))?;
-        // The session's worktree is where the agent actually works, so it can
-        // hold files the hub clone's checkout never sees. The session must be
-        // this project's (which also pins the worktree dir to a store-issued
-        // id); a missing worktree (pruned, or never created) degrades to the
-        // clone rather than erroring, but any other worktree failure is
-        // reported, not papered over.
-        let session_id = q
-            .session_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-        let worktree = match session_id {
-            Some(s) => {
-                let session = store
-                    .get_chat_session(s)?
-                    .filter(|sess| sess.project_id == project.id)
-                    .ok_or_else(|| not_found("chat session"))?;
-                let dir = local::git::session_worktree_path(
-                    &project.github_owner,
-                    &project.github_repo,
-                    &session.id,
-                );
-                match std::fs::canonicalize(&dir) {
-                    Ok(p) => Some(p),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                    Err(e) => {
-                        return Err(ApiError::from(anyhow!("session worktree unavailable: {e}")))
-                    }
-                }
-            }
-            None => None,
-        };
-        let (root, root_kind) = match worktree {
-            Some(r) => (r, "worktree"),
-            None => (
-                std::fs::canonicalize(&project.repo_path)
-                    .map_err(|e| ApiError::from(anyhow!("repo clone unavailable: {e}")))?,
-                "clone",
-            ),
-        };
+        let ref_name = q.r#ref.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        if let Some(name) = ref_name {
+            let (root, _) = resolve_checkout_root(&store, &project, None)?;
+            let sha = local::git::resolve_branch_commit(&root, name)?
+                .ok_or_else(|| not_found("branch"))?;
+            // Streamed + capped: a committed multi-GB blob must not become a
+            // multi-GB allocation. Missing path is an exit-code check inside
+            // the helper (`cat-file -e`) — no error-message parsing.
+            return match local::git::file_at_capped(&root, &sha, &rel, FILE_READ_LIMIT)? {
+                Some((content, truncated)) => Ok(Json(json!({
+                    "path": rel, "content": content, "truncated": truncated,
+                    "notFound": false, "root": "branch",
+                }))),
+                None => Ok(Json(json!({
+                    "path": rel, "content": "", "truncated": false,
+                    "notFound": true, "root": "branch",
+                }))),
+            };
+        }
+        let (root, root_kind) = resolve_checkout_root(&store, &project, q.session_id.as_deref())?;
         let not_found_json = json!({
             "path": rel, "content": "", "truncated": false, "notFound": true, "root": root_kind,
         });
@@ -2035,6 +2133,197 @@ async fn slurm_preflight(Json(req): Json<SlurmPreflightReq>) -> ApiResult {
         "gitFound": p.git_found,
         "partitions": p.partitions,
         "error": p.error,
+    })))
+}
+
+// --- compute targets (unified settings list + default) --------------------------
+
+/// The whole payload for the Compute tab's collapsed list, in one round trip.
+/// CHEAP probes only — env vars and file reads, never a network call, kubectl,
+/// or the modal python import. `configured` means "worth trying", not
+/// "healthy"; deep health stays in each backend's own settings endpoint,
+/// fetched when a row is expanded.
+fn compute_settings_json() -> Value {
+    let default = crate::config::compute_default();
+    let (default_backend, default_flavor) = match &default {
+        Some((b, f)) => (Some(b.as_str()), f.as_deref()),
+        None => (None, None),
+    };
+
+    let hf = crate::jobs::huggingface::resolve_token_with_source().ok();
+    let modal_source = crate::jobs::modal::token_source();
+    let k8s_settings = k8s::load_settings().ok().flatten();
+    let ssh_hosts = list_ssh_hosts().len();
+    let slurm_settings = crate::jobs::slurm::load_settings().ok().flatten();
+    let slurm_host = slurm_settings.as_ref().and_then(|s| s.host.clone());
+    // Presence of the credentials file only — whether the token still works is
+    // the expanded row's (network) question.
+    let or_logged_in = crate::config::credentials_present();
+
+    // Same spellings as the expanded rows' SOURCE_LABELS/MODAL_TOKEN_LABELS
+    // in the UI — the collapsed head stays visible above the open row, so the
+    // same fact must not read two different ways.
+    let source_label = |s: &crate::jobs::huggingface::TokenSource| match s {
+        crate::jobs::huggingface::TokenSource::Env => "HF_TOKEN env var",
+        crate::jobs::huggingface::TokenSource::OpenresearchEnv => "Token from ~/.openresearch/env",
+        crate::jobs::huggingface::TokenSource::HfCache => "Token from ~/.cache/huggingface/token",
+    };
+    let targets = json!([
+        {
+            "id": "local",
+            "configured": true,
+            "summary": "Runs as a detached process on this machine",
+        },
+        {
+            "id": "hf",
+            "configured": hf.is_some(),
+            "summary": hf.as_ref().map_or_else(
+                || "No token".to_string(),
+                |(_, s)| source_label(s).to_string(),
+            ),
+        },
+        {
+            "id": "modal",
+            "configured": modal_source.is_some(),
+            "summary": match modal_source {
+                Some("env") => "MODAL_TOKEN_ID env var",
+                Some("syncedEnv") => "Token from ~/.openresearch/env",
+                Some("modalToml") => "Token from ~/.modal.toml",
+                _ => "No token",
+            },
+        },
+        {
+            "id": "k8s",
+            "configured": k8s_settings.is_some(),
+            "summary": k8s_settings.as_ref().map_or_else(
+                || "No context selected".to_string(),
+                |s| format!(
+                    "Context {} / namespace {}",
+                    s.context.as_deref().unwrap_or("(kubectl default)"),
+                    s.namespace,
+                ),
+            ),
+        },
+        {
+            "id": "ssh",
+            "configured": ssh_hosts > 0,
+            "summary": match ssh_hosts {
+                0 => "No hosts in ~/.ssh/config".to_string(),
+                1 => "1 host in ~/.ssh/config".to_string(),
+                n => format!("{n} hosts in ~/.ssh/config"),
+            },
+        },
+        {
+            "id": "slurm",
+            "configured": slurm_host.is_some(),
+            "summary": slurm_host.as_ref().map_or_else(
+                || "No login node configured".to_string(),
+                |h| format!("Login node {h}"),
+            ),
+        },
+        {
+            "id": "openresearch",
+            "configured": or_logged_in,
+            "summary": if or_logged_in {
+                "Signed in — ephemeral boxes billed to your org"
+            } else {
+                "Not signed in — run orx login"
+            },
+        },
+    ]);
+    json!({
+        "defaultBackend": default_backend,
+        "defaultFlavor": default_flavor,
+        "targets": targets,
+    })
+}
+
+async fn compute_settings() -> ApiResult {
+    // fs/env probes only, but keep them off the async runtime anyway.
+    let payload = tokio::task::spawn_blocking(compute_settings_json)
+        .await
+        .map_err(|e| ApiError::from(anyhow!("compute settings task failed: {e}")))?;
+    Ok(Json(payload))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetComputeDefaultReq {
+    /// `None`/absent clears the default (and its flavor with it).
+    backend: Option<String>,
+    flavor: Option<String>,
+}
+
+/// Persist the default compute target. An *unconfigured* backend is allowed
+/// (config state fluctuates outside orx; the UI warns instead) — only unknown
+/// backends and meaningless flavors are rejected.
+async fn set_compute_default(Json(req): Json<SetComputeDefaultReq>) -> ApiResult {
+    let backend = req
+        .backend
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty());
+    let flavor = req
+        .flavor
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty());
+    if let Some(b) = &backend {
+        local::validate_compute_default(b, flavor.as_deref()).map_err(bad_request)?;
+    }
+    // Validation already ran above, so a failure in here is a server-side
+    // fault (io error, corrupt settings.json refusal) — surface it as 500 via
+    // the plain ApiError conversion, not as a 400 blaming the request.
+    let payload = tokio::task::spawn_blocking(move || -> Result<Value> {
+        crate::config::set_compute_default(backend, flavor)?;
+        Ok(compute_settings_json())
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow!("compute default task failed: {e}")))??;
+    Ok(Json(payload))
+}
+
+/// The "This machine" row's expanded detail: detected hardware. Subprocess
+/// probes (hostname, sysctl, nvidia-smi) — blocking, so spawned.
+async fn local_machine_settings() -> ApiResult {
+    let hw = tokio::task::spawn_blocking(crate::jobs::localbox::hardware_info)
+        .await
+        .map_err(|e| ApiError::from(anyhow!("hardware probe task failed: {e}")))?;
+    Ok(Json(json!(hw)))
+}
+
+/// The OpenResearch row's expanded detail. Network calls are fine here (the
+/// row is open) but each is individually best-effort — an offline machine
+/// still renders "signed in, status unknown" instead of an error page.
+async fn openresearch_settings() -> ApiResult {
+    let Some(creds) = crate::config::load_credentials().await? else {
+        return Ok(Json(json!({
+            "loggedIn": false,
+            "apiUrl": null,
+            "orgs": [],
+            "sshKeyRegistered": null,
+            "error": null,
+        })));
+    };
+    let mut error: Option<String> = None;
+    let orgs = match crate::client::list_orgs(&creds).await {
+        Ok(o) => o.orgs.into_iter().map(|o| o.name).collect::<Vec<_>>(),
+        Err(e) => {
+            error = Some(e.to_string());
+            Vec::new()
+        }
+    };
+    let ssh_key_registered = match crate::client::list_ssh_keys(&creds).await {
+        Ok(k) => Some(!k.ssh_keys.is_empty()),
+        Err(e) => {
+            error.get_or_insert(e.to_string());
+            None
+        }
+    };
+    Ok(Json(json!({
+        "loggedIn": true,
+        "apiUrl": creds.api_url,
+        "orgs": orgs,
+        "sshKeyRegistered": ssh_key_registered,
+        "error": error,
     })))
 }
 

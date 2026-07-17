@@ -89,6 +89,15 @@ pub(crate) struct Settings {
     /// (each mutation re-reads and patches only its own field via `mutate_settings`).
     #[serde(default)]
     pub data_dir: Option<String>,
+    /// Default compute target for local-mode launches (Settings → Compute).
+    /// Absent = no default: the CLI requires an explicit `--backend` and the
+    /// HTTP run endpoint keeps its historical `hf` fallback.
+    #[serde(default)]
+    pub default_backend: Option<String>,
+    /// Default `--flavor`, only meaningful alongside `default_backend` and only
+    /// applied when a launch resolves to that same backend without a flavor.
+    #[serde(default)]
+    pub default_flavor: Option<String>,
 }
 
 /// The persisted data-dir choice, if any (non-empty). Read by `store::data_dir()`
@@ -107,6 +116,34 @@ pub(crate) fn persisted_data_dir() -> Option<String> {
 /// this as `set_settings_data_dir`.
 pub(crate) fn set_persisted_data_dir(data_dir: Option<String>) -> std::io::Result<()> {
     mutate_settings(|s| s.data_dir = data_dir.filter(|v| !v.is_empty()))
+}
+
+/// The persisted default compute target, if any: `(backend, flavor)`. A flavor
+/// without a backend is meaningless and is dropped. `crate::config` re-exports
+/// this as `compute_default`.
+pub(crate) fn compute_default() -> Option<(String, Option<String>)> {
+    let s = load_settings()?;
+    let backend = s.default_backend.filter(|b| !b.is_empty())?;
+    Some((backend, s.default_flavor.filter(|f| !f.is_empty())))
+}
+
+/// Set or clear the default compute target, preserving every other settings
+/// field (same `mutate_settings` guarantees as the data dir). Clearing the
+/// backend also clears the flavor — a dangling flavor must not resurface if a
+/// different backend is chosen later. `crate::config` re-exports this as
+/// `set_compute_default`.
+pub(crate) fn set_compute_default(
+    backend: Option<String>,
+    flavor: Option<String>,
+) -> std::io::Result<()> {
+    mutate_settings(|s| {
+        s.default_backend = backend.filter(|b| !b.is_empty());
+        s.default_flavor = if s.default_backend.is_some() {
+            flavor.filter(|f| !f.is_empty())
+        } else {
+            None
+        };
+    })
 }
 
 fn settings_path() -> PathBuf {
@@ -748,6 +785,56 @@ mod tests {
         assert!(s.data_dir.is_none(), "data_dir cleared");
         assert_eq!(s.telemetry_disabled, Some(true), "opt-out still intact");
         assert!(persisted_data_dir().is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compute_default_roundtrip_preserves_siblings() {
+        // Same single-writer contract as data_dir: the Compute settings persist
+        // in the telemetry-owned settings.json, so a default-target write must
+        // preserve install_id/telemetry_disabled/data_dir and vice-versa.
+        let _g = EnvGuard::new(OPT_VARS);
+        let dir = std::env::temp_dir().join(format!("orx-tel-compute-{}", uuid::Uuid::new_v4()));
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+
+        set_persisted_disabled(true).unwrap();
+        let id = install_id().expect("install id");
+        set_compute_default(Some("modal".into()), Some("a10g".into())).unwrap();
+
+        let s = load_settings().expect("settings present");
+        assert_eq!(s.default_backend.as_deref(), Some("modal"));
+        assert_eq!(s.default_flavor.as_deref(), Some("a10g"));
+        assert_eq!(s.telemetry_disabled, Some(true), "opt-out survived");
+        assert_eq!(s.install_id.as_deref(), Some(id.as_str()));
+        assert_eq!(
+            compute_default(),
+            Some(("modal".to_string(), Some("a10g".to_string())))
+        );
+
+        // Backend without flavor; empty flavor is treated as absent.
+        set_compute_default(Some("local".into()), Some(String::new())).unwrap();
+        assert_eq!(compute_default(), Some(("local".to_string(), None)));
+
+        // Clearing the backend clears the flavor too and leaves siblings intact.
+        set_compute_default(None, Some("dangling".into())).unwrap();
+        let s = load_settings().expect("settings present");
+        assert!(s.default_backend.is_none());
+        assert!(s.default_flavor.is_none(), "flavor cleared with backend");
+        assert_eq!(s.telemetry_disabled, Some(true), "opt-out still intact");
+        assert!(compute_default().is_none());
+
+        // Older settings.json without the new keys parses and reads as no default.
+        std::fs::write(
+            settings_path(),
+            r#"{"installId":"abc","telemetryDisabled":false}"#,
+        )
+        .unwrap();
+        assert!(compute_default().is_none());
+        assert_eq!(
+            load_settings().and_then(|s| s.install_id).as_deref(),
+            Some("abc")
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

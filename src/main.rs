@@ -579,7 +579,8 @@ pub struct ExpRunArgs {
     /// org; needs `orx login`), or `local` (a detached process on this
     /// machine). k8s, ssh, slurm, openresearch, and local are local
     /// experiments only. orx submits the job and a detached supervisor
-    /// mirrors status/logs back.
+    /// mirrors status/logs back. Omitted on a local experiment: launches on
+    /// the default compute target from `orx up` Settings → Compute, if set.
     #[arg(long)]
     pub backend: Option<String>,
     /// Hardware flavor. With `--backend hf`: t4-small, a10g-small, a100-large,

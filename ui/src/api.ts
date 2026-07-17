@@ -174,11 +174,13 @@ export const createExperiment = (projectId: string, body: NewExperiment) =>
 export const startRun = (
   experimentId: string,
   body: {
-    backend?: "hf" | "k8s" | "slurm" | "openresearch";
+    /** Omit to launch on the default compute target (Settings → Compute);
+     * with no default set the server falls back to `hf`. */
+    backend?: "local" | "hf" | "modal" | "k8s" | "ssh" | "slurm" | "openresearch";
     flavor?: string;
     manifest?: string;
     timeout?: string;
-    /** Slurm login node (~/.ssh/config alias); defaults to the slurm settings' host. */
+    /** ssh host alias, or the Slurm login node; defaults to the slurm settings' host. */
     host?: string;
     /** Org to bill the box to (openresearch only; omit = the sole org). */
     org?: string;
@@ -229,23 +231,66 @@ export const getCommitDiff = (experimentId: string, sha: string) =>
 export const getWorkingTree = (projectId: string) =>
   get<WorkingTree>(`/api/projects/${projectId}/working-tree`);
 
+/** Which source answered a checkout read: a session's live worktree, the hub
+ * clone (also the worktree-pruned fallback), or a branch's committed tree. */
+export type CheckoutRoot = "worktree" | "clone" | "branch";
+
+/** Source selector for checkout reads: `ref` picks a branch's committed
+ * state (sessionId is then ignored server-side); `sessionId` alone picks the
+ * session's live worktree; neither picks the hub clone. */
+export interface CheckoutRef {
+  sessionId?: string;
+  ref?: string;
+}
+
+const checkoutQuery = (opts: CheckoutRef, params: URLSearchParams = new URLSearchParams()) => {
+  if (opts.sessionId) params.set("sessionId", opts.sessionId);
+  if (opts.ref) params.set("ref", opts.ref);
+  return params;
+};
+
 export interface ProjectFile {
   path: string;
   content: string;
   truncated: boolean;
   notFound: boolean;
-  /** Which checkout answered — the session's worktree, or the hub clone
-   * (also the fallback when the session's worktree has been pruned). */
-  root: "worktree" | "clone";
+  root: CheckoutRoot;
 }
 
-/** One file from the project checkout (a chat session's worktree when
- * `sessionId` is given, else the hub clone), capped server-side (~512 KB). */
-export const getProjectFile = (projectId: string, path: string, sessionId?: string) =>
+/** One file from the project — a branch's committed copy when `ref` is given,
+ * else a chat session's worktree, else the hub clone — capped server-side
+ * (~512 KB). */
+export const getProjectFile = (projectId: string, path: string, opts: CheckoutRef = {}) =>
   get<ProjectFile>(
-    `/api/projects/${projectId}/file?path=${encodeURIComponent(path)}` +
-      (sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""),
+    `/api/projects/${projectId}/file?${checkoutQuery(opts, new URLSearchParams({ path }))}`,
   );
+
+export interface CodeTree {
+  root: CheckoutRoot;
+  /** The listed branch (`ref` mode), else the checked-out branch, else null
+   * (detached HEAD). */
+  branch: string | null;
+  /** Repo-relative file paths (gitignored trees excluded), sorted. */
+  entries: string[];
+  /** True when the listing hit the server-side cap (20,000 entries). */
+  truncated: boolean;
+}
+
+/** Flat file listing of the project — a branch's committed tree when `ref` is
+ * given, else the hub clone's checkout — plus the branch name. */
+export const getCodeTree = (projectId: string, opts: { ref?: string } = {}) => {
+  const qs = checkoutQuery(opts).toString();
+  return get<CodeTree>(`/api/projects/${projectId}/code-tree${qs ? `?${qs}` : ""}`);
+};
+
+/** A GitHub `tree` URL for a branch. Branch names contain `/` (`orx/<slug>`),
+ * so encode each path segment — never the whole string, which would escape the
+ * slashes. Unpushed branches 404 on GitHub, which is acceptable. */
+export const githubBranchUrl = (owner: string, repo: string, branch: string) =>
+  `https://github.com/${owner}/${repo}/tree/${branch
+    .split("/")
+    .map(encodeURIComponent)
+    .join("/")}`;
 
 export type HfTokenSource = "env" | "openresearchEnv" | "hfCache";
 
@@ -418,6 +463,71 @@ export interface SlurmPreflight {
 /** Live-test a login node: reachable, Slurm CLI + git present, partitions. */
 export const slurmPreflight = (host: string) =>
   post<SlurmPreflight>("/api/settings/slurm/preflight", { host });
+
+// --- settings: compute targets (unified list + default) ------------------------
+
+export type ComputeTargetId =
+  | "local"
+  | "hf"
+  | "modal"
+  | "k8s"
+  | "ssh"
+  | "slurm"
+  | "openresearch";
+
+/** Cheap fs/env probe only — "worth trying", not "healthy". Deep health lives
+ * in each backend's own settings endpoint, fetched when its row is expanded. */
+export interface ComputeTargetSummary {
+  id: ComputeTargetId;
+  configured: boolean;
+  summary: string;
+}
+
+export interface ComputeSettings {
+  defaultBackend: ComputeTargetId | null;
+  defaultFlavor: string | null;
+  targets: ComputeTargetSummary[];
+}
+
+export const getComputeSettings = () => get<ComputeSettings>("/api/settings/compute");
+
+/** Set (or clear, with backend: null) the default compute target. Responds
+ * with the full compute payload so the caller reconciles in one shot. */
+export const setComputeDefault = (body: {
+  backend: ComputeTargetId | null;
+  flavor?: string | null;
+}) => post<ComputeSettings>("/api/settings/compute/default", body);
+
+export interface LocalGpu {
+  name: string;
+  memMib: number | null;
+}
+
+/** What `--backend local` runs on: this machine's detected hardware. */
+export interface LocalMachine {
+  hostname: string;
+  os: string;
+  arch: string;
+  /** CPU brand string on macOS (e.g. "Apple M2 Pro"). */
+  chip: string | null;
+  cpuCount: number;
+  memBytes: number | null;
+  gpus: LocalGpu[];
+}
+
+export const getLocalMachine = () => get<LocalMachine>("/api/settings/local");
+
+export interface OpenResearchSettings {
+  loggedIn: boolean;
+  apiUrl: string | null;
+  orgs: string[];
+  /** null = signed in but the key check failed (see error). */
+  sshKeyRegistered: boolean | null;
+  error: string | null;
+}
+
+export const getOpenResearchSettings = () =>
+  get<OpenResearchSettings>("/api/settings/openresearch");
 
 /** The experiment a top-level files folder is named for (folder == slug). */
 export interface FileExperiment {

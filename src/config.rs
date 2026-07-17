@@ -57,6 +57,13 @@ fn credentials_path() -> PathBuf {
     config_dir().join("credentials.json")
 }
 
+/// Whether `orx login` credentials exist on disk. A cheap sync fs probe for
+/// summary views — whether the token still *works* is a network question
+/// (`load_credentials` + an API call).
+pub fn credentials_present() -> bool {
+    credentials_path().exists()
+}
+
 /// Reads stored credentials. Returns `Ok(None)` when the file is missing,
 /// unreadable, malformed, or missing required fields — matching the TS
 /// `loadCredentials`, which swallows all errors and returns `null`.
@@ -118,6 +125,21 @@ pub fn settings_data_dir() -> Option<PathBuf> {
 /// `None` clears it (revert to the env/XDG/default chain).
 pub fn set_settings_data_dir(data_dir: Option<String>) -> Result<()> {
     crate::telemetry::set_persisted_data_dir(data_dir)?;
+    Ok(())
+}
+
+/// The persisted default compute target for local-mode launches, if any:
+/// `(backend, flavor)`. Lives in the telemetry-owned `settings.json` for the
+/// same single-writer reason as the data dir above.
+pub fn compute_default() -> Option<(String, Option<String>)> {
+    crate::telemetry::compute_default()
+}
+
+/// Set or clear the default compute target, preserving every other settings
+/// field. Delegates to `telemetry::set_compute_default` (the locked, atomic
+/// RMW). `None` backend clears both backend and flavor.
+pub fn set_compute_default(backend: Option<String>, flavor: Option<String>) -> Result<()> {
+    crate::telemetry::set_compute_default(backend, flavor)?;
     Ok(())
 }
 
