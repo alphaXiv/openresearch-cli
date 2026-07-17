@@ -1040,34 +1040,18 @@ async fn project_file(Path(id): Path<String>, Query(q): Query<ProjectFileQuery>)
             let (root, _) = resolve_checkout_root(&store, &project, None)?;
             let sha = local::git::resolve_branch_commit(&root, name)?
                 .ok_or_else(|| not_found("branch"))?;
-            return match local::git::file_at(&root, &sha, &rel) {
-                Ok(content) => {
-                    let truncated = content.len() as u64 > FILE_READ_LIMIT;
-                    let content = if truncated {
-                        // Lossy re-decode: the cap can land mid multibyte char.
-                        String::from_utf8_lossy(&content.as_bytes()[..FILE_READ_LIMIT as usize])
-                            .into_owned()
-                    } else {
-                        content
-                    };
-                    Ok(Json(json!({
-                        "path": rel, "content": content, "truncated": truncated,
-                        "notFound": false, "root": "branch",
-                    })))
-                }
-                // `git show <sha>:<path>` on a missing path fails with
-                // "does not exist in" (or "exists on disk, but not in" when
-                // only the checkout has it) — that's a not-found, not a 500.
-                Err(e)
-                    if e.to_string().contains("does not exist")
-                        || e.to_string().contains("exists on disk, but not in") =>
-                {
-                    Ok(Json(json!({
-                        "path": rel, "content": "", "truncated": false,
-                        "notFound": true, "root": "branch",
-                    })))
-                }
-                Err(e) => Err(ApiError::from(e)),
+            // Streamed + capped: a committed multi-GB blob must not become a
+            // multi-GB allocation. Missing path is an exit-code check inside
+            // the helper (`cat-file -e`) — no error-message parsing.
+            return match local::git::file_at_capped(&root, &sha, &rel, FILE_READ_LIMIT)? {
+                Some((content, truncated)) => Ok(Json(json!({
+                    "path": rel, "content": content, "truncated": truncated,
+                    "notFound": false, "root": "branch",
+                }))),
+                None => Ok(Json(json!({
+                    "path": rel, "content": "", "truncated": false,
+                    "notFound": true, "root": "branch",
+                }))),
             };
         }
         let (root, root_kind) = resolve_checkout_root(&store, &project, q.session_id.as_deref())?;

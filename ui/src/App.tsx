@@ -72,11 +72,29 @@ interface PlanViewDef {
   plan: string;
 }
 
-/** A code-browser view of one chat session's worktree. Discriminates on the
+/** A code-browser view for one chat session: the live session worktree or an
+ * experiment branch's committed tree. Source + expansion state live on the
+ * def — CodeTab unmounts whenever another right-pane tab fronts it (e.g.
+ * clicking a file), and remount must not rederive them. Discriminates on the
  * `code` flag (the other tab kinds discriminate on `view`/`path`/`kind`). */
 interface CodeTabDef {
   code: true;
   sessionId: string;
+  /** Source to browse: "" = live session worktree, else a branch name. */
+  sel: string;
+  /** Whether `sel` was picked by the user — a seeded default silently falls
+   * back to live when its branch doesn't exist yet; a user pick never does. */
+  selPicked: boolean;
+  /** Dirs the user flipped away from their depth default. */
+  toggled: ReadonlySet<string>;
+}
+
+/** Branch of the experiment owning the project's most recent run — the code
+ * the user most likely wants to browse — or "" (live worktree) without runs. */
+function defaultCodeSelection(experiments: Experiment[], runs: Run[]): string {
+  if (runs.length === 0) return "";
+  const latest = runs.reduce((a, b) => (b.createdAt > a.createdAt ? b : a));
+  return experiments.find((e) => e.id === latest.experimentId)?.branchName ?? "";
 }
 
 // Map a path an agent reported to a repo-relative one — keeping the session
@@ -332,14 +350,35 @@ export default function App() {
     [planTabs, rightTab],
   );
 
-  // Open the code browser for a chat session's worktree — one tab per session
-  // (deduped on sessionId), mirroring the file/plan tab handlers.
-  const openCodeTab = useCallback((sessionId: string) => {
-    const tab: CodeTabDef = { code: true, sessionId };
-    setCodeTabs((prev) => (prev.some((t) => t.sessionId === sessionId) ? prev : [...prev, tab]));
-    setRightTab(tab);
-    setPanelOpen(true);
-  }, []);
+  // Open the code browser for a chat session — live worktree or experiment
+  // branches — one tab per session (deduped on sessionId), mirroring the
+  // file/plan tab handlers. A new tab's source defaults to the latest-run
+  // experiment's branch; reopening keeps the existing tab's state.
+  const openCodeTab = useCallback(
+    (sessionId: string) => {
+      const existing = codeTabs.find((t) => t.sessionId === sessionId);
+      const tab: CodeTabDef = existing ?? {
+        code: true,
+        sessionId,
+        sel: defaultCodeSelection(experiments, runs),
+        selPicked: false,
+        toggled: new Set<string>(),
+      };
+      if (!existing) setCodeTabs((prev) => [...prev, tab]);
+      setRightTab(tab);
+      setPanelOpen(true);
+    },
+    [codeTabs, experiments, runs],
+  );
+
+  // Source/expansion changes persist on the tab def, not in CodeTab state —
+  // the component unmounts whenever another right-pane tab fronts it.
+  const updateCodeTab = useCallback(
+    (sessionId: string, patch: Partial<Omit<CodeTabDef, "code" | "sessionId">>) => {
+      setCodeTabs((prev) => prev.map((t) => (t.sessionId === sessionId ? { ...t, ...patch } : t)));
+    },
+    [],
+  );
 
   const closeCodeTab = useCallback(
     (tab: CodeTabDef) => {
@@ -665,17 +704,30 @@ export default function App() {
             </div>
           ) : codeTab ? (
             <div className="tab-body">
-              {projectId && activeProject && (
-                <CodeTab
-                  key={`code:${codeTab.sessionId}`}
-                  projectId={projectId}
-                  sessionId={codeTab.sessionId}
-                  project={activeProject}
-                  experiments={experiments}
-                  runs={runs}
-                  onOpenFile={openFileTab}
-                />
-              )}
+              {projectId &&
+                activeProject &&
+                (() => {
+                  // rightTab holds the def as of selection; source/expansion
+                  // updates land in codeTabs — read the live entry.
+                  const def = codeTabs.find((t) => t.sessionId === codeTab.sessionId) ?? codeTab;
+                  return (
+                    <CodeTab
+                      key={`code:${def.sessionId}`}
+                      projectId={projectId}
+                      sessionId={def.sessionId}
+                      project={activeProject}
+                      experiments={experiments}
+                      sel={def.sel}
+                      selPicked={def.selPicked}
+                      toggled={def.toggled}
+                      onSelChange={(sel, picked) =>
+                        updateCodeTab(def.sessionId, { sel, selPicked: picked })
+                      }
+                      onToggledChange={(toggled) => updateCodeTab(def.sessionId, { toggled })}
+                      onOpenFile={openFileTab}
+                    />
+                  );
+                })()}
             </div>
           ) : (
             <div className="tab-body">

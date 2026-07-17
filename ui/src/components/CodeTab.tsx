@@ -1,8 +1,10 @@
 // A code browser for one chat session: either the live session worktree or
 // the committed tree of an experiment branch, picked from a header select.
-// The tree is built from git listings (gitignored trees excluded; the live
-// view also shows untracked new files). Clicking a file opens the existing
-// FileViewer tab, served from the same source.
+// Source + expansion state live on the App-side tab def (the component
+// unmounts whenever another right-pane tab fronts it). The tree is built
+// from git listings (gitignored trees excluded; the live view also shows
+// untracked new files). Clicking a file opens the existing FileViewer tab,
+// served from the same source.
 
 import {
   ChevronDown,
@@ -20,7 +22,6 @@ import {
   type CodeTree,
   type Experiment,
   type Project,
-  type Run,
 } from "../api";
 
 /** A node in the nested tree derived from the flat path list. */
@@ -55,14 +56,6 @@ function buildTree(entries: string[]): DirNode {
   return root;
 }
 
-/** The branch of the experiment owning the project's most recent run — what
- * the user most likely wants to browse — or "" (live worktree) without runs. */
-function defaultSelection(experiments: Experiment[], runs: Run[]): string {
-  if (runs.length === 0) return "";
-  const latest = runs.reduce((a, b) => (b.createdAt > a.createdAt ? b : a));
-  return experiments.find((e) => e.id === latest.experimentId)?.branchName ?? "";
-}
-
 // Open/closed is a depth rule plus a set of user exceptions: top-level dirs
 // default open, deeper ones default closed, and a toggle flips a dir away
 // from its default. No seeding pass — dirs appearing in later polls behave
@@ -82,7 +75,7 @@ function DirRow({
   /** Repo-relative dir path (toggle-state key). */
   path: string;
   depth: number;
-  toggled: Set<string>;
+  toggled: ReadonlySet<string>;
   onToggle: (path: string) => void;
   onOpenFile: (path: string) => void;
 }) {
@@ -130,7 +123,7 @@ function TreeLevel({
   node: DirNode;
   parentPath: string;
   depth: number;
-  toggled: Set<string>;
+  toggled: ReadonlySet<string>;
   onToggle: (path: string) => void;
   onOpenFile: (path: string) => void;
 }) {
@@ -178,7 +171,11 @@ export function CodeTab({
   sessionId,
   project,
   experiments,
-  runs,
+  sel,
+  selPicked,
+  toggled,
+  onSelChange,
+  onToggledChange,
   onOpenFile,
 }: {
   projectId: string;
@@ -188,33 +185,33 @@ export function CodeTab({
   project: Project;
   /** Project experiments — one selectable branch entry each (deduped). */
   experiments: Experiment[];
-  /** Project runs — pick the default branch (latest run's experiment). */
-  runs: Run[];
+  /** Source to browse: "" = live session worktree, else a branch name.
+   * Lives on the tab def so it survives unmount/remount. */
+  sel: string;
+  /** Whether `sel` was picked by the user (defaults may fall back to live
+   * when their branch doesn't exist yet; user picks never do). */
+  selPicked: boolean;
+  /** Dirs flipped away from their depth default (lives on the tab def). */
+  toggled: ReadonlySet<string>;
+  onSelChange: (sel: string, picked: boolean) => void;
+  onToggledChange: (toggled: ReadonlySet<string>) => void;
   /** Open a file in the right pane's FileViewer, keyed to this source. */
   onOpenFile: (path: string, sessionId?: string, ref?: string) => void;
 }) {
   const [data, setData] = useState<CodeTree | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  // "" = the live session worktree; anything else = a branch name whose
-  // committed tree is browsed. Defaults to the latest-run experiment's branch.
-  const [sel, setSel] = useState(() => defaultSelection(experiments, runs));
-  // Dirs the user flipped away from their depth default (see DirRow).
-  const [toggled, setToggled] = useState<Set<string>>(new Set());
-  // Unmount guard (FileViewer's cancelled-flag pattern); a request id keeps
-  // stale responses from clobbering a newer selection; the in-flight flag
-  // only throttles the background poll (user actions always fetch).
-  const mounted = useRef(true);
+  // A request id drops stale responses — from earlier sources, superseded
+  // polls, and (via the effect-cleanup bump) post-unmount completions. The
+  // in-flight flag only throttles the background poll.
   const reqId = useRef(0);
   const inFlight = useRef(false);
-  const dataRef = useRef<CodeTree | null>(null);
-
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
+  // The fallback callback/flag ride refs so `load`'s identity — and with it
+  // the fetch effect — only tracks real source changes.
+  const onSelChangeRef = useRef(onSelChange);
+  onSelChangeRef.current = onSelChange;
+  const selPickedRef = useRef(selPicked);
+  selPickedRef.current = selPicked;
 
   const load = useCallback(
     (showSpinner: boolean) => {
@@ -223,32 +220,43 @@ export function CodeTab({
       if (showSpinner) setLoading(true);
       getCodeTree(projectId, sel ? { ref: sel } : { sessionId })
         .then((d) => {
-          if (!mounted.current || id !== reqId.current) return;
-          dataRef.current = d;
+          if (id !== reqId.current) return;
           setData(d);
           setError(null);
         })
         .catch((e: Error) => {
-          // Background poll failures are transient (the next tick retries) —
-          // keep rendering the last-good tree; only surface an error when
-          // there's nothing to show yet.
-          if (mounted.current && id === reqId.current && !dataRef.current) setError(e.message);
+          if (id !== reqId.current) return;
+          // A seeded default can name a branch that doesn't exist yet (run
+          // just started) — fall back to live instead of erroring. A branch
+          // the user picked keeps the error.
+          if (sel && !selPickedRef.current && e.message === "branch not found") {
+            onSelChangeRef.current("", false);
+            return;
+          }
+          // Spinner loads (initial fetch, manual Refresh) surface errors;
+          // background polls swallow them — transient, the next tick retries.
+          if (showSpinner) setError(e.message);
         })
         .finally(() => {
-          inFlight.current = false;
-          if (mounted.current && id === reqId.current) setLoading(false);
+          if (id === reqId.current) {
+            inFlight.current = false;
+            setLoading(false);
+          }
         });
     },
     [projectId, sessionId, sel],
   );
 
   // Fetch on mount and whenever the source changes; a stale tree from the
-  // previous source must not linger under the new header.
+  // previous source must not linger under the new header. The cleanup bump
+  // invalidates in-flight responses on source change and unmount.
   useEffect(() => {
-    dataRef.current = null;
     setData(null);
     setError(null);
     load(true);
+    return () => {
+      reqId.current++;
+    };
   }, [load]);
 
   // Poll only the live view (the agent writes files as it works); a branch's
@@ -263,14 +271,15 @@ export function CodeTab({
 
   const tree = useMemo(() => (data ? buildTree(data.entries) : null), [data]);
 
-  const toggle = useCallback((path: string) => {
-    setToggled((prev) => {
-      const next = new Set(prev);
+  const toggle = useCallback(
+    (path: string) => {
+      const next = new Set(toggled);
       if (next.has(path)) next.delete(path);
       else next.add(path);
-      return next;
-    });
-  }, []);
+      onToggledChange(next);
+    },
+    [toggled, onToggledChange],
+  );
 
   // One entry per branch: several experiments (e.g. baselines) can share one.
   const branchOptions = useMemo(() => {
@@ -294,7 +303,7 @@ export function CodeTab({
         <select
           className="input sm code-tab-select"
           value={sel}
-          onChange={(e) => setSel(e.target.value)}
+          onChange={(e) => onSelChange(e.target.value, true)}
           title="Source to browse"
         >
           <option value="">live — session worktree</option>
@@ -326,14 +335,15 @@ export function CodeTab({
         </button>
       </div>
       {!sel && data?.root === "clone" && (
-        <div className="code-tab-note">session worktree unavailable — showing the hub clone</div>
+        <div className="code-tab-note">
+          session worktree unavailable — showing the project clone
+        </div>
       )}
       {data?.truncated && <div className="code-tab-note">listing truncated</div>}
+      {error && tree && <div className="code-tab-note">Refresh failed: {error}</div>}
       <div className="code-tab-body">
-        {error ? (
-          <div className="code-tab-note">Failed to load: {error}</div>
-        ) : !tree ? (
-          <div className="code-tab-note">Loading…</div>
+        {!tree ? (
+          <div className="code-tab-note">{error ? `Failed to load: ${error}` : "Loading…"}</div>
         ) : tree.dirs.size === 0 && tree.files.length === 0 ? (
           <div className="code-tab-note">No files.</div>
         ) : (

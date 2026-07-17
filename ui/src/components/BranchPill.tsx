@@ -2,7 +2,7 @@ import { ExternalLink } from "lucide-react";
 import { githubBranchUrl } from "../api";
 
 /** A branch name as a pill linking to its GitHub tree view (files-pill
- * styling). Unpushed branches 404 on GitHub, which is self-explanatory. */
+ * styling). */
 export function BranchPill({
   owner,
   repo,

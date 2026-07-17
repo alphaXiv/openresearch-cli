@@ -3376,7 +3376,9 @@ button.files-pill-link:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Branch badge on committed-state file views (code browser in branch mode). */
+/* Branch badge on committed-state file views (code browser in branch mode) —
+   a plain source label, not a BranchPill: the header shouldn't grow a second
+   navigation affordance next to the path. */
 .file-view-ref {
   font-family: var(--mono);
   font-size: 11px;
