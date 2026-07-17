@@ -3122,9 +3122,16 @@ button.files-pill-link:hover {
 }
 /* Standing disclosure, not a warning — quiet muted text, no amber callout. */
 .compute-footnote {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   margin: 2px 0 0;
   font-size: 12px;
   color: var(--muted);
+}
+.compute-footnote svg {
+  flex: none;
+  margin-top: 1px; /* optical align with the first text line */
 }
 
 /* harness sub-tabs */

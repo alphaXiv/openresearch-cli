@@ -5,6 +5,7 @@ import {
   ExternalLink,
   GitBranch,
   HardDrive,
+  Info,
   Plus,
   RefreshCw,
   Server,
@@ -1145,9 +1146,12 @@ function ComputeTab() {
             ))}
           </div>
           <p className="compute-footnote">
-            The default target and flavor are included in the research agent&apos;s
-            instructions — it launches runs there unless you name another backend. No other
-            compute settings are shared with it.
+            <Info size={14} aria-hidden="true" />
+            <span>
+              The default target and flavor are included in the research agent&apos;s
+              instructions — it launches runs there unless you name another backend. No other
+              compute settings are shared with it.
+            </span>
           </p>
         </>
       )}
