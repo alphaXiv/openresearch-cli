@@ -2992,6 +2992,105 @@ button.files-pill-link:hover {
   color: var(--muted);
 }
 
+/* compute target list (Settings → Compute) */
+.compute-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.compute-row {
+  background: var(--base);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.compute-row-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  user-select: none;
+}
+.compute-row-head:hover {
+  background: var(--surface);
+  border-radius: 10px;
+}
+.compute-row.open .compute-row-head:hover {
+  border-radius: 10px 10px 0 0;
+}
+.compute-row-logo {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+.compute-row-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  flex: none;
+}
+.compute-row-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+.compute-row-head .badge,
+.compute-make-default,
+.compute-default-pill {
+  flex: none;
+}
+.compute-default-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 7px;
+  color: var(--primary);
+  border: 1px solid var(--primary);
+}
+.compute-chevron {
+  flex: none;
+  color: var(--muted);
+  transition: transform 120ms ease;
+}
+.compute-row.open .compute-chevron {
+  transform: rotate(180deg);
+}
+.compute-row-body {
+  border-top: 1px solid var(--border);
+  padding: 14px;
+}
+.compute-row-body .settings-card {
+  margin-bottom: 0;
+  margin-top: 14px;
+}
+.compute-default-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.compute-flavor-form {
+  margin-bottom: 14px;
+}
+.compute-flavor-form label {
+  max-width: 320px;
+}
+.compute-flavor-hint {
+  font-size: 12px;
+}
+.compute-footnote {
+  margin-top: 2px;
+}
+
 /* harness sub-tabs */
 .harness-tabs {
   display: flex;

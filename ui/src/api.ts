@@ -420,6 +420,71 @@ export interface SlurmPreflight {
 export const slurmPreflight = (host: string) =>
   post<SlurmPreflight>("/api/settings/slurm/preflight", { host });
 
+// --- settings: compute targets (unified list + default) ------------------------
+
+export type ComputeTargetId =
+  | "local"
+  | "hf"
+  | "modal"
+  | "k8s"
+  | "ssh"
+  | "slurm"
+  | "openresearch";
+
+/** Cheap fs/env probe only — "worth trying", not "healthy". Deep health lives
+ * in each backend's own settings endpoint, fetched when its row is expanded. */
+export interface ComputeTargetSummary {
+  id: ComputeTargetId;
+  configured: boolean;
+  summary: string;
+}
+
+export interface ComputeSettings {
+  defaultBackend: ComputeTargetId | null;
+  defaultFlavor: string | null;
+  targets: ComputeTargetSummary[];
+}
+
+export const getComputeSettings = () => get<ComputeSettings>("/api/settings/compute");
+
+/** Set (or clear, with backend: null) the default compute target. Responds
+ * with the full compute payload so the caller reconciles in one shot. */
+export const setComputeDefault = (body: {
+  backend: ComputeTargetId | null;
+  flavor?: string | null;
+}) => post<ComputeSettings>("/api/settings/compute/default", body);
+
+export interface LocalGpu {
+  name: string;
+  memMib: number | null;
+}
+
+/** What `--backend local` runs on: this machine's detected hardware. */
+export interface LocalMachine {
+  hostname: string;
+  os: string;
+  arch: string;
+  /** CPU brand string on macOS (e.g. "Apple M2 Pro"). */
+  chip: string | null;
+  cpuCount: number;
+  memBytes: number | null;
+  gpus: LocalGpu[];
+}
+
+export const getLocalMachine = () => get<LocalMachine>("/api/settings/local");
+
+export interface OpenResearchSettings {
+  loggedIn: boolean;
+  apiUrl: string | null;
+  orgs: string[];
+  /** null = signed in but the key check failed (see error). */
+  sshKeyRegistered: boolean | null;
+  error: string | null;
+}
+
+export const getOpenResearchSettings = () =>
+  get<OpenResearchSettings>("/api/settings/openresearch");
+
 /** The experiment a top-level files folder is named for (folder == slug). */
 export interface FileExperiment {
   id: string;

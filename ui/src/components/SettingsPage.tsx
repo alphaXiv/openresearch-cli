@@ -1,5 +1,6 @@
 import {
   Blocks,
+  ChevronDown,
   Cpu,
   ExternalLink,
   GitBranch,
@@ -16,15 +17,19 @@ import {
   deleteEnvVar,
   fmtBytes,
   fmtDuration,
+  getComputeSettings,
   getEnvVars,
   getGitSettings,
   getHarnesses,
   getHfSettings,
   getK8sSettings,
+  getLocalMachine,
   getModalSettings,
+  getOpenResearchSettings,
   getSlurmSettings,
   getSshHosts,
   listInstances,
+  setComputeDefault,
   provisionModal,
   removeGitToken,
   saveGitSettings,
@@ -41,6 +46,9 @@ import {
   slurmPreflight,
   sshPreflight,
   timeAgo,
+  type ComputeSettings,
+  type ComputeTargetId,
+  type ComputeTargetSummary,
   type EnvVar,
   type GitSettings,
   type Harness,
@@ -49,8 +57,10 @@ import {
   type HfTokenSource,
   type Instance,
   type K8sSettings,
+  type LocalMachine,
   type ModalSettings,
   type ModalTokenSource,
+  type OpenResearchSettings,
   type SlurmPreflight,
   type SlurmSettings,
   type SshHost,
@@ -59,7 +69,7 @@ import {
 } from "../api";
 import { onDataDirMove } from "../events";
 import { GitTokenForm } from "./GitTokenForm";
-import { BackendBadge } from "./BackendLogos";
+import { BackendBadge, BackendLogo } from "./BackendLogos";
 import { StatusBadge } from "./StatusBadge";
 
 export type SettingsTab =
@@ -234,31 +244,29 @@ function K8sSection() {
   return (
     <>
       <p className="settings-sub">
-        <strong>Kubernetes</strong> — run on your own cluster with <code>--backend k8s</code>.
-        The run&apos;s resources (image, GPUs, topology) come from a manifest committed on the
-        experiment branch (default <code>.orx/k8s.yaml</code>); only the cluster context and
-        namespace live here. Auth comes from your kubeconfig.
+        Run on your own cluster with <code>--backend k8s</code>. The run&apos;s resources
+        (image, GPUs, topology) come from a manifest committed on the experiment branch
+        (default <code>.orx/k8s.yaml</code>); only the cluster context and namespace live
+        here. Auth comes from your kubeconfig.
       </p>
       {loadError ? (
-        <div className="settings-card">
-          <div className="error">{loadError}</div>
-        </div>
+        <div className="error">{loadError}</div>
       ) : !settings ? (
         <div className="settings-loading">
           <span className="spinner" /> Checking kubectl…
         </div>
       ) : (
         <>
-          <div className="settings-card">
-            <div className="settings-card-head">
-              <h3>Kubernetes cluster</h3>
-              <div className="spacer" style={{ flex: 1 }} />
+          <div className="kv">
+            <span className="k">Cluster</span>
+            <span className="v">
               <K8sHealthBadge s={settings} />
-            </div>
-            {settings.preflight.error && (
-              <p className="settings-note">{settings.preflight.error}</p>
-            )}
-            <form className="form settings-form" onSubmit={submit}>
+            </span>
+          </div>
+          {settings.preflight.error && (
+            <p className="settings-note">{settings.preflight.error}</p>
+          )}
+          <form className="form settings-form" onSubmit={submit}>
               <div className="row2">
                 <label>
                   Context
@@ -286,14 +294,13 @@ function K8sSection() {
                   />
                 </label>
               </div>
-              {error && <div className="error">{error}</div>}
-              <div className="actions">
-                <button type="submit" className="btn primary" disabled={saving || unchanged}>
-                  {saving ? "Saving…" : "Save"}
-                </button>
-              </div>
-            </form>
-          </div>
+            {error && <div className="error">{error}</div>}
+            <div className="actions">
+              <button type="submit" className="btn primary" disabled={saving || unchanged}>
+                {saving ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </form>
           <div className="settings-card">
             <div className="settings-card-head">
               <h3>Run manifest</h3>
@@ -358,12 +365,7 @@ function ModalSection() {
   }
 
   return (
-    <div className="settings-card">
-      <div className="settings-card-head">
-        <h3>Modal</h3>
-        <div className="spacer" style={{ flex: 1 }} />
-        {s && <ModalBadge s={s} />}
-      </div>
+    <>
       <p className="settings-sub">
         Serverless GPUs on your own Modal account with{" "}
         <code>--backend modal --flavor &lt;name&gt;</code> (t4, a10g, a100-80gb, h100, …). orx
@@ -378,6 +380,10 @@ function ModalSection() {
       ) : (
         <>
           <div className="kv">
+            <span className="k">Status</span>
+            <span className="v">
+              <ModalBadge s={s} />
+            </span>
             <span className="k">Environment</span>
             <span className="v">
               {s.modalImportable
@@ -411,7 +417,7 @@ function ModalSection() {
           )}
         </>
       )}
-    </div>
+    </>
   );
 }
 
@@ -466,8 +472,7 @@ function SshSection() {
   }
 
   return (
-    <div className="settings-card">
-      <h3>SSH hosts</h3>
+    <>
       <p className="settings-sub">
         Run experiments directly on your own boxes with{" "}
         <code>--backend ssh --host &lt;alias&gt;</code>. Hosts come from{" "}
@@ -518,7 +523,7 @@ function SshSection() {
           </tbody>
         </table>
       )}
-    </div>
+    </>
   );
 }
 
@@ -611,27 +616,19 @@ function SlurmSection() {
   return (
     <>
       <p className="settings-sub">
-        <strong>Slurm</strong> — run on your own cluster with{" "}
-        <code>--backend slurm [--flavor h100:2]</code>. orx submits via <code>sbatch</code> on
-        the login node over ssh (auth is your keys/agent; orx never reads a key) and the job
-        runs in your cluster environment. The defaults below apply when a launch doesn&apos;t
-        override them.
+        Run on your own cluster with <code>--backend slurm [--flavor h100:2]</code>. orx
+        submits via <code>sbatch</code> on the login node over ssh (auth is your keys/agent;
+        orx never reads a key) and the job runs in your cluster environment. The defaults
+        below apply when a launch doesn&apos;t override them.
       </p>
       {loadError ? (
-        <div className="settings-card">
-          <div className="error">{loadError}</div>
-        </div>
+        <div className="error">{loadError}</div>
       ) : !settings ? (
         <div className="settings-loading">
           <span className="spinner" /> Loading slurm settings…
         </div>
       ) : (
-        <div className="settings-card">
-          <div className="settings-card-head">
-            <h3>Slurm cluster</h3>
-            <div className="spacer" style={{ flex: 1 }} />
-            <SlurmTestBadge test={test} />
-          </div>
+        <>
           {preflight?.error && <p className="settings-note">{preflight.error}</p>}
           {preflight && preflight.partitions.length > 0 && (
             <p className="settings-note">
@@ -719,9 +716,130 @@ function SlurmSection() {
               >
                 Test connection
               </button>
+              <SlurmTestBadge test={test} />
             </div>
           </form>
+        </>
+      )}
+    </>
+  );
+}
+
+// --- compute (local) --------------------------------------------------------------
+
+function LocalSection() {
+  const [hw, setHw] = useState<LocalMachine | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getLocalMachine()
+      .then(setHw)
+      .catch((err) => setLoadError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  return (
+    <>
+      <p className="settings-sub">
+        Run experiments as detached, supervised processes on the machine running orx with{" "}
+        <code>--backend local</code> — handy when you&apos;re already on a GPU box and using
+        this dashboard over port forwarding. Runs share CPU/RAM/GPU with the dashboard
+        itself, so prefer a remote backend for anything heavy.
+      </p>
+      {loadError ? (
+        <div className="error">{loadError}</div>
+      ) : !hw ? (
+        <div className="settings-loading">
+          <span className="spinner" /> Detecting hardware…
         </div>
+      ) : (
+        <div className="kv">
+          <span className="k">Hostname</span>
+          <span className="v mono">{hw.hostname}</span>
+          <span className="k">System</span>
+          <span className="v">
+            {hw.os}/{hw.arch}
+            {hw.chip ? ` — ${hw.chip}` : ""}
+          </span>
+          <span className="k">CPU</span>
+          <span className="v">{hw.cpuCount > 0 ? `${hw.cpuCount} cores` : "—"}</span>
+          <span className="k">RAM</span>
+          <span className="v">{hw.memBytes !== null ? fmtBytes(hw.memBytes) : "—"}</span>
+          <span className="k">GPUs</span>
+          <span className="v">
+            {hw.gpus.length === 0
+              ? "none detected (nvidia-smi)"
+              : hw.gpus
+                  .map(
+                    (g) =>
+                      `${g.name}${g.memMib !== null ? ` — ${fmtBytes(g.memMib * 1024 * 1024)}` : ""}`,
+                  )
+                  .join(", ")}
+          </span>
+        </div>
+      )}
+    </>
+  );
+}
+
+// --- compute (openresearch) ---------------------------------------------------------
+
+function OpenResearchSection() {
+  const [s, setS] = useState<OpenResearchSettings | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getOpenResearchSettings()
+      .then(setS)
+      .catch((err) => setLoadError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  return (
+    <>
+      <p className="settings-sub">
+        Run on an ephemeral OpenResearch box billed to your org with{" "}
+        <code>--backend openresearch --flavor &lt;shape&gt;</code> (h100_sxm, cpu5c, …; browse
+        with <code>orx compute</code>). The box is provisioned for the run and deleted when it
+        ends. Needs <code>orx login</code> and a registered SSH key.
+      </p>
+      {loadError ? (
+        <div className="error">{loadError}</div>
+      ) : !s ? (
+        <div className="settings-loading">
+          <span className="spinner" /> Checking credentials…
+        </div>
+      ) : !s.loggedIn ? (
+        <p className="settings-note">
+          Not signed in. Run <code>orx login</code> in a terminal to connect your OpenResearch
+          account.
+        </p>
+      ) : (
+        <>
+          <div className="kv">
+            <span className="k">Status</span>
+            <span className="v">
+              <span className="badge ok">signed in</span>
+            </span>
+            <span className="k">Orgs</span>
+            <span className="v">{s.orgs.length > 0 ? s.orgs.join(", ") : "—"}</span>
+            <span className="k">SSH key</span>
+            <span className="v">
+              {s.sshKeyRegistered === true ? (
+                <span className="badge ok">registered</span>
+              ) : s.sshKeyRegistered === false ? (
+                <span className="badge err">none registered</span>
+              ) : (
+                <span className="badge">unknown</span>
+              )}
+            </span>
+          </div>
+          {s.sshKeyRegistered === false && (
+            <p className="settings-note">
+              Launches need a registered SSH key. Add one with{" "}
+              <code>orx ssh-key add ~/.ssh/id_ed25519.pub</code>.
+            </p>
+          )}
+          {s.error && <p className="settings-note">{s.error}</p>}
+        </>
       )}
     </>
   );
@@ -729,41 +847,304 @@ function SlurmSection() {
 
 // --- compute -----------------------------------------------------------------
 
-type ComputeSub = "hf" | "modal" | "k8s" | "ssh" | "slurm";
-
-const COMPUTE_SUBS: { id: ComputeSub; label: string }[] = [
-  { id: "hf", label: "HF Jobs" },
-  { id: "modal", label: "Modal" },
-  { id: "k8s", label: "Kubernetes" },
-  { id: "ssh", label: "SSH" },
-  { id: "slurm", label: "Slurm" },
+const TARGET_ORDER: ComputeTargetId[] = [
+  "local",
+  "hf",
+  "modal",
+  "k8s",
+  "ssh",
+  "slurm",
+  "openresearch",
 ];
 
+const TARGET_LABELS: Record<ComputeTargetId, string> = {
+  local: "This machine",
+  hf: "HF Jobs",
+  modal: "Modal",
+  k8s: "Kubernetes",
+  ssh: "SSH",
+  slurm: "Slurm",
+  openresearch: "OpenResearch",
+};
+
+/** Kind strings from the runs table — reuses the instances-table logos. */
+const TARGET_KIND: Record<ComputeTargetId, string> = {
+  local: "local_job",
+  hf: "hf_job",
+  modal: "modal_job",
+  k8s: "k8s_job",
+  ssh: "ssh_job",
+  slurm: "slurm_job",
+  openresearch: "openresearch_job",
+};
+
+/** Backends whose launches take --flavor; mirrors the server's validation. */
+const FLAVORED_TARGETS: ComputeTargetId[] = ["hf", "modal", "slurm", "openresearch"];
+/** Of those, the ones where a launch *requires* a flavor. */
+const FLAVOR_REQUIRED: ComputeTargetId[] = ["hf", "modal", "openresearch"];
+
+const FLAVOR_SUGGESTIONS: Partial<Record<ComputeTargetId, string[]>> = {
+  hf: ["cpu-basic", "t4-small", "a10g-small", "a10g-large", "a100-large", "h100", "h200"],
+  modal: ["cpu", "t4", "l4", "a10g", "a100", "a100-80gb", "l40s", "h100", "h100:2"],
+  slurm: ["gpu", "h100:1", "h100:2", "a100:4"],
+  openresearch: ["h100_sxm", "h100_sxm:2", "cpu5c", "cpu5g", "cpu5m"],
+};
+
+function TargetStatusBadge({ t, isDefault }: { t: ComputeTargetSummary; isDefault: boolean }) {
+  if (t.id === "local") return <span className="badge ok">ready</span>;
+  if (!t.configured && isDefault) return <span className="badge warn">not configured</span>;
+  if (!t.configured) return <span className="badge">not set up</span>;
+  return <span className="badge ok">configured</span>;
+}
+
+/** The default row's inline flavor editor (flavored backends only). */
+function DefaultFlavorEditor({
+  target,
+  flavor,
+  onSaved,
+}: {
+  target: ComputeTargetId;
+  flavor: string | null;
+  onSaved: (s: ComputeSettings) => void;
+}) {
+  const [value, setValue] = useState(flavor ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Reflect an outside change (e.g. default moved to another backend and back).
+  useEffect(() => setValue(flavor ?? ""), [flavor]);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      onSaved(await setComputeDefault({ backend: target, flavor: value.trim() || null }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const unchanged = value.trim() === (flavor ?? "");
+  return (
+    <form className="form settings-form compute-flavor-form" onSubmit={submit}>
+      <label>
+        Default flavor
+        <input
+          className="mono"
+          type="text"
+          list={`flavors-${target}`}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder={FLAVOR_REQUIRED.includes(target) ? "e.g. " + (FLAVOR_SUGGESTIONS[target]?.[1] ?? "") : "none (CPU-only)"}
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <datalist id={`flavors-${target}`}>
+          {(FLAVOR_SUGGESTIONS[target] ?? []).map((f) => (
+            <option key={f} value={f} />
+          ))}
+        </datalist>
+      </label>
+      {error && <div className="error">{error}</div>}
+      <div className="actions">
+        <button type="submit" className="btn sm" disabled={saving || unchanged}>
+          {saving ? "Saving…" : "Save flavor"}
+        </button>
+        {FLAVOR_REQUIRED.includes(target) && !flavor && (
+          <span className="muted compute-flavor-hint">
+            This backend requires a flavor — without a default one, each launch must pass{" "}
+            <code>--flavor</code>.
+          </span>
+        )}
+      </div>
+    </form>
+  );
+}
+
+function TargetRow({
+  target,
+  isDefault,
+  defaultFlavor,
+  open,
+  onToggle,
+  onSettings,
+  onError,
+}: {
+  target: ComputeTargetSummary;
+  isDefault: boolean;
+  defaultFlavor: string | null;
+  open: boolean;
+  onToggle: () => void;
+  onSettings: (s: ComputeSettings) => void;
+  onError: (msg: string) => void;
+}) {
+  // Mounted on first expand, kept mounted (hidden) after — each section's own
+  // mount-time fetch is the lazy detail load, and re-expanding doesn't refetch.
+  const [visited, setVisited] = useState(false);
+  const [settingDefault, setSettingDefault] = useState(false);
+  if (open && !visited) setVisited(true);
+
+  async function makeDefault(e: React.MouseEvent) {
+    e.stopPropagation(); // the header click is expand/collapse
+    if (settingDefault) return;
+    setSettingDefault(true);
+    try {
+      onSettings(await setComputeDefault({ backend: target.id }));
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSettingDefault(false);
+    }
+  }
+
+  async function clearDefault() {
+    if (settingDefault) return;
+    setSettingDefault(true);
+    try {
+      onSettings(await setComputeDefault({ backend: null }));
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSettingDefault(false);
+    }
+  }
+
+  return (
+    <div className={`compute-row${open ? " open" : ""}`}>
+      <div
+        className="compute-row-head"
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={onToggle}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onToggle();
+          }
+        }}
+      >
+        <span className="compute-row-logo">
+          <BackendLogo kind={TARGET_KIND[target.id]} size={18} />
+        </span>
+        <span className="compute-row-name">{TARGET_LABELS[target.id]}</span>
+        <span className="compute-row-summary">{target.summary}</span>
+        <TargetStatusBadge t={target} isDefault={isDefault} />
+        {isDefault ? (
+          <span className="compute-default-pill">Default</span>
+        ) : (
+          <button
+            type="button"
+            className="btn sm compute-make-default"
+            onClick={(e) => void makeDefault(e)}
+            disabled={settingDefault}
+          >
+            Make default
+          </button>
+        )}
+        <ChevronDown size={16} className="compute-chevron" />
+      </div>
+      {visited && (
+        <div className="compute-row-body" hidden={!open}>
+          {isDefault && (
+            <p className="settings-note compute-default-note">
+              The agent launches runs here unless you tell it otherwise, and so does{" "}
+              <code>orx exp run</code> without <code>--backend</code>.{" "}
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => void clearDefault()}
+                disabled={settingDefault}
+              >
+                Clear default
+              </button>
+            </p>
+          )}
+          {isDefault && !target.configured && (
+            <p className="settings-note">
+              This target is the default but isn&apos;t configured — launches will fail until
+              it&apos;s set up below.
+            </p>
+          )}
+          {isDefault && FLAVORED_TARGETS.includes(target.id) && (
+            <DefaultFlavorEditor target={target.id} flavor={defaultFlavor} onSaved={onSettings} />
+          )}
+          {target.id === "local" && <LocalSection />}
+          {target.id === "hf" && <HfSection />}
+          {target.id === "modal" && <ModalSection />}
+          {target.id === "k8s" && <K8sSection />}
+          {target.id === "ssh" && <SshSection />}
+          {target.id === "slurm" && <SlurmSection />}
+          {target.id === "openresearch" && <OpenResearchSection />}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ComputeTab() {
-  const [sub, setSub] = useState<ComputeSub>("hf");
+  const [settings, setSettings] = useState<ComputeSettings | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<ComputeTargetId | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getComputeSettings()
+      .then(setSettings)
+      .catch((err) => setLoadError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  const apply = (s: ComputeSettings) => {
+    setSettings(s);
+    setError(null);
+  };
+
+  const targets = settings
+    ? [...settings.targets].sort(
+        (a, b) => TARGET_ORDER.indexOf(a.id) - TARGET_ORDER.indexOf(b.id),
+      )
+    : null;
+
   return (
     <>
       <h1>Compute</h1>
       <p className="settings-sub">
-        Run experiments on external compute with{" "}
-        <code>--backend &lt;name&gt; --flavor &lt;name&gt;</code>.
+        Where <code>orx exp run</code> executes. Pick a default target; the agent uses it when
+        a launch doesn&apos;t name a backend (<code>--backend &lt;name&gt;</code> always wins).
       </p>
-      <div className="harness-tabs">
-        {COMPUTE_SUBS.map((t) => (
-          <button
-            key={t.id}
-            className={t.id === sub ? "active" : ""}
-            onClick={() => setSub(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-      {sub === "hf" && <HfSection />}
-      {sub === "modal" && <ModalSection />}
-      {sub === "k8s" && <K8sSection />}
-      {sub === "ssh" && <SshSection />}
-      {sub === "slurm" && <SlurmSection />}
+      {loadError ? (
+        <div className="error">{loadError}</div>
+      ) : !targets ? (
+        <div className="settings-loading">
+          <span className="spinner" /> Checking compute targets…
+        </div>
+      ) : (
+        <>
+          {error && <div className="error">{error}</div>}
+          <div className="compute-list">
+            {targets.map((t) => (
+              <TargetRow
+                key={t.id}
+                target={t}
+                isDefault={settings?.defaultBackend === t.id}
+                defaultFlavor={settings?.defaultFlavor ?? null}
+                open={expanded === t.id}
+                onToggle={() => setExpanded((cur) => (cur === t.id ? null : t.id))}
+                onSettings={apply}
+                onError={setError}
+              />
+            ))}
+          </div>
+          <p className="settings-note compute-footnote">
+            The default target and flavor are included in the research agent&apos;s
+            instructions — it launches runs there unless you name another backend. No other
+            compute settings are shared with it.
+          </p>
+        </>
+      )}
     </>
   );
 }
@@ -831,12 +1212,7 @@ function HfSection() {
   }
 
   return (
-    <div className="settings-card">
-      <div className="settings-card-head">
-        <h3>Hugging Face Jobs</h3>
-        <div className="spacer" style={{ flex: 1 }} />
-        {settings && <HfStatusBadge settings={settings} />}
-      </div>
+    <>
       <p className="settings-sub">
         Run experiments on your Hugging Face account with{" "}
         <code>--backend hf --flavor &lt;name&gt;</code> (t4-small, a10g-small, a100-large, …).
@@ -851,6 +1227,10 @@ function HfSection() {
       ) : (
         <>
           <div className="kv">
+            <span className="k">Status</span>
+            <span className="v">
+              <HfStatusBadge settings={settings} />
+            </span>
             <span className="k">Account</span>
             <span className="v">{settings.username ?? "—"}</span>
             <span className="k">Token</span>
@@ -901,7 +1281,7 @@ function HfSection() {
           </button>
         </div>
       </form>
-    </div>
+    </>
   );
 }
 

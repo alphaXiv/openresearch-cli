@@ -10,7 +10,7 @@ import { Boxes, Cloud, Laptop, Server } from "lucide-react";
 import { backendDetail, backendKind, type Run } from "../api";
 
 /** Human name for a backend kind, used as the logo's alt/label. */
-function backendName(kind: string): string {
+export function backendName(kind: string): string {
   switch (kind) {
     case "modal_job":
       return "Modal";
@@ -104,7 +104,7 @@ function KubernetesLogo({ size = 16 }: { size?: number }) {
 }
 
 /** The logo glyph for a backend kind. */
-function BackendLogo({ kind, size = 16 }: { kind: string; size?: number }) {
+export function BackendLogo({ kind, size = 16 }: { kind: string; size?: number }) {
   switch (kind) {
     case "modal_job":
       return <ModalLogo size={size} />;
