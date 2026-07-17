@@ -10,21 +10,18 @@ import { useEffect, useRef, useState } from "react";
  *  - Reject: plain rejection, no feedback; the model stops and waits.
  *  - Revise…: focuses the composer; typed text is sent as revision feedback
  *    (the composer routes it to this card — see ChatPanel's send()).
- *  - Accept: guarded approve — resume under accept-edits (edits allowed,
- *    everything else still gated). Closest headless analog to desktop's plain
- *    Accept, since mid-turn prompting only exists under the plan-mode bridge.
- *  - Accept and auto mode (primary): approve + resume under Auto.
- *    The caret holds the bypass-everything variant.
+ *  - Accept and auto mode (primary): approve + resume under Auto — the
+ *    default accept action. The caret menu holds the two guarded tiers:
+ *    accept-edits (edits allowed, everything else still gated) and
+ *    bypass-everything.
  *  - Open plan: link in the title row → the right-pane plan tab. */
 export function PlanStrip({
-  plan,
   synthesized,
   onView,
   onApprove,
   onReject,
   onRevise,
 }: {
-  plan: string;
   /** Card synthesized from the turn's final text (no ExitPlanMode call). */
   synthesized: boolean;
   onView: () => void;
@@ -44,13 +41,6 @@ export function PlanStrip({
     return () => window.removeEventListener("pointerdown", close);
   }, [menuOpen]);
 
-  // One-line excerpt: the first heading or non-empty line.
-  const excerpt =
-    plan
-      .split("\n")
-      .map((l) => l.replace(/^#+\s*/, "").trim())
-      .find((l) => l.length > 0) ?? "";
-
   return (
     <div className="plan-strip">
       <div className="plan-strip-info">
@@ -58,7 +48,6 @@ export function PlanStrip({
         <span className="plan-strip-title">
           {synthesized ? "Claude is ready to proceed" : "Claude proposed a plan"}
         </span>
-        {excerpt && <span className="plan-strip-excerpt">{excerpt}</span>}
         <button className="plan-strip-open" onClick={onView}>
           Open plan
         </button>
@@ -71,9 +60,6 @@ export function PlanStrip({
           Revise…
         </button>
         <span className="plan-strip-spacer" />
-        <button className="btn-ghost" onClick={() => onApprove("accept-edits")}>
-          Accept
-        </button>
         <div className="plan-strip-approve" ref={menuRef}>
           <button className="btn-primary plan-strip-primary" onClick={() => onApprove("auto")}>
             Accept and auto mode
@@ -87,6 +73,14 @@ export function PlanStrip({
           </button>
           {menuOpen && (
             <div className="plan-strip-menu">
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  onApprove("accept-edits");
+                }}
+              >
+                Accept
+              </button>
               <button
                 onClick={() => {
                   setMenuOpen(false);

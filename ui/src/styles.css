@@ -3711,14 +3711,6 @@ button.files-pill-link:hover {
   font-weight: 600;
   white-space: nowrap;
 }
-.plan-strip-excerpt {
-  font-size: 12.5px;
-  color: var(--muted);
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 /* Button styling comes from the shared `.prompt-actions` rules, but the
    strip is monochrome (no brand red): black text, black borders, quiet
    hover. `--text` keeps it theme-correct in dark mode. The spacer splits

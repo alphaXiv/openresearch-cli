@@ -1472,7 +1472,6 @@ export function ChatPanel({
             sibling, the composer's own z-index: 4 capped them below it. */}
         {pendingPlan && (
           <PlanStrip
-            plan={pendingPlan.plan}
             synthesized={pendingPlan.synthesized}
             onView={() => openPlan?.(pendingPlan.plan, pendingPlan.promptId)}
             onApprove={(resumeMode) =>
