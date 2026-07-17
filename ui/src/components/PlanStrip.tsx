@@ -38,24 +38,19 @@ export function PlanStrip({
       .map((l) => l.replace(/^#+\s*/, "").trim())
       .find((l) => l.length > 0) ?? "";
 
+  // Claude-desktop shape: a title line, then a row of real buttons below.
+  // The actions div reuses `.prompt-actions` so the buttons share every other
+  // card's button styling instead of rendering as bare text.
   return (
     <div className="plan-strip">
       <div className="plan-strip-info">
         <ScrollText size={14} className="plan-strip-icon" />
-        <div className="plan-strip-text">
-          <span className="plan-strip-title">
-            {synthesized ? "Plan mode — ready to proceed?" : "Plan ready"}
-          </span>
-          {excerpt && <span className="plan-strip-excerpt">{excerpt}</span>}
-        </div>
+        <span className="plan-strip-title">
+          {synthesized ? "Ready to proceed?" : "Plan ready"}
+        </span>
+        {excerpt && <span className="plan-strip-excerpt">{excerpt}</span>}
       </div>
-      <div className="plan-strip-actions">
-        <button className="btn-ghost" onClick={onView}>
-          View plan
-        </button>
-        <button className="btn-ghost" onClick={onKeepPlanning}>
-          Keep planning
-        </button>
+      <div className="prompt-actions plan-strip-actions">
         <div className="plan-strip-approve" ref={menuRef}>
           <button className="btn-primary" onClick={() => onApprove("auto")}>
             Approve &amp; run
@@ -88,6 +83,12 @@ export function PlanStrip({
             </div>
           )}
         </div>
+        <button className="btn-ghost" onClick={onKeepPlanning}>
+          Keep planning
+        </button>
+        <button className="btn-ghost" onClick={onView}>
+          View plan
+        </button>
       </div>
     </div>
   );

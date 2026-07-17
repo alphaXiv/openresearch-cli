@@ -3658,18 +3658,18 @@ button.files-pill-link:hover {
 /* --- plan strip (docked above the composer while a plan awaits a decision) --- */
 
 .plan-strip {
-  /* Solid card floating over the composer's ::before fade. */
+  /* Solid card floating over the composer's ::before fade. Claude-desktop
+     shape: title line on top, a row of buttons below. */
   position: relative;
   z-index: 5;
   max-width: var(--readable-col);
   width: calc(100% - 32px);
   margin: 0 auto 6px;
-  padding: 9px 12px;
+  padding: 11px 13px;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent-blue);
   border-radius: 8px;
@@ -3678,36 +3678,31 @@ button.files-pill-link:hover {
 }
 .plan-strip-info {
   display: flex;
-  align-items: center;
-  gap: 9px;
+  align-items: baseline;
+  gap: 8px;
   min-width: 0;
-  flex: 1;
 }
 .plan-strip-icon {
   color: var(--accent-blue);
   flex-shrink: 0;
-}
-.plan-strip-text {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
+  align-self: center;
 }
 .plan-strip-title {
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
 }
 .plan-strip-excerpt {
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--muted);
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Button styling comes from the shared `.prompt-actions` rules. */
 .plan-strip-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
+  gap: 8px;
 }
 .plan-strip-approve {
   position: relative;
