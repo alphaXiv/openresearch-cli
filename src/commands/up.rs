@@ -216,6 +216,13 @@ fn router(state: AppState) -> Router {
             get(slurm_settings).post(set_slurm_settings),
         )
         .route("/api/settings/slurm/preflight", post(slurm_preflight))
+        .route("/api/settings/compute", get(compute_settings))
+        .route("/api/settings/compute/default", post(set_compute_default))
+        .route("/api/settings/local", get(local_machine_settings))
+        .route(
+            "/api/settings/openresearch",
+            get(openresearch_settings_route),
+        )
         .route("/api/harnesses", get(list_harnesses))
         .route("/api/skills", get(list_skills))
         .route(
@@ -2044,6 +2051,186 @@ async fn slurm_preflight(Json(req): Json<SlurmPreflightReq>) -> ApiResult {
         "gitFound": p.git_found,
         "partitions": p.partitions,
         "error": p.error,
+    })))
+}
+
+// --- compute targets (unified settings list + default) --------------------------
+
+/// The whole payload for the Compute tab's collapsed list, in one round trip.
+/// CHEAP probes only — env vars and file reads, never a network call, kubectl,
+/// or the modal python import. `configured` means "worth trying", not
+/// "healthy"; deep health stays in each backend's own settings endpoint,
+/// fetched when a row is expanded.
+fn compute_settings_json() -> Value {
+    let default = crate::config::compute_default();
+    let (default_backend, default_flavor) = match &default {
+        Some((b, f)) => (Some(b.as_str()), f.as_deref()),
+        None => (None, None),
+    };
+
+    let hf = crate::jobs::huggingface::resolve_token_with_source().ok();
+    let modal_source = crate::jobs::modal::token_source();
+    let k8s_settings = k8s::load_settings().ok().flatten();
+    let ssh_hosts = list_ssh_hosts().len();
+    let slurm_settings = crate::jobs::slurm::load_settings().ok().flatten();
+    let slurm_host = slurm_settings.as_ref().and_then(|s| s.host.clone());
+    // Presence of the credentials file only — whether the token still works is
+    // the expanded row's (network) question.
+    let or_logged_in = crate::config::credentials_present();
+
+    let source_label = |s: &crate::jobs::huggingface::TokenSource| match s {
+        crate::jobs::huggingface::TokenSource::Env => "HF_TOKEN in the environment",
+        crate::jobs::huggingface::TokenSource::OpenresearchEnv => "token from ~/.openresearch/env",
+        crate::jobs::huggingface::TokenSource::HfCache => "token from the HF CLI cache",
+    };
+    let targets = json!([
+        {
+            "id": "local",
+            "configured": true,
+            "summary": "Runs as a detached process on this machine",
+        },
+        {
+            "id": "hf",
+            "configured": hf.is_some(),
+            "summary": hf.as_ref().map_or_else(
+                || "No token".to_string(),
+                |(_, s)| source_label(s).to_string(),
+            ),
+        },
+        {
+            "id": "modal",
+            "configured": modal_source.is_some(),
+            "summary": match modal_source {
+                Some("env") => "MODAL_TOKEN_ID in the environment",
+                Some("syncedEnv") => "Token from ~/.openresearch/env",
+                Some("modalToml") => "Token from ~/.modal.toml",
+                _ => "No token",
+            },
+        },
+        {
+            "id": "k8s",
+            "configured": k8s_settings.is_some(),
+            "summary": k8s_settings.as_ref().map_or_else(
+                || "No context selected".to_string(),
+                |s| format!(
+                    "Context {} / namespace {}",
+                    s.context.as_deref().unwrap_or("(kubectl default)"),
+                    s.namespace,
+                ),
+            ),
+        },
+        {
+            "id": "ssh",
+            "configured": ssh_hosts > 0,
+            "summary": match ssh_hosts {
+                0 => "No hosts in ~/.ssh/config".to_string(),
+                1 => "1 host in ~/.ssh/config".to_string(),
+                n => format!("{n} hosts in ~/.ssh/config"),
+            },
+        },
+        {
+            "id": "slurm",
+            "configured": slurm_host.is_some(),
+            "summary": slurm_host.as_ref().map_or_else(
+                || "No login node configured".to_string(),
+                |h| format!("Login node {h}"),
+            ),
+        },
+        {
+            "id": "openresearch",
+            "configured": or_logged_in,
+            "summary": if or_logged_in {
+                "Signed in — ephemeral boxes billed to your org"
+            } else {
+                "Not signed in — run `orx login`"
+            },
+        },
+    ]);
+    json!({
+        "defaultBackend": default_backend,
+        "defaultFlavor": default_flavor,
+        "targets": targets,
+    })
+}
+
+async fn compute_settings() -> ApiResult {
+    // fs/env probes only, but keep them off the async runtime anyway.
+    let payload = tokio::task::spawn_blocking(compute_settings_json)
+        .await
+        .map_err(|e| ApiError::from(anyhow!("compute settings task failed: {e}")))?;
+    Ok(Json(payload))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetComputeDefaultReq {
+    /// `None`/absent clears the default (and its flavor with it).
+    backend: Option<String>,
+    flavor: Option<String>,
+}
+
+/// Persist the default compute target. An *unconfigured* backend is allowed
+/// (config state fluctuates outside orx; the UI warns instead) — only unknown
+/// backends and meaningless flavors are rejected.
+async fn set_compute_default(Json(req): Json<SetComputeDefaultReq>) -> ApiResult {
+    let backend = req.backend.map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
+    let flavor = req.flavor.map(|f| f.trim().to_string()).filter(|f| !f.is_empty());
+    if let Some(b) = &backend {
+        local::validate_compute_default(b, flavor.as_deref()).map_err(bad_request)?;
+    }
+    let payload = tokio::task::spawn_blocking(move || -> Result<Value> {
+        crate::config::set_compute_default(backend, flavor)?;
+        Ok(compute_settings_json())
+    })
+    .await
+    .map_err(|e| ApiError::from(anyhow!("compute default task failed: {e}")))?
+    .map_err(bad_request)?;
+    Ok(Json(payload))
+}
+
+/// The "This machine" row's expanded detail: detected hardware. Subprocess
+/// probes (hostname, sysctl, nvidia-smi) — blocking, so spawned.
+async fn local_machine_settings() -> ApiResult {
+    let hw = tokio::task::spawn_blocking(crate::jobs::localbox::hardware_info)
+        .await
+        .map_err(|e| ApiError::from(anyhow!("hardware probe task failed: {e}")))?;
+    Ok(Json(json!(hw)))
+}
+
+/// The OpenResearch row's expanded detail. Network calls are fine here (the
+/// row is open) but each is individually best-effort — an offline machine
+/// still renders "signed in, status unknown" instead of an error page.
+async fn openresearch_settings_route() -> ApiResult {
+    let Some(creds) = crate::config::load_credentials().await? else {
+        return Ok(Json(json!({
+            "loggedIn": false,
+            "apiUrl": null,
+            "orgs": [],
+            "sshKeyRegistered": null,
+            "error": null,
+        })));
+    };
+    let mut error: Option<String> = None;
+    let orgs = match crate::client::list_orgs(&creds).await {
+        Ok(o) => o.orgs.into_iter().map(|o| o.name).collect::<Vec<_>>(),
+        Err(e) => {
+            error = Some(e.to_string());
+            Vec::new()
+        }
+    };
+    let ssh_key_registered = match crate::client::list_ssh_keys(&creds).await {
+        Ok(k) => Some(!k.ssh_keys.is_empty()),
+        Err(e) => {
+            error.get_or_insert(e.to_string());
+            None
+        }
+    };
+    Ok(Json(json!({
+        "loggedIn": true,
+        "apiUrl": creds.api_url,
+        "orgs": orgs,
+        "sshKeyRegistered": ssh_key_registered,
+        "error": error,
     })))
 }
 

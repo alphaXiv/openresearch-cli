@@ -57,6 +57,13 @@ fn credentials_path() -> PathBuf {
     config_dir().join("credentials.json")
 }
 
+/// Whether `orx login` credentials exist on disk. A cheap sync fs probe for
+/// summary views — whether the token still *works* is a network question
+/// (`load_credentials` + an API call).
+pub fn credentials_present() -> bool {
+    credentials_path().exists()
+}
+
 /// Reads stored credentials. Returns `Ok(None)` when the file is missing,
 /// unreadable, malformed, or missing required fields — matching the TS
 /// `loadCredentials`, which swallows all errors and returns `null`.

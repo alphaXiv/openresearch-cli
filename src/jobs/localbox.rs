@@ -191,9 +191,122 @@ pub fn cancel_job(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// What "this machine" is, for the Compute settings card: the hardware a
+/// `--backend local` run gets. Matters most when the dashboard is reached over
+/// port forwarding from a GPU box — the card is how the user sees they're
+/// sitting on real GPUs.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalHardware {
+    pub hostname: String,
+    pub os: &'static str,
+    pub arch: &'static str,
+    /// CPU brand string on macOS (e.g. "Apple M2 Pro"); NVIDIA-less Linux
+    /// boxes just show cores/RAM.
+    pub chip: Option<String>,
+    pub cpu_count: usize,
+    pub mem_bytes: Option<u64>,
+    pub gpus: Vec<Gpu>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Gpu {
+    pub name: String,
+    pub mem_mib: Option<u64>,
+}
+
+/// Best-effort hardware probe. Every field degrades independently — a missing
+/// `nvidia-smi` (or any probe failure) is an empty GPU list, never an error.
+/// Blocking (subprocesses); call via `spawn_blocking` from async handlers.
+pub fn hardware_info() -> LocalHardware {
+    let cmd = |name: &str, args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new(name).args(args).output().ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let mem_bytes = if cfg!(target_os = "macos") {
+        cmd("sysctl", &["-n", "hw.memsize"]).and_then(|s| s.parse().ok())
+    } else {
+        std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|raw| {
+                // "MemTotal:       32763528 kB"
+                raw.lines()
+                    .find(|l| l.starts_with("MemTotal:"))?
+                    .split_whitespace()
+                    .nth(1)?
+                    .parse::<u64>()
+                    .ok()
+                    .map(|kb| kb * 1024)
+            })
+    };
+    LocalHardware {
+        hostname: cmd("hostname", &[]).unwrap_or_else(|| "unknown".to_string()),
+        os: std::env::consts::OS,
+        arch: std::env::consts::ARCH,
+        chip: if cfg!(target_os = "macos") {
+            cmd("sysctl", &["-n", "machdep.cpu.brand_string"])
+        } else {
+            None
+        },
+        cpu_count: std::thread::available_parallelism().map_or(0, |n| n.get()),
+        mem_bytes,
+        gpus: cmd(
+            "nvidia-smi",
+            &[
+                "--query-gpu=name,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+        )
+        .map(|out| parse_nvidia_smi_csv(&out))
+        .unwrap_or_default(),
+    }
+}
+
+/// Parse `nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits`:
+/// one `name, mem_mib` line per GPU. Names may contain no commas in this
+/// format (nvidia-smi separates fields with ", "), but tolerate odd lines by
+/// keeping the name and dropping the memory rather than dropping the GPU.
+fn parse_nvidia_smi_csv(out: &str) -> Vec<Gpu> {
+    out.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| match line.rsplit_once(',') {
+            Some((name, mem)) => Gpu {
+                name: name.trim().to_string(),
+                mem_mib: mem.trim().parse().ok(),
+            },
+            None => Gpu {
+                name: line.trim().to_string(),
+                mem_mib: None,
+            },
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nvidia_smi_csv_two_gpus() {
+        let parsed = parse_nvidia_smi_csv("NVIDIA A100-SXM4-80GB, 81920\nNVIDIA A100-SXM4-80GB, 81920\n");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].name, "NVIDIA A100-SXM4-80GB");
+        assert_eq!(parsed[0].mem_mib, Some(81920));
+    }
+
+    #[test]
+    fn nvidia_smi_csv_empty_and_malformed() {
+        assert!(parse_nvidia_smi_csv("").is_empty());
+        assert!(parse_nvidia_smi_csv("\n  \n").is_empty());
+        let odd = parse_nvidia_smi_csv("Tesla T4");
+        assert_eq!(odd.len(), 1, "GPU kept even without a memory field");
+        assert_eq!(odd[0].name, "Tesla T4");
+        assert_eq!(odd[0].mem_mib, None);
+    }
 
     fn wait_terminal(dir: &Path) -> JobState {
         let mut state = inspect_job(dir);
