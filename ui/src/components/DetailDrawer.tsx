@@ -281,6 +281,7 @@ function ChangesView({ experiment, project }: { experiment: Experiment; project:
       <div className="drawer-body">
         <div className="drawer-section">
           <div className="changes-branch">
+            <span className="ctl-label">Branch</span>
             <BranchPill
               owner={project.githubOwner}
               repo={project.githubRepo}
@@ -298,6 +299,7 @@ function ChangesView({ experiment, project }: { experiment: Experiment; project:
           ) : (
             <>
               <div className="commit-picker">
+                <span className="ctl-label">Commit</span>
                 {selection === UNCOMMITTED && <span className="uncommitted-dot" />}
                 <select
                   className="input sm"

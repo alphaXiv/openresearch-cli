@@ -79,7 +79,9 @@ interface PlanViewDef {
  * `code` flag (the other tab kinds discriminate on `view`/`path`/`kind`). */
 interface CodeTabDef {
   code: true;
-  sessionId: string;
+  /** Owning chat session, or null for the project-level tab (opened from an
+   * experiment card's Code shortcut — browses branches via the hub clone). */
+  sessionId: string | null;
   /** Source to browse: "" = live session worktree, else a branch name. */
   sel: string;
   /** Whether `sel` was picked by the user — a seeded default silently falls
@@ -87,14 +89,6 @@ interface CodeTabDef {
   selPicked: boolean;
   /** Dirs the user flipped away from their depth default. */
   toggled: ReadonlySet<string>;
-}
-
-/** Branch of the experiment owning the project's most recent run — the code
- * the user most likely wants to browse — or "" (live worktree) without runs. */
-function defaultCodeSelection(experiments: Experiment[], runs: Run[]): string {
-  if (runs.length === 0) return "";
-  const latest = runs.reduce((a, b) => (b.createdAt > a.createdAt ? b : a));
-  return experiments.find((e) => e.id === latest.experimentId)?.branchName ?? "";
 }
 
 // Map a path an agent reported to a repo-relative one — keeping the session
@@ -175,7 +169,6 @@ export default function App() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [files, setFiles] = useState<ProjectFiles | null>(null);
   const [view, setView] = useState<"tree" | "table">("tree");
-  const [selectedExpId, setSelectedExpId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   // Right-panel tab strip: the pinned Experiments tab plus a closable tab per
   // opened experiment view / project file. Views are single-purpose, so the
@@ -236,7 +229,6 @@ export default function App() {
     setExperiments([]);
     setRuns([]);
     setFiles(null);
-    setSelectedExpId(null);
     setSelectedRunId(null);
     setExpTabs([]);
     setFileTabs([]);
@@ -274,7 +266,6 @@ export default function App() {
   // Open an experiment view as a right-panel tab (creating it if needed) and
   // focus it.
   const openExperimentTab = useCallback((id: string, view: ExperimentView = "changes") => {
-    setSelectedExpId(id);
     const tab = { id, view };
     setExpTabs((prev) => (prev.some((t) => sameExpTab(t, tab)) ? prev : [...prev, tab]));
     setRightTab(tab);
@@ -350,34 +341,29 @@ export default function App() {
     [planTabs, rightTab],
   );
 
-  // Open the code browser for a chat session — live worktree or experiment
-  // branches — one tab per session (deduped on sessionId), mirroring the
-  // file/plan tab handlers. A new tab's source defaults to the latest-run
-  // experiment's branch; reopening keeps the existing tab's state.
-  const openCodeTab = useCallback(
-    (sessionId: string) => {
-      const existing = codeTabs.find((t) => t.sessionId === sessionId);
-      const tab: CodeTabDef = existing ?? {
-        code: true,
-        sessionId,
-        sel: defaultCodeSelection(experiments, runs),
-        selPicked: false,
-        toggled: new Set<string>(),
-      };
-      // Self-guarding updater: a double invocation must not push duplicates.
+  // Card shortcut: browse a specific experiment branch in the project-level
+  // code tab (sessionId null), pinning the pick so it never falls back.
+  const openCodeTabForBranch = useCallback(
+    (branch: string) => {
+      const existing = codeTabs.find((t) => t.sessionId === null);
+      const tab: CodeTabDef = existing
+        ? { ...existing, sel: branch, selPicked: true }
+        : { code: true, sessionId: null, sel: branch, selPicked: true, toggled: new Set<string>() };
       setCodeTabs((prev) =>
-        prev.some((t) => t.sessionId === sessionId) ? prev : [...prev, tab],
+        prev.some((t) => t.sessionId === null)
+          ? prev.map((t) => (t.sessionId === null ? tab : t))
+          : [...prev, tab],
       );
       setRightTab(tab);
       setPanelOpen(true);
     },
-    [codeTabs, experiments, runs],
+    [codeTabs],
   );
 
   // Source/expansion changes persist on the tab def, not in CodeTab state —
   // the component unmounts whenever another right-pane tab fronts it.
   const updateCodeTab = useCallback(
-    (sessionId: string, patch: Partial<Omit<CodeTabDef, "code" | "sessionId">>) => {
+    (sessionId: string | null, patch: Partial<Omit<CodeTabDef, "code" | "sessionId">>) => {
       setCodeTabs((prev) => prev.map((t) => (t.sessionId === sessionId ? { ...t, ...patch } : t)));
     },
     [],
@@ -526,7 +512,6 @@ export default function App() {
             }}
             onOpenFile={openFileTab}
             onOpenPlan={openPlanTab}
-            onOpenCode={openCodeTab}
           >
             {mainView === "files" ? (
               (() => {
@@ -573,10 +558,7 @@ export default function App() {
                         <GitBranch size={12} style={{ flexShrink: 0 }} />
                       )
                     }
-                    onSelect={() => {
-                      setRightTab(t);
-                      setSelectedExpId(t.id);
-                    }}
+                    onSelect={() => setRightTab(t)}
                     onClose={() => closeExperimentTab(t)}
                   />
                 );
@@ -603,7 +585,7 @@ export default function App() {
               ))}
               {codeTabs.map((t) => (
                 <ClosableTab
-                  key={`code:${t.sessionId}`}
+                  key={`code:${t.sessionId ?? "@project"}`}
                   active={codeTab !== null && codeTab.sessionId === t.sessionId}
                   label="Code"
                   icon={<FolderTree size={12} style={{ flexShrink: 0 }} />}
@@ -659,12 +641,8 @@ export default function App() {
                       experiments={experiments}
                       runs={runs}
                       project={activeProject}
-                      selectedId={selectedExpId}
-                      onSelect={(id) => {
-                        setSelectedRunId(null);
-                        setSelectedExpId(id);
-                      }}
                       onOpenView={openExperimentTab}
+                      onOpenCodeBranch={openCodeTabForBranch}
                     />
                   )
                 ) : (
@@ -715,7 +693,7 @@ export default function App() {
                   const def = codeTabs.find((t) => t.sessionId === codeTab.sessionId) ?? codeTab;
                   return (
                     <CodeTab
-                      key={`code:${def.sessionId}`}
+                      key={`code:${def.sessionId ?? "@project"}`}
                       projectId={projectId}
                       sessionId={def.sessionId}
                       project={activeProject}

@@ -180,7 +180,8 @@ export function CodeTab({
 }: {
   projectId: string;
   /** Chat session whose worktree the live view browses. */
-  sessionId: string;
+  /** null: project-level tab (card shortcut) — no live-worktree source. */
+  sessionId: string | null;
   /** Owning project — supplies owner/repo for the GitHub branch link. */
   project: Project;
   /** Project experiments — one selectable branch entry each (deduped). */
@@ -218,7 +219,7 @@ export function CodeTab({
       const id = ++reqId.current;
       inFlight.current = true;
       if (showSpinner) setLoading(true);
-      getCodeTree(projectId, sel ? { ref: sel } : { sessionId })
+      getCodeTree(projectId, sel ? { ref: sel } : { sessionId: sessionId ?? undefined })
         .then((d) => {
           if (id !== reqId.current) return;
           setData(d);
@@ -301,13 +302,16 @@ export function CodeTab({
   return (
     <div className="code-tab">
       <div className="code-tab-header">
+        <span className="ctl-label">Source</span>
         <select
           className="input sm code-tab-select"
           value={sel}
           onChange={(e) => onSelChange(e.target.value, true)}
           title="Source to browse"
         >
-          <option value="">live — session worktree</option>
+          <option value="">
+            {sessionId ? "live — session worktree" : "project clone"}
+          </option>
           {branchOptions.map((o) => (
             <option key={o.branch} value={o.branch}>
               {o.label}
@@ -335,7 +339,7 @@ export function CodeTab({
           {loading ? <span className="spinner" /> : <RotateCw size={13} />}
         </button>
       </div>
-      {!sel && data?.root === "clone" && (
+      {sessionId !== null && !sel && data?.root === "clone" && (
         <div className="code-tab-note">
           This session's worktree isn't available — showing the project clone.
         </div>
@@ -355,7 +359,7 @@ export function CodeTab({
               depth={0}
               toggled={toggled}
               onToggle={toggle}
-              onOpenFile={(path) => onOpenFile(path, sessionId, sel || undefined)}
+              onOpenFile={(path) => onOpenFile(path, sessionId ?? undefined, sel || undefined)}
             />
           </div>
         )}

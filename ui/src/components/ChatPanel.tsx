@@ -4,7 +4,6 @@ import {
   CornerDownLeft,
   FlaskConical,
   FolderOpen,
-  FolderTree,
   MoreHorizontal,
   PanelLeft,
   Plus,
@@ -749,7 +748,6 @@ export function ChatPanel({
   onTogglePanel,
   onOpenFile,
   onOpenPlan,
-  onOpenCode,
   children,
 }: {
   projectId: string;
@@ -773,9 +771,6 @@ export function ChatPanel({
   onOpenFile?: (path: string, sessionId?: string) => void;
   /** Open a plan's markdown as a right-pane tab (plan strip / plan cards). */
   onOpenPlan?: (plan: string, sessionId: string, promptId: string) => void;
-  /** Open the code browser (live session worktree / experiment branches) as
-   * a right-pane tab for the active session. */
-  onOpenCode?: (sessionId: string) => void;
   /** Middle-pane content when a settings section is active (the SettingsView). */
   children?: React.ReactNode;
 }) {
@@ -1277,16 +1272,6 @@ export function ChatPanel({
         >
           {activeSession ? activeSession.title?.trim() || "Untitled" : "New session"}
         </div>
-        {onOpenCode && activeId && (
-          <button
-            className="icon-btn"
-            title="Code"
-            aria-label="Code"
-            onClick={() => onOpenCode(activeId)}
-          >
-            <FolderTree size={15} />
-          </button>
-        )}
         <button
           className={`icon-btn ${panelOpen ? "active" : ""}`}
           title="Experiments"

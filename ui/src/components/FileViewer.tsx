@@ -64,6 +64,13 @@ export function FileViewer({
     [data, path],
   );
 
+  // One number per source line; a trailing newline ends a line, it doesn't
+  // start an empty one.
+  const lineCount =
+    data && !data.notFound && data.content
+      ? data.content.split("\n").length - (data.content.endsWith("\n") ? 1 : 0)
+      : 0;
+
   const notFoundCopy = (d: ProjectFile) => {
     if (gitRef) return `File not found on branch ${gitRef}.`;
     if (sessionId && d.root === "clone")
@@ -124,9 +131,14 @@ export function FileViewer({
                 />
               </div>
             ) : (
-              <pre className="file-view-code">
-                <code>{rendered}</code>
-              </pre>
+              <div className="file-view-codewrap">
+                <pre className="file-view-gutter" aria-hidden="true">
+                  {Array.from({ length: lineCount }, (_, i) => i + 1).join("\n")}
+                </pre>
+                <pre className="file-view-code">
+                  <code>{rendered}</code>
+                </pre>
+              </div>
             )}
             {data.truncated && (
               <div className="file-view-note">File truncated — showing the first 512 KB.</div>

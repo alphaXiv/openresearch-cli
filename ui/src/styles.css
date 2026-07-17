@@ -1411,22 +1411,31 @@ textarea::placeholder {
 
 /* ---- tree nodes (graph cards on the dotted canvas) ---- */
 
+/* Cards must stay `selectable` (ReactFlow sets pointer-events:none on nodes
+ * that are neither draggable nor selectable, which would kill the action
+ * buttons) — but selection itself means nothing here, so suppress its
+ * pointer cursor and click outline. Specificity beats RF's stylesheet. */
+.react-flow__node.react-flow__node-exp.selectable {
+  cursor: default;
+}
+.react-flow__node.react-flow__node-exp.selectable.selected,
+.react-flow__node.react-flow__node-exp.selectable:focus,
+.react-flow__node.react-flow__node-exp.selectable:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
 .exp-node {
-  width: 240px;
+  /* Keep in sync with NODE_W in TreeView.tsx (layout math uses it). */
+  width: 264px;
   border: 1px solid var(--border);
   background: var(--base);
   padding: 10px 12px;
-  cursor: pointer;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
   font-size: 12.5px;
   transition: box-shadow 120ms ease;
 }
 .exp-node:hover {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-.exp-node.selected {
-  border-color: var(--text);
-  box-shadow: 0 0 0 1px var(--text);
 }
 .exp-node.live {
   border-color: var(--accent-teal);
@@ -1505,13 +1514,14 @@ textarea::placeholder {
   border-top: 1px solid var(--border-variant);
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
 }
 .exp-node .node-action {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 8px;
+  /* Tight: Changes + Terminal + Code + the GitHub icon share one fixed-width row. */
+  padding: 3px 6px;
   font-size: 10.5px;
   font-weight: 700;
   color: var(--subtext);
@@ -1522,6 +1532,11 @@ textarea::placeholder {
 .exp-node .node-action:hover {
   color: var(--text);
   background: var(--surface);
+}
+/* External GitHub shortcut: icon-only, pinned to the card's far edge. */
+.exp-node .node-action-ext {
+  margin-left: auto;
+  padding: 3px 5px;
 }
 
 /* run-history squares (RUNS strip on node cards) */
@@ -1874,12 +1889,25 @@ textarea::placeholder {
 /* commit picker (Changes tab) */
 .changes-branch {
   display: flex;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 10px;
 }
 .commit-picker {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+/* Tiny caption naming what a header control is (Branch / Commit / Source) —
+ * two adjacent unlabeled monospace pickers are indistinguishable. */
+.ctl-label {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 .commit-picker select {
   flex: 1;
@@ -3361,7 +3389,7 @@ button.files-pill-link:hover {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 14px;
+  padding: 4px 12px;
   border-bottom: 1px solid var(--border-variant);
   color: var(--subtext);
   flex-shrink: 0;
@@ -3397,6 +3425,29 @@ button.files-pill-link:hover {
   min-height: 0;
   overflow: auto;
   background: var(--base);
+}
+/* Gutter + code share one row so line numbers track content rows 1:1 — the
+   code never soft-wraps (min-width: max-content), so line N is row N. */
+.file-view-codewrap {
+  display: flex;
+  align-items: flex-start;
+  min-width: max-content;
+}
+.file-view-gutter {
+  margin: 0;
+  padding: 14px 10px 14px 14px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  text-align: right;
+  color: var(--muted);
+  user-select: none;
+  /* Stay visible while the code scrolls horizontally. */
+  position: sticky;
+  left: 0;
+  background: var(--base);
+  border-right: 1px solid var(--border-variant);
+  flex-shrink: 0;
 }
 .file-view-code {
   margin: 0;

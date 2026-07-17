@@ -8,13 +8,14 @@ import {
   type Node,
   type NodeProps,
 } from "@xyflow/react";
-import { ExternalLink, GitBranch, Terminal } from "lucide-react";
+import { FolderTree, GitBranch, Terminal } from "lucide-react";
+import { GitHubMark } from "./BranchPill";
 import { memo, useMemo } from "react";
 import { githubBranchUrl, timeAgo, type Experiment, type Project, type Run } from "../api";
 import type { ExperimentView } from "./DetailDrawer";
 import { StatusBadge } from "./StatusBadge";
 
-const NODE_W = 240;
+const NODE_W = 264;
 const NODE_H = 132;
 const GAP_X = 44;
 const GAP_Y = 72;
@@ -25,10 +26,10 @@ type ExpNodeData = {
   latestRun: Run | null;
   runs: Run[]; // oldest → newest
   isBaseline: boolean;
-  selected: boolean;
   githubOwner: string;
   githubRepo: string;
   onOpenView: (id: string, view: ExperimentView) => void;
+  onOpenCodeBranch: (branch: string) => void;
 };
 type ExpFlowNode = Node<ExpNodeData, "exp">;
 
@@ -71,13 +72,13 @@ function runSquareClass(status: string): string {
 }
 
 const ExpNode = memo(function ExpNode({ data }: NodeProps<ExpFlowNode>) {
-  const { exp, latestRun, runs, isBaseline, selected, githubOwner, githubRepo, onOpenView } = data;
+  const { exp, latestRun, runs, isBaseline, githubOwner, githubRepo, onOpenView, onOpenCodeBranch } = data;
   const status = latestRun?.status;
   const live = status === "running" || status === "starting";
   const kind = isBaseline ? "BASELINE" : live ? "RUNNING" : "EXPERIMENT";
   const squares = runs.slice(-MAX_SQUARES);
   return (
-    <div className={`exp-node ${selected ? "selected" : ""} ${live ? "live" : ""}`}>
+    <div className={`exp-node ${live ? "live" : ""}`}>
       <Handle type="target" position={Position.Top} />
       <div className="node-eyebrow">
         <span>{kind}</span>
@@ -120,19 +121,28 @@ const ExpNode = memo(function ExpNode({ data }: NodeProps<ExpFlowNode>) {
             onClick={() => onOpenView(exp.id, "terminal")}
           >
             <Terminal size={13} />
-            Terminal
+            Logs
           </button>
         )}
-        <a
+        <button
           className="node-action"
+          title={`Browse code on ${exp.branchName}`}
+          onClick={() => onOpenCodeBranch(exp.branchName)}
+        >
+          <FolderTree size={13} />
+          Code
+        </button>
+        {/* Icon-only: labeled actions + the link overflow the card's fixed width. */}
+        <a
+          className="node-action node-action-ext"
           title={`Open ${exp.branchName} on GitHub`}
+          aria-label={`Open ${exp.branchName} on GitHub`}
           href={githubBranchUrl(githubOwner, githubRepo, exp.branchName)}
           target="_blank"
           rel="noopener noreferrer"
           onClick={(e) => e.stopPropagation()}
         >
-          <ExternalLink size={13} />
-          GitHub
+          <GitHubMark size={13} />
         </a>
       </div>
       <Handle type="source" position={Position.Bottom} />
@@ -151,18 +161,17 @@ export function TreeView({
   experiments,
   runs,
   project,
-  selectedId,
-  onSelect,
   onOpenView,
+  onOpenCodeBranch,
 }: {
   experiments: Experiment[];
   runs: Run[];
   /** Owning project — supplies owner/repo for the GitHub branch links. */
   project: Project;
-  selectedId: string | null;
-  onSelect: (id: string | null) => void;
   /** Open an experiment view as a right-pane tab (card shortcut buttons). */
   onOpenView: (id: string, view: ExperimentView) => void;
+  /** Browse an experiment branch's code in the project-level Code tab. */
+  onOpenCodeBranch: (branch: string) => void;
 }) {
   const { nodes, edges } = useMemo(() => {
     const runsByExp = new Map<string, Run[]>();
@@ -188,10 +197,10 @@ export function TreeView({
           latestRun: expRuns[expRuns.length - 1] ?? null,
           runs: expRuns,
           isBaseline: !node.exp.parentExperimentId,
-          selected: node.exp.id === selectedId,
           githubOwner: project.githubOwner,
           githubRepo: project.githubRepo,
           onOpenView,
+          onOpenCodeBranch,
         },
       });
       if (node.children.length === 0) return;
@@ -218,7 +227,7 @@ export function TreeView({
       rx += w + GAP_X;
     }
     return { nodes, edges };
-  }, [experiments, runs, selectedId, onOpenView, project.githubOwner, project.githubRepo]);
+  }, [experiments, runs, onOpenView, onOpenCodeBranch, project.githubOwner, project.githubRepo]);
 
   if (experiments.length === 0) {
     return (
@@ -240,8 +249,6 @@ export function TreeView({
       minZoom={0.15}
       fitView
       fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
-      onNodeClick={(_, node) => onSelect(node.id)}
-      onPaneClick={() => onSelect(null)}
     >
       <Background variant={BackgroundVariant.Dots} color="var(--dots-strong)" gap={28} size={1.6} />
     </ReactFlow>
