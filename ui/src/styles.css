@@ -1411,22 +1411,28 @@ textarea::placeholder {
 
 /* ---- tree nodes (graph cards on the dotted canvas) ---- */
 
+/* Cards must stay `selectable` (ReactFlow sets pointer-events:none on nodes
+ * that are neither draggable nor selectable, which would kill the action
+ * buttons) — but selection itself means nothing here, so suppress its
+ * pointer cursor. Specificity beats RF's stylesheet. Focus/selected visuals
+ * need no override: nodesFocusable={false} removes the tab stop, RF's own
+ * CSS zeroes node focus outlines, and its .selected box-shadow only targets
+ * built-in node types, not custom ones. */
+.react-flow__node.react-flow__node-exp.selectable {
+  cursor: default;
+}
 .exp-node {
-  width: 240px;
+  /* Keep in sync with NODE_W in TreeView.tsx (layout math uses it). */
+  width: 264px;
   border: 1px solid var(--border);
   background: var(--base);
   padding: 10px 12px;
-  cursor: pointer;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
   font-size: 12.5px;
   transition: box-shadow 120ms ease;
 }
 .exp-node:hover {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-.exp-node.selected {
-  border-color: var(--text);
-  box-shadow: 0 0 0 1px var(--text);
 }
 .exp-node.live {
   border-color: var(--accent-teal);
@@ -1498,28 +1504,36 @@ textarea::placeholder {
   padding: 0 4px;
   flex-shrink: 0;
 }
-/* Direct view shortcuts (Changes / Terminal) at the card's foot. */
+/* Direct view shortcuts (Changes / Logs) at the card's foot. */
 .exp-node .node-actions {
   margin-top: 8px;
   padding-top: 6px;
   border-top: 1px solid var(--border-variant);
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
 }
 .exp-node .node-action {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 8px;
+  /* Tight: Changes + Logs + Code + the GitHub icon share one fixed-width row. */
+  padding: 3px 6px;
   font-size: 10.5px;
   font-weight: 700;
   color: var(--subtext);
   border-radius: 6px;
+  /* The GitHub shortcut is an <a> among sibling <button>s. */
+  text-decoration: none;
 }
 .exp-node .node-action:hover {
   color: var(--text);
   background: var(--surface);
+}
+/* External GitHub shortcut: icon-only, pinned to the card's far edge. */
+.exp-node .node-action-ext {
+  margin-left: auto;
+  padding: 3px 5px;
 }
 
 /* run-history squares (RUNS strip on node cards) */
@@ -1870,10 +1884,27 @@ textarea::placeholder {
 }
 
 /* commit picker (Changes tab) */
+.changes-branch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
 .commit-picker {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+/* Tiny caption naming what a header control is (Branch / Commit / Source) —
+ * two adjacent unlabeled monospace pickers are indistinguishable. */
+.ctl-label {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 .commit-picker select {
   flex: 1;
@@ -3355,7 +3386,7 @@ button.files-pill-link:hover {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 14px;
+  padding: 4px 12px;
   border-bottom: 1px solid var(--border-variant);
   color: var(--subtext);
   flex-shrink: 0;
@@ -3370,18 +3401,62 @@ button.files-pill-link:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Branch badge on committed-state file views (code browser in branch mode) —
+   a plain source label, not a BranchPill: the header shouldn't grow a second
+   navigation affordance next to the path. */
+.file-view-ref {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--border-variant);
+  border-radius: 6px;
+  padding: 1px 6px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 .file-view-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
   background: var(--base);
 }
+/* Gutter + code share one row so line numbers track content rows 1:1 — the
+   code never soft-wraps (min-width: max-content), so line N is row N. */
+.file-view-codewrap {
+  display: flex;
+  align-items: flex-start;
+  min-width: max-content;
+}
+/* Identical font metrics + vertical padding are the 1:1 row-alignment
+   invariant — one rule so they can't drift apart. */
+.file-view-gutter,
 .file-view-code {
   margin: 0;
-  padding: 14px 16px;
+  padding-top: 14px;
+  padding-bottom: 14px;
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.55;
+}
+.file-view-gutter {
+  padding-left: 14px;
+  padding-right: 10px;
+  text-align: right;
+  color: var(--muted);
+  user-select: none;
+  /* Stay visible while the code scrolls horizontally. */
+  position: sticky;
+  left: 0;
+  background: var(--base);
+  border-right: 1px solid var(--border-variant);
+  flex-shrink: 0;
+}
+.file-view-code {
+  padding-left: 16px;
+  padding-right: 16px;
   tab-size: 4;
   min-width: max-content;
 }
@@ -3700,4 +3775,77 @@ button.files-pill-link:hover {
 }
 .prompt-plan-open:hover {
   text-decoration: underline;
+}
+
+/* Code browser tab — project-clone / branch file tree in flow layout (NOT
+   .runs-table-wrap, which is position:absolute and would jump to (0,0)). */
+.code-tab {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.code-tab-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* Match .file-view-header so Code ↔ file tab switches don't jump chrome. */
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border-variant);
+  flex-shrink: 0;
+}
+.code-tab-select {
+  max-width: 280px;
+  min-width: 0;
+  /* Compact metrics so the header's height matches .file-view-header's
+   * (whose tallest child is a 28px icon-btn) — the base select rule's
+   * 6px/14px would make Code <-> file tab switches jump the divider. */
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.code-tab-note {
+  padding: 8px 16px;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border-variant);
+  flex-shrink: 0;
+}
+.code-tab-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--base);
+}
+.code-tree {
+  padding: 6px 0;
+  font-size: 12.5px;
+}
+.code-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+}
+.code-tree-row:hover {
+  background: var(--panel);
+}
+.code-tree-row > svg {
+  flex-shrink: 0;
+  color: var(--subtext);
+}
+.code-tree-row > svg.code-tree-chev {
+  color: var(--muted);
+}
+.code-tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

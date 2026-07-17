@@ -294,8 +294,10 @@ pub fn create_experiment_branch(
     Ok(())
 }
 
-/// Head SHA of a branch — the remote tip when it exists (that's what a job
-/// clones), the local ref otherwise.
+/// Head SHA of a branch — the *remote* tip when it exists (that's what a job
+/// clones), the local ref otherwise. The opposite preference of
+/// `resolve_branch_commit`, which serves the code browser and wants the
+/// agent's not-yet-pushed local work.
 pub fn branch_head_sha(repo_path: &Path, branch: &str) -> Result<String> {
     let remote = format!("refs/remotes/origin/{branch}");
     if let Ok(sha) = git(Some(repo_path), &["rev-parse", &remote]) {
@@ -472,9 +474,7 @@ pub fn list_commits(repo: &Path, branch: &str, limit: usize) -> Result<Vec<Commi
 /// Uncommitted changes in the clone: tracked edits vs HEAD plus untracked
 /// files rendered as new-file diffs. Returns (current branch, diff).
 pub fn working_tree_diff(repo: &Path) -> Result<(Option<String>, DiffPayload)> {
-    let branch = git(Some(repo), &["rev-parse", "--abbrev-ref", "HEAD"])
-        .ok()
-        .filter(|b| b != "HEAD");
+    let branch = current_branch(repo);
     let mut bytes = git_bytes(repo, &["--no-pager", "diff", "HEAD"], &[1])?;
     let untracked = git(Some(repo), &["ls-files", "--others", "--exclude-standard"])?;
     for f in untracked.lines().filter(|l| !l.is_empty()) {
@@ -490,4 +490,155 @@ pub fn working_tree_diff(repo: &Path) -> Result<(Option<String>, DiffPayload)> {
         }
     }
     Ok((branch, cap_diff(bytes)))
+}
+
+/// The checked-out branch name, or `None` when detached (`rev-parse
+/// --abbrev-ref HEAD` prints the literal `HEAD` — e.g. a fresh worktree
+/// before the agent checks out its branch) or when rev-parse fails outright
+/// (unborn HEAD in an empty repo). Never errors — no branch is an answer.
+pub fn current_branch(repo: &Path) -> Option<String> {
+    git(Some(repo), &["rev-parse", "--abbrev-ref", "HEAD"])
+        .ok()
+        .filter(|b| b != "HEAD" && !b.is_empty())
+}
+
+/// NUL-separated git output (`-z` flags) → lossy-decoded strings, empties
+/// dropped.
+fn split_nul(bytes: &[u8]) -> Vec<String> {
+    bytes
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect()
+}
+
+/// Every path in the checkout that git would show as tracked or
+/// untracked-but-not-ignored (`git ls-files --cached --others
+/// --exclude-standard -z`). NUL-separated so non-ASCII paths aren't quoted;
+/// gitignored trees (`target/`, `node_modules/`, `.git/`) drop out for free.
+/// Repo-relative, unsorted.
+pub fn list_worktree_files(repo: &Path) -> Result<Vec<String>> {
+    let bytes = git_bytes(
+        repo,
+        &[
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+        &[],
+    )?;
+    let mut entries = split_nul(&bytes);
+    // `--others` reports a nested git repo as `dir/` — a directory, nothing
+    // servable as a file; drop those here so every client benefits.
+    entries.retain(|e| !e.ends_with('/'));
+    Ok(entries)
+}
+
+/// Resolve a branch name to its commit sha — the *local* ref first, then
+/// origin's: the code browser wants the agent's latest work, which lives
+/// locally before any push (the opposite preference of `branch_head_sha`,
+/// which serves jobs that clone from the remote; `resolve_commitish` is the
+/// diff-side sibling that also accepts raw shas). `Ok(None)` when neither
+/// exists. Only real branch names are accepted: rev-suffix expressions
+/// (`@{...}`, `^`, `~`, `:`, whitespace) are rejected up front, and the
+/// leading-`-` check is belt-and-braces — the `refs/heads/` prefix already
+/// keeps the name out of option position.
+pub fn resolve_branch_commit(repo: &Path, name: &str) -> Result<Option<String>> {
+    let suspicious = name.is_empty()
+        || name.starts_with('-')
+        || name.contains("@{")
+        || name.contains(['^', '~', ':'])
+        || name.chars().any(char::is_whitespace);
+    if suspicious {
+        return Ok(None);
+    }
+    for prefix in ["refs/heads/", "refs/remotes/origin/"] {
+        let full = format!("{prefix}{name}");
+        if let Ok(sha) = git(Some(repo), &["rev-parse", "--verify", "--quiet", &full]) {
+            if !sha.is_empty() {
+                return Ok(Some(sha));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Every path in the tree of a commit (`git ls-tree -r -z --name-only`) —
+/// the committed state, independent of any checkout. Repo-relative, unsorted.
+pub fn list_tree_files(repo: &Path, sha: &str) -> Result<Vec<String>> {
+    let bytes = git_bytes(
+        repo,
+        &["ls-tree", "-r", "-z", "--name-only", sha, "--"],
+        &[],
+    )?;
+    Ok(split_nul(&bytes))
+}
+
+/// A file's committed content at `<sha>:<path>`, read from a streamed
+/// `git cat-file blob` and capped at `limit` bytes — a multi-GB committed
+/// blob costs one pipe buffer, not one allocation (unlike `file_at`, which
+/// is fine for its known-small callers). Existence is checked first with
+/// `cat-file -e` (exit code only, no error-message parsing): `Ok(None)`
+/// when the path isn't in that tree. Returns `(content, truncated)`,
+/// lossy-decoded, byte-exact up to the cap — no trimming.
+pub fn file_at_capped(
+    repo: &Path,
+    sha: &str,
+    path: &str,
+    limit: u64,
+) -> Result<Option<(String, bool)>> {
+    use std::process::Stdio;
+    let spec = format!("{sha}:{path}");
+    let exists = Command::new("git")
+        .current_dir(repo)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .args(["cat-file", "-e", &spec])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| anyhow!("Could not run git: {}", e))?;
+    if !exists.success() {
+        return Ok(None);
+    }
+    let mut child = Command::new("git")
+        .current_dir(repo)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .args(["cat-file", "blob", &spec])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow!("Could not run git: {}", e))?;
+    let mut buf = Vec::new();
+    let read = {
+        use std::io::Read as _;
+        let stdout = child.stdout.take().expect("stdout was piped");
+        stdout.take(limit + 1).read_to_end(&mut buf)
+    };
+    let truncated = buf.len() as u64 > limit;
+    // Reap the child before propagating any read error — no zombies. Kill
+    // only when it may still be streaming (read error, or we stopped at the
+    // cap): after a complete read EOF means git closed stdout and exits on
+    // its own, and killing it then could race its natural exit into a bogus
+    // signal-death status.
+    if read.is_err() || truncated {
+        let _ = child.kill();
+    }
+    let status = child.wait();
+    read.map_err(|e| anyhow!("read failed: {}", e))?;
+    if !truncated {
+        // A cat-file failure after the `-e` probe (the path names a tree via
+        // a crafted request, or the object vanished) must not masquerade as
+        // an empty file. When truncated we killed it — any status goes.
+        let status = status.map_err(|e| anyhow!("git cat-file blob: {}", e))?;
+        if !status.success() {
+            return Err(anyhow!("git cat-file blob {spec} failed"));
+        }
+    }
+    buf.truncate(limit as usize);
+    Ok(Some((
+        String::from_utf8_lossy(&buf).into_owned(),
+        truncated,
+    )))
 }
