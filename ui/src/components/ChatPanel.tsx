@@ -1495,7 +1495,11 @@ export function ChatPanel({
         {/* Inside the composer so the composer's popovers (mode/model pickers,
             z 50 within this stacking context) layer above the strip — as a
             sibling, the composer's own z-index: 4 capped them below it. */}
-        {pendingPlan && !(revisingPlan && pendingPlan.promptId === revisingPlan.promptId) ? (
+        {/* Hidden while a submitted revision is in flight (the transcript's
+            Working… spinner covers the feedback) so the outgoing card never
+            sits there looking actionable; the revised card swaps in when it
+            arrives (effect above). */}
+        {pendingPlan && !(revisingPlan && pendingPlan.promptId === revisingPlan.promptId) && (
           <PlanStrip
             synthesized={pendingPlan.synthesized}
             onView={() => openPlan?.(pendingPlan.plan, pendingPlan.promptId)}
@@ -1512,13 +1516,7 @@ export function ChatPanel({
               respond({ promptId: pendingPlan.promptId, approve: false, note });
             }}
           />
-        ) : revisingPlan && busy ? (
-          // In-place acknowledgment while the model rewrites the plan; the
-          // replacement card swaps in when it arrives (effect above).
-          <div className="plan-strip plan-strip-pending">
-            <span className="spinner" /> Revising the plan…
-          </div>
-        ) : null}
+        )}
         <div className="composer-box">
           {skillMenuOpen && (
             <SkillMenu

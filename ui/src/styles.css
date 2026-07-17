@@ -3701,15 +3701,6 @@ button.files-pill-link:hover {
 .plan-strip-spacer {
   flex: 1;
 }
-/* Post-submit acknowledgment while the model rewrites the plan. */
-.plan-strip-pending {
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-  color: var(--subtext);
-  font-size: 12.5px;
-  font-style: italic;
-}
 /* Revise mode: a standalone bordered textarea (the strip itself has none —
    unlike the borderless composer textarea, this needs to read as its own
    input), focus ring on :focus like any other text field. */
