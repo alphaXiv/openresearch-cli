@@ -4,8 +4,10 @@
 //! multi-turn via `--resume` against Claude Code's own session store. The
 //! playbook rides `--append-system-prompt-file`; the permission mode is
 //! `--permission-mode` from the session's setting (`auto`/`bypass` — see
-//! `options`). AskUserQuestion / ExitPlanMode surface as interactive cards; the
-//! turn ends on them and the user's answer resumes the session.
+//! `options`). AskUserQuestion / ExitPlanMode surface as interactive cards: the
+//! turn ends on them and the user's answer resumes the session — except in
+//! plan mode, where the mcp-gate bridge holds both open mid-turn and the
+//! answer continues the same turn.
 //!
 //! Detection: `~/.claude.json` carries the signed-in OAuth account (no secrets
 //! read); `ANTHROPIC_API_KEY` is the api-key fallback.
@@ -224,7 +226,11 @@ impl Harness for ClaudeCode {
                     ctx.host.settle_permission(
                         native_id,
                         crate::local::chat::PermissionDecision::Deny {
-                            message: format!("The user answered: {text}"),
+                            message: format!(
+                                "The user answered: {text}. Treat this as their answer and \
+                                 continue — do not ask this question again. (Only the first \
+                                 question of the call was shown; ask any others separately.)"
+                            ),
                         },
                     )?;
                     Ok(ResumeAction::Handled)
@@ -377,7 +383,9 @@ fn claude_effort(level: Option<&str>) -> Option<&str> {
 /// resume strategy: a prompt ends the turn and the answer becomes a *new user
 /// message* that continues via `--resume`. `resume_mode` on the answer is a
 /// harness-agnostic wire id; unknown/absent ids fall through to the per-kind
-/// default (or the session's mode, applied downstream).
+/// default (or the session's mode, applied downstream). The question arm is
+/// also reused as a plain text builder by the bridge's mid-turn question
+/// resume (the denial message that carries the answer).
 fn synthesize_resume(kind: &str, req: &PromptAnswer) -> (String, Option<PermissionMode>) {
     let note = req.note.as_deref().filter(|s| !s.trim().is_empty());
     let chosen = req.resume_mode.as_deref().and_then(PermissionMode::from_id);
@@ -549,7 +557,8 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     ])
     // AskUserQuestion and ExitPlanMode are now surfaced to the user as
     // interactive cards (see plan_prompt / question_prompt) instead of being
-    // disallowed; the turn ends on them and the answer resumes the session.
+    // disallowed; the turn ends on them and the answer resumes the session —
+    // unless the plan-mode bridge is active, which holds them open mid-turn.
     .arg("--append-system-prompt-file")
     .arg(&playbook)
     .current_dir(&repo)
@@ -794,8 +803,10 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     // and no ExitPlanMode call. Headless leaves no way out of plan mode then —
     // only a plan-card answer switches the resume mode, so a chat "yes" would
     // resume still read-only. Synthesize a card from the final text so
-    // approval always has a handle. A card the bridge surfaced mid-turn counts
-    // as "saw a prompt" (e.g. keep-planning continued this same turn).
+    // approval always has a handle. A plan/permission card the bridge surfaced
+    // mid-turn counts as "saw a prompt" (e.g. keep-planning continued this
+    // same turn); a mid-turn *question* deliberately does not — its answer is
+    // no exit recourse, and the turn may still end with a texty plan.
     let saw_prompt = saw_prompt || ctx.host.take_bridge_prompted(&ctx.session_id);
     if should_synthesize_plan(plan_mode, saw_prompt, turn_errored, &last_text) {
         ctx.upsert_part(WirePart::prompt(

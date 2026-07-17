@@ -609,6 +609,9 @@ export interface ChatPrompt {
   answers?: string[];
   approved?: boolean;
   note?: string;
+  /** Backend resume routing id. Presence marks a HELD mid-turn card (the
+   * turn is blocked open waiting on this answer); absent on end-turn cards. */
+  nativeId?: string;
 }
 
 export interface ChatPart {

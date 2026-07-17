@@ -102,9 +102,11 @@ pub struct WirePrompt {
     #[serde(default)]
     pub multi_select: bool,
     /// The harness-native id used to reply over a live protocol (opencode's
-    /// permission/question request id). Internal to the backend resume path —
-    /// the UI never reads it and only echoes the `WirePart` id. `None` for
-    /// end-turn harnesses (Claude), which resume by message, not by reply id.
+    /// permission/question request id, the Claude bridge's held request id).
+    /// The backend resume path routes on it; the UI reads only its *presence*
+    /// (a held mid-turn card — the turn is blocked on this answer) and echoes
+    /// the `WirePart` id when answering. `None` for end-turn cards, which
+    /// resume by message, not by reply id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_id: Option<String>,
     /// Answer echo, stamped when the user resolves the card so the collapsed
@@ -587,12 +589,14 @@ impl ChatHost {
                 native_id: Some(prompt_id.clone()),
                 ..Default::default()
             }
-        } else if let Some(question) = (tool_name == "AskUserQuestion")
-            .then(|| crate::local::harness::question_prompt(tool_name, Some(&tool_input)))
-            .flatten()
+        } else if let Some(question) =
+            crate::local::harness::question_prompt(tool_name, Some(&tool_input))
+                .filter(|q| !q.options.is_empty())
         {
-            // Malformed question input falls through to a permission card
-            // (the user can still allow/deny the raw tool call).
+            // Malformed question input — unparseable, or no options to click
+            // (the held card has no free-text input, so it would be
+            // unanswerable) — falls through to a permission card instead (the
+            // user can still allow/deny the raw tool call).
             WirePrompt {
                 native_id: Some(prompt_id.clone()),
                 ..question
@@ -624,10 +628,20 @@ impl ChatHost {
             created_at: msg.created_at,
         })?;
         self.emit("chat.message", message_json(&msg, session_id));
-        self.bridge_prompted
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string());
+        // A question card answered mid-turn is NOT an exit recourse from plan
+        // mode, so it must not count as "saw a prompt" — a turn that asks a
+        // question and then ends with its plan as plain text still needs the
+        // synthesized plan card. Plan/permission cards keep counting.
+        let is_question = msg.parts[0]
+            .prompt
+            .as_ref()
+            .is_some_and(|p| p.kind == "question");
+        if !is_question {
+            self.bridge_prompted
+                .lock()
+                .unwrap()
+                .insert(session_id.to_string());
+        }
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending_permissions.lock().unwrap().insert(

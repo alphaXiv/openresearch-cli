@@ -1394,11 +1394,16 @@ export function ChatPanel({
               />
             ))}
             {busy &&
-              // A busy turn whose newest message is an unanswered card is not
-              // "working" — it's held open waiting on the user (a bridge-held
-              // question/permission/plan). Say so instead of spinning.
-              (messages[messages.length - 1]?.parts.some(
-                (p) => p.type === "prompt" && p.prompt && !p.prompt.resolved,
+              // A busy turn with an unanswered HELD card (nativeId — a
+              // bridge/inline mid-turn request) is not "working" — it's
+              // blocked open waiting on the user. Say so instead of spinning.
+              // End-turn cards (no nativeId) never coexist with a busy turn
+              // of their own, so keying on nativeId avoids false positives
+              // from stale unanswered cards of earlier turns.
+              (messages.some((m) =>
+                m.parts.some(
+                  (p) => p.type === "prompt" && p.prompt && !p.prompt.resolved && p.prompt.nativeId,
+                ),
               ) ? (
                 <div className="working awaiting">Waiting for your input…</div>
               ) : (
