@@ -1,3 +1,8 @@
+---
+name: orx-git
+description: "Read, edit, and diff a node's code with plain git in the cache-dir clone (or your session worktree): sync, commit, push before running."
+---
+
 Every experiment node **is a git branch** (`orx/<slug>`) on the project's GitHub
 repo — `orx create-experiment` prints it. There is no dev box and no `orx` code
 command: the **local clone in the cache dir is the standard way to interface

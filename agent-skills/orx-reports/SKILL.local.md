@@ -1,3 +1,8 @@
+---
+name: orx-reports
+description: "Write research reports into the local project's files dir (tree-mirroring folder layout) — they appear in the dashboard's Files tab."
+---
+
 In local mode (`orx up`), reports are written **directly into the project's files
 dir** — there is no upload step. Anything under the files dir (reports, figures,
 data files) appears in the dashboard's Files tab immediately, grouped by

@@ -1,3 +1,8 @@
+---
+name: orx-compute-k8s
+description: "Run an experiment on your Kubernetes cluster (`orx exp run --backend k8s`): the manifest contract orx enforces at submit."
+---
+
 **Use `--backend k8s` ONLY when the user explicitly asks to run on their
 cluster** ("run this on k8s", "use our cluster") or it is the configured
 default target. Local projects (`orx up`) only for now. Auth comes from the

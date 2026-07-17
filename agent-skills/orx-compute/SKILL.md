@@ -1,3 +1,8 @@
+---
+name: orx-compute
+description: "Launch experiment runs on compute with `orx exp run`: managed GPU/CPU, hf/modal/ssh/local backends, sizing, and waiting on runs."
+---
+
 Each experiment node has a **run command** (the shell command that trains/evaluates
 it) and is launched on **compute** you choose at run time. Compute is *not* stored
 on the node — you pick a GPU, a CPU-only instance, or an existing sandbox each time

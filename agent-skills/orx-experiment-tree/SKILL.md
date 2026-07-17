@@ -1,3 +1,8 @@
+---
+name: orx-experiment-tree
+description: "The experiment-tree model and the auto-research loop: shape the tree (stacked bushes), branch/launch/wait/promote, and `orx exp desc`."
+---
+
 A project is a **tree of experiment nodes**. The root (**baseline**) holds the
 starting code and a **run command** — the single shell command that trains or
 evaluates the node and writes an `EVAL.md` with its results. Every other node is a

@@ -1,3 +1,8 @@
+---
+name: orx-evidence
+description: "Analyze results in local mode: run logs are the only channel (`orx logs`) — make the run print the evidence you'll need."
+---
+
 In local mode (`orx up`) run **logs are the only evidence channel** — there is no
 `artifacts`, `artifact`, `query`, `chart`, `search-logs`, or `wandb`. Make the run
 command print everything you'll need to judge the result, then read it back with

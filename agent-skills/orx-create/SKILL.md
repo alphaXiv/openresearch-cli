@@ -1,3 +1,8 @@
+---
+name: orx-create
+description: "Create a project (`orx create-project`), seed an empty baseline from existing code, and add experiment nodes (`orx create-experiment`)."
+---
+
 ## `orx create-project` — start a new project
 
 Creates a project in an organization (org ids are printed next to the org names

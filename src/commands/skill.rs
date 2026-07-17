@@ -12,7 +12,7 @@ pub async fn run(args: crate::SkillArgs) -> Result<()> {
         // First: a bundled module (with or without the `orx-` prefix). These
         // ship in the binary, so they resolve offline and never drift.
         if let Some(skill) = agent_skills::find(&path) {
-            println!("{}", agent_skills::render(skill));
+            println!("{}", skill.content.trim_end());
             return Ok(());
         }
         // Otherwise fetch the canonical doc from the API (same docs the assistant

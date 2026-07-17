@@ -127,7 +127,7 @@ fn global_skills_dir(harness: &dyn Harness) -> Option<PathBuf> {
 /// Write the full set of modular `orx` skills into the harness's global skills
 /// dir (`--full`). Overwrites in place; returns the `SKILL.md` paths written.
 async fn write_full_skills(harness: &dyn Harness) -> Result<Vec<PathBuf>> {
-    use crate::local::agent_skills::{render, skills, SkillSet};
+    use crate::local::agent_skills::{skills, SkillSet};
 
     let base = global_skills_dir(harness)
         .ok_or_else(|| anyhow!("{} has no global skills dir", harness.name()))?;
@@ -136,7 +136,7 @@ async fn write_full_skills(harness: &dyn Harness) -> Result<Vec<PathBuf>> {
         let dir = base.join(skill.name);
         fs::create_dir_all(&dir).await?;
         let path = dir.join("SKILL.md");
-        fs::write(&path, render(skill)).await?;
+        fs::write(&path, skill.content).await?;
         written.push(path);
     }
     Ok(written)

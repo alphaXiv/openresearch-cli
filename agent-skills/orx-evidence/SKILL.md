@@ -1,3 +1,8 @@
+---
+name: orx-evidence
+description: "Analyze results: run logs, `orx search-logs`, text artifacts, W&B charts (`orx chart wandb`), and the `orx query` evidence DB."
+---
+
 ## Reading & searching run logs — `orx logs` / `orx search-logs`
 
 A run's terminal output (the PTY stream) is captured live while it runs and

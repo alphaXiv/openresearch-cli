@@ -1,3 +1,8 @@
+---
+name: orx-reports
+description: "Write a research report and publish it with `orx report upload` (list/show/download too) so it appears on the project page."
+---
+
 When a line of work concludes, write up the experiment tree as a local markdown
 report and publish it to the project with `orx report upload` — it then shows up
 on the project page (and its public view) with images inline.

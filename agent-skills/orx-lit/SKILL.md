@@ -1,3 +1,8 @@
+---
+name: orx-lit
+description: "Search literature and read papers via alphaXiv (`orx lit` / `orx paper`) — ground hypotheses and find code to seed a baseline from."
+---
+
 These tap **alphaXiv's public corpus** (2.5M+ arXiv papers: CS, math, physics,
 stats, q-bio/fin, EE — not PubMed/biomed). They need **no `orx login`** and hit
 alphaXiv hosts, not the OpenResearch API. Use them to ground research in real
