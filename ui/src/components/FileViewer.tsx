@@ -1,7 +1,7 @@
-// Mirror of openresearch.sh's AgentFileView: one file from the project
-// checkout — the chat session's worktree when the tab carries a session, else
-// the hub clone — refractor-highlighted, opened as a right-pane tab from chat
-// tool rows.
+// Mirror of openresearch.sh's AgentFileView: one file from the project —
+// a branch's committed copy when the tab carries a ref, else the chat
+// session's worktree, else the hub clone — refractor-highlighted, opened as
+// a right-pane tab from chat tool rows or the code browser.
 
 import { Code, FileText, RotateCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -18,14 +18,18 @@ export function FileViewer({
   projectId,
   path,
   sessionId,
+  gitRef,
   onOpenFile,
 }: {
   projectId: string;
   path: string;
   /** Chat session whose worktree holds the file (absent → hub clone). */
   sessionId?: string;
+  /** Branch whose committed copy to show — overrides the live checkout.
+   * (Named gitRef because `ref` is reserved on React components.) */
+  gitRef?: string;
   /** Open a linked file as another tab (rendered-markdown links). */
-  onOpenFile?: (path: string, sessionId?: string) => void;
+  onOpenFile?: (path: string, sessionId?: string, ref?: string) => void;
 }) {
   const [data, setData] = useState<ProjectFile | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -38,7 +42,7 @@ export function FileViewer({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    getProjectFile(projectId, path, sessionId)
+    getProjectFile(projectId, path, { sessionId, ref: gitRef })
       .then((d) => {
         if (cancelled) return;
         setData(d);
@@ -53,12 +57,26 @@ export function FileViewer({
     return () => {
       cancelled = true;
     };
-  }, [projectId, path, sessionId, nonce]);
+  }, [projectId, path, sessionId, gitRef, nonce]);
 
   const rendered = useMemo(
     () => (data && !data.notFound ? highlightFile(data.content, path) : null),
     [data, path],
   );
+
+  // One number per source line; a trailing newline ends a line, it doesn't
+  // start an empty one.
+  const lineCount =
+    data && !data.notFound && data.content
+      ? data.content.split("\n").length - (data.content.endsWith("\n") ? 1 : 0)
+      : 0;
+
+  const notFoundCopy = (d: ProjectFile) => {
+    if (gitRef) return `File not found on branch ${gitRef}.`;
+    if (sessionId && d.root === "clone")
+      return "This session's worktree isn't available, and the file isn't in the project clone.";
+    return `File not found in the ${d.root === "worktree" ? "session's worktree" : "project clone"}.`;
+  };
 
   return (
     <div className="file-view">
@@ -67,6 +85,11 @@ export function FileViewer({
         <code className="file-view-path" title={path}>
           {path}
         </code>
+        {gitRef && (
+          <code className="file-view-ref" title={`Committed state of ${gitRef}`}>
+            {gitRef}
+          </code>
+        )}
         {isMarkdown && (
           <button
             className={`icon-btn ${showSource ? "active" : ""}`}
@@ -92,14 +115,10 @@ export function FileViewer({
         ) : data === null ? (
           <div className="file-view-note">Loading…</div>
         ) : data.notFound ? (
-          <div className="file-view-note">
-            {sessionId && data.root === "clone"
-              ? "This session's worktree isn't available, and the file isn't in the project clone."
-              : `File not found in the ${data.root === "worktree" ? "session's worktree" : "project clone"}.`}
-          </div>
+          <div className="file-view-note">{notFoundCopy(data)}</div>
         ) : (
           <>
-            {sessionId && data.root === "clone" && (
+            {!gitRef && sessionId && data.root === "clone" && (
               <div className="file-view-note">
                 This session's worktree isn't available — showing the project clone's copy.
               </div>
@@ -108,13 +127,22 @@ export function FileViewer({
               <div className="file-view-md">
                 <Md
                   text={data.content}
-                  onOpenFile={onOpenFile && ((p) => onOpenFile(p, sessionId))}
+                  onOpenFile={onOpenFile && ((p) => onOpenFile(p, sessionId, gitRef))}
                 />
               </div>
             ) : (
-              <pre className="file-view-code">
-                <code>{rendered}</code>
-              </pre>
+              <div className="file-view-codewrap">
+                {/* No numbers for an empty file — an empty gutter is just a
+                    stray bordered strip. */}
+                {lineCount > 0 && (
+                  <pre className="file-view-gutter" aria-hidden="true">
+                    {Array.from({ length: lineCount }, (_, i) => i + 1).join("\n")}
+                  </pre>
+                )}
+                <pre className="file-view-code">
+                  <code>{rendered}</code>
+                </pre>
+              </div>
             )}
             {data.truncated && (
               <div className="file-view-note">File truncated — showing the first 512 KB.</div>
