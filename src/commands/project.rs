@@ -21,8 +21,8 @@ pub async fn run(args: crate::ProjectArgs) -> Result<()> {
         ProjectCommand::View { project_id } | ProjectCommand::Edit { project_id, .. } => project_id,
     };
     let store = crate::store::Store::open()?;
-    if let ProjectRef::Local(project) = resolve_project(&store, project_id)? {
-        return match args.command {
+    match resolve_project(&store, project_id)? {
+        ProjectRef::Local(project) => match args.command {
             ProjectCommand::View { .. } => view_local(&store, &project),
             ProjectCommand::Edit {
                 name,
@@ -40,8 +40,13 @@ pub async fn run(args: crate::ProjectArgs) -> Result<()> {
                 }
                 edit_local(&store, *project, name, run_command)
             }
-        };
+        },
+        ProjectRef::Server(_) => run_server(args).await,
     }
+}
+
+/// Server-mode `orx project` via the api.
+async fn run_server(args: crate::ProjectArgs) -> Result<()> {
     // The server project PATCH carries no run command field — refuse before
     // even asking for credentials.
     if let ProjectCommand::Edit {

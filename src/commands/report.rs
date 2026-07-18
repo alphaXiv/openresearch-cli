@@ -24,9 +24,14 @@ pub async fn run(args: crate::ReportArgs) -> Result<()> {
         | crate::ReportCommand::Download { project_id, .. } => project_id,
     };
     let store = crate::store::Store::open()?;
-    if let ProjectRef::Local(project) = resolve_project(&store, project_id)? {
-        return local_guidance(&project);
+    match resolve_project(&store, project_id)? {
+        ProjectRef::Local(project) => local_guidance(&project),
+        ProjectRef::Server(_) => run_server(args).await,
     }
+}
+
+/// Server-mode `orx report` via the api.
+async fn run_server(args: crate::ReportArgs) -> Result<()> {
     match args.command {
         crate::ReportCommand::Upload {
             project_id,

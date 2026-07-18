@@ -4,12 +4,13 @@
 //! The detection rule is documented in `local/mod.rs`: an experiment/run is
 //! "local" iff its experiment id exists in `local_experiments`. Every dual-mode
 //! and reject-guard command dispatches through here so the rule lives in one
-//! place. Note that store membership alone is NOT enough for runs — server-mode
-//! HF runs also live in the `runs` table — so `resolve_run` reuses the existing
-//! `local::local_run` correctness test rather than re-deriving it.
+//! place. `resolve_project` keys on `local_projects`, `resolve_experiment` on
+//! `local_experiments`. Note that store membership alone is NOT enough for runs
+//! — server-mode HF runs also live in the `runs` table — so `resolve_run` reuses
+//! the existing `local::local_run` correctness test rather than re-deriving it.
 
 use crate::error::Result;
-use crate::local::model::LocalProject;
+use crate::local::model::{LocalExperiment, LocalProject};
 use crate::store::{Store, StoredRun};
 
 /// Which control plane owns a given project id.
@@ -20,6 +21,17 @@ pub enum ProjectRef {
     /// `Server`).
     Local(Box<LocalProject>),
     /// The id is not local; treat it as a server (api) project.
+    Server(String),
+}
+
+/// Which control plane owns a given experiment id.
+pub enum ExperimentRef {
+    /// The id resolves to a row in `local_experiments`; the fetched experiment
+    /// is carried through so the local arm needs no second store lookup. Boxed
+    /// so the enum isn't dominated by `LocalExperiment`'s size (the common arm
+    /// is `Server`).
+    Local(Box<LocalExperiment>),
+    /// The id is not local; treat it as a server (api) experiment.
     Server(String),
 }
 
@@ -52,6 +64,14 @@ pub fn resolve_project(store: &Store, project_id: &str) -> Result<ProjectRef> {
     match store.get_local_project(project_id)? {
         Some(p) => Ok(ProjectRef::Local(Box::new(p))),
         None => Ok(ProjectRef::Server(project_id.to_string())),
+    }
+}
+
+/// Decide once: an experiment id is local iff it names a known local experiment.
+pub fn resolve_experiment(store: &Store, exp_id: &str) -> Result<ExperimentRef> {
+    match store.get_local_experiment(exp_id)? {
+        Some(e) => Ok(ExperimentRef::Local(Box::new(e))),
+        None => Ok(ExperimentRef::Server(exp_id.to_string())),
     }
 }
 
@@ -148,6 +168,28 @@ mod tests {
         match resolve_project(&store, "nope").unwrap() {
             ProjectRef::Server(id) => assert_eq!(id, "nope"),
             ProjectRef::Local(_) => panic!("unknown id must resolve Server"),
+        }
+    }
+
+    #[test]
+    fn local_experiment_id_resolves_local() {
+        let store = temp_store();
+        store.create_local_project(&project("p1")).unwrap();
+        store
+            .create_local_experiment(&experiment("e1", "p1"))
+            .unwrap();
+        match resolve_experiment(&store, "e1").unwrap() {
+            ExperimentRef::Local(e) => assert_eq!(e.id, "e1"),
+            ExperimentRef::Server(_) => panic!("known local experiment must resolve Local"),
+        }
+    }
+
+    #[test]
+    fn unknown_experiment_id_resolves_server() {
+        let store = temp_store();
+        match resolve_experiment(&store, "nope").unwrap() {
+            ExperimentRef::Server(id) => assert_eq!(id, "nope"),
+            ExperimentRef::Local(_) => panic!("unknown id must resolve Server"),
         }
     }
 

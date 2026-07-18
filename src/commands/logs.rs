@@ -3,7 +3,7 @@ use std::io::{Read as _, Seek as _, Write};
 use crate::client::read_run_log;
 use crate::error::require_credentials;
 use crate::error::Result;
-use crate::local::resolve::resolve_run;
+use crate::local::resolve::{resolve_run, RunRef};
 use crate::store::{log_path, Store};
 
 /// Parses a string the way JS `Number(s)` does for our purposes and returns it
@@ -62,21 +62,23 @@ pub async fn run(args: crate::LogsArgs) -> Result<()> {
     // Local run (orx up): the log is a plain file beside the store — read it
     // directly, no api / login needed.
     let store = Store::open()?;
-    if resolve_run(&store, &args.run_id)?.is_local() {
-        return run_local(&args.run_id, mode, max_bytes, start_byte, end_byte);
+    match resolve_run(&store, &args.run_id)? {
+        RunRef::Local(_) => run_local(&args.run_id, mode, max_bytes, start_byte, end_byte),
+        RunRef::Server(_) => run_server(&args.run_id, mode, max_bytes, start_byte, end_byte).await,
     }
+}
 
+/// Server-mode log read via the api.
+async fn run_server(
+    run_id: &str,
+    mode: &str,
+    max_bytes: Option<i64>,
+    start_byte: Option<i64>,
+    end_byte: Option<i64>,
+) -> Result<()> {
     let creds = require_credentials().await;
 
-    let log = read_run_log(
-        &creds,
-        &args.run_id,
-        Some(mode),
-        max_bytes,
-        start_byte,
-        end_byte,
-    )
-    .await?;
+    let log = read_run_log(&creds, run_id, Some(mode), max_bytes, start_byte, end_byte).await?;
 
     // The log itself goes to stdout (pipe-friendly); metadata to stderr so it
     // doesn't pollute a `| grep` or a redirect.
