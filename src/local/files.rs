@@ -8,7 +8,9 @@
 //! every top-level folder corresponds to an experiment, named by its slug —
 //! `<slug>/report.md` plus figures. The reserved `project/` namespace holds
 //! cross-experiment syntheses and anything not tied to one node (its name is
-//! kept out of the experiment-slug space by `experiments::unique_slug`).
+//! kept out of the experiment-slug space by `experiments::unique_slug`),
+//! including `project/memory.md` — the agent's persisted project memory,
+//! inlined into the playbook (see `memory.rs`).
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
