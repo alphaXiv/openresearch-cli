@@ -677,6 +677,14 @@ pub struct InstallSkillsArgs {
     /// or `all`. Defaults to every agent already set up on this machine.
     #[arg(long)]
     pub agent: Option<String>,
+
+    /// Also install the full set of modular `orx` skills (~8 always-listed
+    /// skills) into the agent's global skills dir, not just the thin shim.
+    /// Intended for dedicated/orx-only environments (e.g. the cloud box) — in a
+    /// general-purpose setup the always-on skills add noise, so the default is
+    /// the shim alone.
+    #[arg(long)]
+    pub full: bool,
 }
 
 #[derive(Args, Debug)]

@@ -8,6 +8,7 @@
 //! in `local_experiments`. CLI commands check the local store FIRST and only
 //! require credentials on the server path.
 
+pub mod agent_skills;
 pub mod chat;
 pub mod codex;
 pub mod datadir;

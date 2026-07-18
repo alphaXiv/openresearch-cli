@@ -145,6 +145,10 @@ impl Harness for OpenCode {
         // OpenCode reads the same SKILL.md format as Claude Code.
         Some(super::CLAUDE_SKILL)
     }
+
+    fn session_skills_dir(&self) -> Option<&'static str> {
+        Some(".opencode/skills")
+    }
 }
 
 fn opencode_auth_path() -> Option<PathBuf> {
