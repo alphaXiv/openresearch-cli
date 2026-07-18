@@ -1,6 +1,6 @@
 ---
 name: orx-git
-description: "Read, edit, and diff a node's code with plain git in the cache-dir clone (or your session worktree): sync, commit, push before running."
+description: "Read, edit, and diff a node's code with plain git: sync, commit, and push before running. Use whenever you touch experiment code — before editing any branch, when a checkout or push fails, when comparing two nodes' code, or when a run seems to have picked up stale code."
 ---
 
 Every experiment node **is a git branch** (`orx/<slug>`) on the project's GitHub

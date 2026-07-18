@@ -1,6 +1,6 @@
 ---
 name: orx-reports
-description: "Write research reports into the local project's files dir (tree-mirroring folder layout) — they appear in the dashboard's Files tab."
+description: "Write research reports into the local project's files dir (tree-mirroring folder layout) so they appear in the dashboard's Files tab. Use when a line of work concludes, when the user asks for a write-up, summary, comparison, or figures, or before ending a long task — findings not written down are lost."
 ---
 
 In local mode (`orx up`), reports are written **directly into the project's files

@@ -1,6 +1,6 @@
 ---
 name: orx-create
-description: "Create a project (`orx create-project`), seed an empty baseline from existing code, and add experiment nodes (`orx create-experiment`)."
+description: "Create a project (`orx create-project`), seed an empty baseline from existing code, and add experiment nodes (`orx create-experiment`). Use when starting any new project or experiment, when the tree is empty, or when unsure how to bind a repo or set the run command."
 ---
 
 ## `orx create-project` — start a new project

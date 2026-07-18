@@ -1,6 +1,6 @@
 ---
 name: orx-reports
-description: "Write a research report and publish it with `orx report upload` (list/show/download too) so it appears on the project page."
+description: "Write a research report and publish it with `orx report upload` (list/show/download too) so it appears on the project page. Use when a line of work concludes, when the user asks for a write-up, summary, comparison, or figures, or before ending a long task — findings not written down are lost."
 ---
 
 When a line of work concludes, write up the experiment tree as a local markdown

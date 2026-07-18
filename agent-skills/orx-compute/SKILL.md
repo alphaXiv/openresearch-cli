@@ -1,6 +1,6 @@
 ---
 name: orx-compute
-description: "Launch experiment runs on compute with `orx exp run`: managed GPU/CPU, hf/modal/ssh/local backends, sizing, and waiting on runs."
+description: "Launch experiment runs with `orx exp run`: backends (hf, modal, k8s, ssh, slurm, openresearch, local), flavors, timeouts, images, sizing, and `orx exp wait`. Use before launching or re-launching any run, when choosing or switching a backend or GPU flavor, when a job OOMs, stalls, or times out, or when deciding GPU vs CPU."
 ---
 
 Each experiment node has a **run command** (the shell command that trains/evaluates

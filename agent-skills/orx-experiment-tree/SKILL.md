@@ -1,6 +1,6 @@
 ---
 name: orx-experiment-tree
-description: "The experiment-tree model and the auto-research loop: shape the tree (stacked bushes), branch/launch/wait/promote, and `orx exp desc`."
+description: "The experiment-tree model and the auto-research loop: shape the tree (stacked bushes), branch/launch/wait/promote, and `orx exp desc` notes. Use before creating, planning, or reorganizing experiments, when deciding what to try next, when a round of runs finishes, or whenever you're unsure how work maps onto the tree."
 ---
 
 A project is a **tree of experiment nodes**. The root (**baseline**) holds the

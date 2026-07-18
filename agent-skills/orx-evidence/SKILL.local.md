@@ -1,6 +1,6 @@
 ---
 name: orx-evidence
-description: "Analyze results in local mode: run logs are the only channel (`orx logs`) — make the run print the evidence you'll need."
+description: "Analyze run results in local mode: run logs are the only evidence channel (`orx logs`). Use after any run reaches a terminal state, before declaring a run a success or failure, when metrics are missing from output, or when designing what a run command should print."
 ---
 
 In local mode (`orx up`) run **logs are the only evidence channel** — there is no

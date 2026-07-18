@@ -1,6 +1,6 @@
 ---
 name: orx-evidence
-description: "Analyze results: run logs, `orx search-logs`, text artifacts, W&B charts (`orx chart wandb`), and the `orx query` evidence DB."
+description: "Analyze run results: `orx logs`, `orx search-logs`, text artifacts, W&B charts (`orx chart wandb`), and the `orx query` evidence DB. Use after any run finishes, when comparing metrics across runs or experiments, when hunting a failure in logs, or when asked for numbers, tables, or charts."
 ---
 
 ## Reading & searching run logs — `orx logs` / `orx search-logs`

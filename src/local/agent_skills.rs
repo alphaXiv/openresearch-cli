@@ -63,57 +63,60 @@ const REPORTS_CLOUD: &str = include_str!("../../agent-skills/orx-reports/SKILL.m
 const EVIDENCE_LOCAL: &str = include_str!("../../agent-skills/orx-evidence/SKILL.local.md");
 const EVIDENCE_CLOUD: &str = include_str!("../../agent-skills/orx-evidence/SKILL.md");
 
-// Descriptions are ≤150 chars (Codex's ambient skill budget is tight): one line,
-// no leading `orx-`, phrased so an agent knows when to load the module.
+// Descriptions are the *trigger surface*: what the module covers plus explicit,
+// liberal "Use when …" cues (false positives beat false negatives — an agent
+// that loads a module needlessly wastes a little context; one that misses it
+// works blind). Keep each ≤400 chars — Codex's ambient budget is ~8k across
+// the whole set.
 
 const S_COMPUTE: AgentSkill = AgentSkill {
     name: "orx-compute",
-    description: "Launch experiment runs on compute with `orx exp run`: managed GPU/CPU, hf/modal/ssh/local backends, sizing, and waiting on runs.",
+    description: "Launch experiment runs with `orx exp run`: backends (hf, modal, k8s, ssh, slurm, openresearch, local), flavors, timeouts, images, sizing, and `orx exp wait`. Use before launching or re-launching any run, when choosing or switching a backend or GPU flavor, when a job OOMs, stalls, or times out, or when deciding GPU vs CPU.",
     content: COMPUTE,
 };
 const S_COMPUTE_K8S: AgentSkill = AgentSkill {
     name: "orx-compute-k8s",
-    description: "Run an experiment on your Kubernetes cluster (`orx exp run --backend k8s`): the manifest contract orx enforces at submit.",
+    description: "Run an experiment on your own Kubernetes cluster (`orx exp run --backend k8s`): the committed-manifest contract orx enforces at submit. Use when the user names k8s, kubernetes, or a cluster, before writing or editing `.orx/k8s.yaml`, for multi-node or Indexed Jobs, or when a k8s submit is rejected.",
     content: COMPUTE_K8S,
 };
 const S_EXPERIMENT_TREE: AgentSkill = AgentSkill {
     name: "orx-experiment-tree",
-    description: "The experiment-tree model and the auto-research loop: shape the tree (stacked bushes), branch/launch/wait/promote, and `orx exp desc`.",
+    description: "The experiment-tree model and the auto-research loop: shape the tree (stacked bushes), branch/launch/wait/promote, and `orx exp desc` notes. Use before creating, planning, or reorganizing experiments, when deciding what to try next, when a round of runs finishes, or whenever you're unsure how work maps onto the tree.",
     content: EXPERIMENT_TREE,
 };
 const S_GIT: AgentSkill = AgentSkill {
     name: "orx-git",
-    description: "Read, edit, and diff a node's code with plain git in the cache-dir clone (or your session worktree): sync, commit, push before running.",
+    description: "Read, edit, and diff a node's code with plain git: sync, commit, and push before running. Use whenever you touch experiment code — before editing any branch, when a checkout or push fails, when comparing two nodes' code, or when a run seems to have picked up stale code.",
     content: GIT_EDITING,
 };
 const S_LIT: AgentSkill = AgentSkill {
     name: "orx-lit",
-    description: "Search literature and read papers via alphaXiv (`orx lit` / `orx paper`) — ground hypotheses and find code to seed a baseline from.",
+    description: "Search literature and read papers via alphaXiv (`orx lit` / `orx paper`). Use when grounding a hypothesis, hunting related work, baselines, or code to seed from, when the user mentions a paper, author, or arXiv id, or before designing a novel experiment.",
     content: LIT,
 };
 const S_CREATE: AgentSkill = AgentSkill {
     name: "orx-create",
-    description: "Create a project (`orx create-project`), seed an empty baseline from existing code, and add experiment nodes (`orx create-experiment`).",
+    description: "Create a project (`orx create-project`), seed an empty baseline from existing code, and add experiment nodes (`orx create-experiment`). Use when starting any new project or experiment, when the tree is empty, or when unsure how to bind a repo or set the run command.",
     content: CREATE,
 };
 const S_REPORTS_LOCAL: AgentSkill = AgentSkill {
     name: "orx-reports",
-    description: "Write research reports into the local project's files dir (tree-mirroring folder layout) — they appear in the dashboard's Files tab.",
+    description: "Write research reports into the local project's files dir (tree-mirroring folder layout) so they appear in the dashboard's Files tab. Use when a line of work concludes, when the user asks for a write-up, summary, comparison, or figures, or before ending a long task — findings not written down are lost.",
     content: REPORTS_LOCAL,
 };
 const S_REPORTS_CLOUD: AgentSkill = AgentSkill {
     name: "orx-reports",
-    description: "Write a research report and publish it with `orx report upload` (list/show/download too) so it appears on the project page.",
+    description: "Write a research report and publish it with `orx report upload` (list/show/download too) so it appears on the project page. Use when a line of work concludes, when the user asks for a write-up, summary, comparison, or figures, or before ending a long task — findings not written down are lost.",
     content: REPORTS_CLOUD,
 };
 const S_EVIDENCE_LOCAL: AgentSkill = AgentSkill {
     name: "orx-evidence",
-    description: "Analyze results in local mode: run logs are the only channel (`orx logs`) — make the run print the evidence you'll need.",
+    description: "Analyze run results in local mode: run logs are the only evidence channel (`orx logs`). Use after any run reaches a terminal state, before declaring a run a success or failure, when metrics are missing from output, or when designing what a run command should print.",
     content: EVIDENCE_LOCAL,
 };
 const S_EVIDENCE_CLOUD: AgentSkill = AgentSkill {
     name: "orx-evidence",
-    description: "Analyze results: run logs, `orx search-logs`, text artifacts, W&B charts (`orx chart wandb`), and the `orx query` evidence DB.",
+    description: "Analyze run results: `orx logs`, `orx search-logs`, text artifacts, W&B charts (`orx chart wandb`), and the `orx query` evidence DB. Use after any run finishes, when comparing metrics across runs or experiments, when hunting a failure in logs, or when asked for numbers, tables, or charts.",
     content: EVIDENCE_CLOUD,
 };
 
@@ -219,8 +222,8 @@ mod tests {
             for s in skills(set) {
                 let len = s.description.chars().count();
                 assert!(
-                    (1..=150).contains(&len),
-                    "{:?}: {} description is {} chars (want 1..=150)",
+                    (1..=400).contains(&len),
+                    "{:?}: {} description is {} chars (want 1..=400)",
                     set,
                     s.name,
                     len

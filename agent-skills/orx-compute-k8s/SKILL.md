@@ -1,6 +1,6 @@
 ---
 name: orx-compute-k8s
-description: "Run an experiment on your Kubernetes cluster (`orx exp run --backend k8s`): the manifest contract orx enforces at submit."
+description: "Run an experiment on your own Kubernetes cluster (`orx exp run --backend k8s`): the committed-manifest contract orx enforces at submit. Use when the user names k8s, kubernetes, or a cluster, before writing or editing `.orx/k8s.yaml`, for multi-node or Indexed Jobs, or when a k8s submit is rejected."
 ---
 
 **Use `--backend k8s` ONLY when the user explicitly asks to run on their

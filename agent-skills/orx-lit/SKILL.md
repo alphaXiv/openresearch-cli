@@ -1,6 +1,6 @@
 ---
 name: orx-lit
-description: "Search literature and read papers via alphaXiv (`orx lit` / `orx paper`) — ground hypotheses and find code to seed a baseline from."
+description: "Search literature and read papers via alphaXiv (`orx lit` / `orx paper`). Use when grounding a hypothesis, hunting related work, baselines, or code to seed from, when the user mentions a paper, author, or arXiv id, or before designing a novel experiment."
 ---
 
 These tap **alphaXiv's public corpus** (2.5M+ arXiv papers: CS, math, physics,
