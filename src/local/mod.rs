@@ -6,7 +6,8 @@
 //!
 //! Detection rule: an experiment/run is "local" iff its experiment id exists
 //! in `local_experiments`. CLI commands check the local store FIRST and only
-//! require credentials on the server path.
+//! require credentials on the server path — dispatch on it via
+//! `resolve::{resolve_project, resolve_experiment, resolve_run}`, never by hand.
 
 pub mod agent_skills;
 pub mod chat;
@@ -25,6 +26,7 @@ pub mod model;
 pub mod opencode;
 pub mod openresearch;
 pub mod projects;
+pub mod resolve;
 pub mod skills;
 pub mod slurm;
 pub mod ssh;

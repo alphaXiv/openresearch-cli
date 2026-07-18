@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crate::client::{list_experiments, list_runs};
 use crate::error::{require_credentials, Result};
+use crate::local::resolve::{resolve_project, ProjectRef};
 use crate::output::{format_duration, print_table, run_failure_detail};
 use crate::store::Store;
 
@@ -11,10 +12,14 @@ use crate::store::Store;
 pub async fn run(args: crate::RunsArgs) -> Result<()> {
     // Local project (orx up): the store is the truth, no api / login needed.
     let store = Store::open()?;
-    if store.get_local_project(&args.project_id)?.is_some() {
-        return run_local(&store, &args);
+    match resolve_project(&store, &args.project_id)? {
+        ProjectRef::Local(_) => run_local(&store, &args),
+        ProjectRef::Server(_) => run_server(&args).await,
     }
+}
 
+/// Server-mode listing from the api.
+async fn run_server(args: &crate::RunsArgs) -> Result<()> {
     let creds = require_credentials().await;
 
     // Fetch experiments too, so we can label each run with its experiment title
