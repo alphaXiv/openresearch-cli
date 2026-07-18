@@ -85,6 +85,16 @@ Workflow:
 3. For each claim record an honest verdict (reproduced / partially / not reproduced / not attempted), the evidence (numbers vs. paper's numbers), and the compute cost.
 4. Finish with a summary: per-claim verdicts, where results diverged and why, and what a full-scale reproduction would still need.
 
+Write a visual autoresearch report:
+- Write for readers who may not understand the paper. Lead with its central question, then explain the implementation, experiments, and evidence.
+- Open with evidence: place the strongest result figure immediately after the title, before the main explanatory prose. It should give readers an immediate visual understanding of the reproduction's central result.
+- Make the report implementation-led rather than a run log. Trace the important code path, consequential design choices, and the smallest code or configuration changes used to test them.
+- Use figures, compact tables, diagrams, and short code excerpts when they explain the result better than prose. Avoid long uninterrupted text, repeated conclusions, and exhaustive infrastructure histories.
+- Clearly separate paper evidence, reproduced evidence, negative results, partial runs, and unattempted claims. End with a concise verdict and descriptive links to the relevant experiment branches.
+- Use one clear title and normal Markdown hierarchy: H2 for major sections and H3 only for genuine subsections.
+- Keep the report self-contained: store figures in an `images/` directory beside `report.md`, reference them as `images/<filename>`, and verify every image renders before publication.
+- Perform a final editorial pass for clarity and concision. The result should feel like an illustrated technical article, not an experiment database dump.
+
 Publish a polished GitHub artifact:
 - Treat the repository README as the public landing page, not as an afterthought. Add a project-specific reproduction section at the very top, before any upstream README content. It must state which paper claim was tested, what was done, the verdict, the paper number versus the reproduced number, the downscaling/substitutions, the agreed compute, and links to the detailed report or notebook when present.
 - In that top section, add a compact `Experiment log` or provenance table covering the important branches only. Use descriptive links to each branch and include columns for branch/experiment, purpose or change, **exact run command**, verdict/outcome, and compute. Copy the command verbatim from `orx exp status`; do not abbreviate it, replace it with pseudocode, or show only the entrypoint.
@@ -308,6 +318,10 @@ mod tests {
         assert!(out.contains("Not run as an experiment (publication surface)"));
         assert!(out.contains("every reader-facing report on `main`"));
         assert!(out.contains("not considered published"));
+        assert!(out.contains("strongest result figure immediately after the title"));
+        assert!(out.contains("implementation-led rather than a run log"));
+        assert!(out.contains("images/<filename>"));
+        assert!(out.contains("illustrated technical article"));
         assert!(!out.contains("trackio"));
         assert!(expand("/reproduce-paper").unwrap().contains("ask the user"));
     }
