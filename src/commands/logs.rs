@@ -1,10 +1,8 @@
-use std::io::{Read as _, Seek as _, Write};
+use std::io::Write;
 
-use crate::client::read_run_log;
-use crate::error::require_credentials;
 use crate::error::Result;
-use crate::local::resolve::{resolve_run, RunRef};
-use crate::store::{log_path, Store};
+use crate::plane::{resolve_run, LogRequest};
+use crate::store::Store;
 
 /// Parses a string the way JS `Number(s)` does for our purposes and returns it
 /// only if it represents an integer (matching `Number.isInteger`). An empty or
@@ -60,117 +58,33 @@ pub async fn run(args: crate::LogsArgs) -> Result<()> {
     };
 
     // Local run (orx up): the log is a plain file beside the store — read it
-    // directly, no api / login needed.
+    // directly, no api / login needed. The plane resolver decides.
     let store = Store::open()?;
-    match resolve_run(&store, &args.run_id)? {
-        RunRef::Local(_) => run_local(&args.run_id, mode, max_bytes, start_byte, end_byte),
-        RunRef::Server(_) => run_server(&args.run_id, mode, max_bytes, start_byte, end_byte).await,
+    let plane = resolve_run(store, &args.run_id)?;
+    let log = plane
+        .read_log(LogRequest {
+            mode: mode.to_string(),
+            max_bytes,
+            start_byte,
+            end_byte,
+        })
+        .await?;
+
+    // A local run whose log file doesn't exist yet: one line, no body/footer.
+    if log.missing_local {
+        eprintln!("[local file] no log captured yet for this run.");
+        return Ok(());
     }
-}
-
-/// Server-mode log read via the api.
-async fn run_server(
-    run_id: &str,
-    mode: &str,
-    max_bytes: Option<i64>,
-    start_byte: Option<i64>,
-    end_byte: Option<i64>,
-) -> Result<()> {
-    let creds = require_credentials().await;
-
-    let log = read_run_log(&creds, run_id, Some(mode), max_bytes, start_byte, end_byte).await?;
 
     // The log itself goes to stdout (pipe-friendly); metadata to stderr so it
     // doesn't pollute a `| grep` or a redirect.
     let mut stdout = std::io::stdout();
-    stdout.write_all(log.content.as_bytes())?;
-    if !log.content.is_empty() && !log.content.ends_with('\n') {
+    stdout.write_all(&log.content)?;
+    if !log.content.is_empty() && !log.content.ends_with(b"\n") {
         stdout.write_all(b"\n")?;
     }
     stdout.flush()?;
 
-    let span = format!(
-        "bytes {}–{} of {}",
-        log.start_byte, log.end_byte, log.total_bytes
-    );
-    let mut more: Vec<&str> = Vec::new();
-    if log.truncated_before {
-        more.push("more above");
-    }
-    if log.truncated_after {
-        more.push("more below");
-    }
-    let more_str = if more.is_empty() {
-        String::new()
-    } else {
-        format!(" ({})", more.join(", "))
-    };
-    eprintln!("[{}] {}{}", log.source, span, more_str);
-
-    Ok(())
-}
-
-/// Default byte window for local head/tail reads without `--bytes`.
-const LOCAL_DEFAULT_BYTES: i64 = 64 * 1024;
-
-/// Local-mode log read: same head/tail/range semantics over the run's
-/// `run-logs/<id>.log` file, same stdout/stderr split as the server path.
-fn run_local(
-    run_id: &str,
-    mode: &str,
-    max_bytes: Option<i64>,
-    start_byte: Option<i64>,
-    end_byte: Option<i64>,
-) -> Result<()> {
-    let path = log_path(run_id);
-    let total = match std::fs::metadata(&path) {
-        Ok(m) => m.len() as i64,
-        Err(_) => {
-            eprintln!("[local file] no log captured yet for this run.");
-            return Ok(());
-        }
-    };
-
-    let max = max_bytes.unwrap_or(LOCAL_DEFAULT_BYTES).max(0);
-    let (start, end) = match mode {
-        "range" => (
-            start_byte.unwrap_or(0).clamp(0, total),
-            end_byte.unwrap_or(total).clamp(0, total),
-        ),
-        "head" => (0, max.min(total)),
-        _ => ((total - max).max(0), total),
-    };
-
-    let mut content = Vec::new();
-    if end > start {
-        let mut f = std::fs::File::open(&path)?;
-        f.seek(std::io::SeekFrom::Start(start as u64))?;
-        f.take((end - start) as u64).read_to_end(&mut content)?;
-    }
-
-    let mut stdout = std::io::stdout();
-    stdout.write_all(&content)?;
-    if !content.is_empty() && !content.ends_with(b"\n") {
-        stdout.write_all(b"\n")?;
-    }
-    stdout.flush()?;
-
-    let mut more: Vec<&str> = Vec::new();
-    if start > 0 {
-        more.push("more above");
-    }
-    if end < total {
-        more.push("more below");
-    }
-    let more_str = if more.is_empty() {
-        String::new()
-    } else {
-        format!(" ({})", more.join(", "))
-    };
-    eprintln!(
-        "[local file] bytes {}–{} of {}{}",
-        start, end, total, more_str
-    );
-
+    eprintln!("{}", log.footer());
     Ok(())
 }
