@@ -20,6 +20,7 @@ use crate::client::{
 use crate::error::{anyhow, require_credentials, Result};
 use crate::jobs::{huggingface as hf, BackendDescriptor};
 use crate::local::model::LocalExperiment;
+use crate::local::resolve::{resolve_experiment, resolve_project, ExperimentRef, ProjectRef};
 use crate::output::{format_duration, run_failure_detail};
 use crate::store::{now_ms, Store, StoredRun};
 use crate::{ExpCommand, ExpRunArgs};
@@ -30,42 +31,44 @@ pub async fn run(args: crate::ExpArgs) -> Result<()> {
     // user may never have logged in).
     let store = Store::open()?;
     match args.command {
-        ExpCommand::Status { exp_id } => {
-            if let Some(exp) = store.get_local_experiment(&exp_id)? {
-                return local_status(&store, &exp);
+        ExpCommand::Status { exp_id } => match resolve_experiment(&store, &exp_id)? {
+            ExperimentRef::Local(exp) => local_status(&store, &exp),
+            ExperimentRef::Server(exp_id) => {
+                let creds = require_credentials().await;
+                status(&creds, &exp_id).await
             }
-            let creds = require_credentials().await;
-            status(&creds, &exp_id).await
-        }
-        ExpCommand::Cmd { exp_id, set } => {
-            if store.get_local_experiment(&exp_id)?.is_some() {
-                return Err(crate::local::unsupported("exp cmd"));
+        },
+        ExpCommand::Cmd { exp_id, set } => match resolve_experiment(&store, &exp_id)? {
+            ExperimentRef::Local(_) => Err(crate::local::unsupported("exp cmd")),
+            ExperimentRef::Server(exp_id) => {
+                let creds = require_credentials().await;
+                cmd(&creds, &exp_id, set).await
             }
-            let creds = require_credentials().await;
-            cmd(&creds, &exp_id, set).await
-        }
-        ExpCommand::Desc { exp_id, set, stdin } => {
-            if let Some(exp) = store.get_local_experiment(&exp_id)? {
-                return local_desc(&store, exp, set, stdin).await;
+        },
+        ExpCommand::Desc { exp_id, set, stdin } => match resolve_experiment(&store, &exp_id)? {
+            ExperimentRef::Local(exp) => local_desc(&store, *exp, set, stdin).await,
+            ExperimentRef::Server(exp_id) => {
+                let creds = require_credentials().await;
+                desc(&creds, &exp_id, set, stdin).await
             }
-            let creds = require_credentials().await;
-            desc(&creds, &exp_id, set, stdin).await
-        }
+        },
         ExpCommand::Run(run_args) => {
             let run_args = *run_args;
-            if store.get_local_experiment(&run_args.exp_id)?.is_some() {
-                return local_launch(run_args).await;
+            match resolve_experiment(&store, &run_args.exp_id)? {
+                ExperimentRef::Local(_) => local_launch(run_args).await,
+                ExperimentRef::Server(_) => {
+                    let creds = require_credentials().await;
+                    launch(&creds, run_args).await
+                }
             }
-            let creds = require_credentials().await;
-            launch(&creds, run_args).await
         }
-        ExpCommand::Cancel { exp_id } => {
-            if let Some(exp) = store.get_local_experiment(&exp_id)? {
-                return local_cancel(&store, &exp);
+        ExpCommand::Cancel { exp_id } => match resolve_experiment(&store, &exp_id)? {
+            ExperimentRef::Local(exp) => local_cancel(&store, &exp),
+            ExperimentRef::Server(exp_id) => {
+                let creds = require_credentials().await;
+                cancel(&creds, &exp_id).await
             }
-            let creds = require_credentials().await;
-            cancel(&creds, &exp_id).await
-        }
+        },
         ExpCommand::Wait {
             exp_id,
             project,
@@ -104,20 +107,24 @@ async fn wait(
             "Specify what to wait on: `orx exp wait <expId>` (one run) or \
              `orx exp wait --project <projectId>` (any run in a project)."
         )),
-        (Some(exp_id), None) => {
-            if store.get_local_experiment(&exp_id)?.is_some() {
-                return local_wait_experiment(store, &exp_id, interval, deadline).await;
+        (Some(exp_id), None) => match resolve_experiment(store, &exp_id)? {
+            ExperimentRef::Local(_) => {
+                local_wait_experiment(store, &exp_id, interval, deadline).await
             }
-            let creds = require_credentials().await;
-            wait_experiment(&creds, &exp_id, interval, deadline).await
-        }
-        (None, Some(project_id)) => {
-            if store.get_local_project(&project_id)?.is_some() {
-                return local_wait_project(store, &project_id, interval, deadline).await;
+            ExperimentRef::Server(exp_id) => {
+                let creds = require_credentials().await;
+                wait_experiment(&creds, &exp_id, interval, deadline).await
             }
-            let creds = require_credentials().await;
-            wait_project(&creds, &project_id, interval, deadline).await
-        }
+        },
+        (None, Some(project_id)) => match resolve_project(store, &project_id)? {
+            ProjectRef::Local(_) => {
+                local_wait_project(store, &project_id, interval, deadline).await
+            }
+            ProjectRef::Server(project_id) => {
+                let creds = require_credentials().await;
+                wait_project(&creds, &project_id, interval, deadline).await
+            }
+        },
     }
 }
 

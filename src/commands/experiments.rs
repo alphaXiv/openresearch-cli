@@ -5,11 +5,12 @@ use std::collections::{HashMap, HashSet};
 
 use crate::client::{list_experiments, Experiment};
 use crate::error::{require_credentials, Result};
+use crate::local::resolve::resolve_project;
 
 /// Lists a project's experiments as an indented tree (by parentExperimentId).
 pub async fn run(args: crate::ExperimentsArgs) -> Result<()> {
     let store = crate::store::Store::open()?;
-    if store.get_local_project(&args.project_id)?.is_some() {
+    if resolve_project(&store, &args.project_id)?.is_local() {
         return Err(crate::local::unsupported("experiments"));
     }
     let creds = require_credentials().await;

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use crate::client::{render_wandb_chart, WandbChartBody, WandbChartResult, WandbRunSpec};
 use crate::error::{require_credentials, Result};
+use crate::local::resolve::resolve_project;
 
 const USAGE: &str = "Usage: orx chart wandb <projectId> --metric \"<key>\" --run <runId>[:label] [--run ...] [--smoothing <0-0.99>] [--out <dir>]";
 
@@ -171,7 +172,7 @@ pub async fn run(args: crate::ChartArgs) -> Result<()> {
     }
 
     let store = crate::store::Store::open()?;
-    if store.get_local_project(&args.project_id)?.is_some() {
+    if resolve_project(&store, &args.project_id)?.is_local() {
         return Err(crate::local::unsupported("chart"));
     }
     let creds = require_credentials().await;

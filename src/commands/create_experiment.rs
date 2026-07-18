@@ -19,12 +19,13 @@ use crate::client::{
     CreateChildBody, Experiment,
 };
 use crate::error::{anyhow, require_credentials, Result};
+use crate::local::resolve::{resolve_project, ProjectRef};
 use crate::store::Store;
 
 const USAGE: &str = "Usage: orx create-experiment <projectId> --title \"<title>\" [--parent <experimentId>] [--description \"<text>\"] [--run-command \"<cmd>\"]";
 
-pub async fn run(args: crate::CreateExperimentArgs) -> Result<()> {
-    let title = match args.title {
+pub async fn run(mut args: crate::CreateExperimentArgs) -> Result<()> {
+    let title = match args.title.take() {
         Some(t) => t,
         None => {
             eprintln!("{}", USAGE);
@@ -34,21 +35,27 @@ pub async fn run(args: crate::CreateExperimentArgs) -> Result<()> {
 
     // Local project (orx up): create the row + branch locally, no api.
     let store = Store::open()?;
-    if let Some(project) = store.get_local_project(&args.project_id)? {
-        run_local(
-            &store,
-            &project,
-            title,
-            args.parent,
-            args.baseline,
-            args.description,
-            args.run_command,
-        )?;
-        // Key event, fired only on success. Coarse props only — no ids/names.
-        crate::telemetry::capture_experiment_started("create", true, None);
-        return Ok(());
+    match resolve_project(&store, &args.project_id)? {
+        ProjectRef::Local(project) => {
+            run_local(
+                &store,
+                &project,
+                title,
+                args.parent,
+                args.baseline,
+                args.description,
+                args.run_command,
+            )?;
+            // Key event, fired only on success. Coarse props only — no ids/names.
+            crate::telemetry::capture_experiment_started("create", true, None);
+            Ok(())
+        }
+        ProjectRef::Server(_) => run_server(args, title).await,
     }
+}
 
+/// Server-mode create via the api.
+async fn run_server(args: crate::CreateExperimentArgs, title: String) -> Result<()> {
     // The server child-create API carries no run command field — refuse rather
     // than silently drop it. (The baseline create below does accept one.)
     if args.run_command.is_some() && args.parent.is_some() {

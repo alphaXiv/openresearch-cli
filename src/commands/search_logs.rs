@@ -4,6 +4,7 @@
 
 use crate::client::{search_logs, SearchLogsBody};
 use crate::error::{require_credentials, Result};
+use crate::local::resolve::resolve_project;
 
 pub async fn run(args: crate::SearchLogsArgs) -> Result<()> {
     if args.run.is_none() && args.experiment.is_none() {
@@ -12,7 +13,7 @@ pub async fn run(args: crate::SearchLogsArgs) -> Result<()> {
     }
 
     let store = crate::store::Store::open()?;
-    if store.get_local_project(&args.project_id)?.is_some() {
+    if resolve_project(&store, &args.project_id)?.is_local() {
         return Err(crate::local::unsupported("search-logs"));
     }
     let creds = require_credentials().await;

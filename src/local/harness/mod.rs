@@ -21,7 +21,7 @@ mod claude;
 pub(crate) mod codex;
 mod cursor;
 mod detect;
-mod opencode;
+pub(crate) mod opencode;
 mod options;
 mod plan_gate;
 
@@ -148,9 +148,30 @@ pub trait Harness: Send + Sync {
         None
     }
 
+    /// Additional `(target, contents)` shim files beyond the primary
+    /// [`skill_target`](Self::skill_target) — for a harness that must write more
+    /// than one file (Codex writes both the new `~/.agents/skills/orx/SKILL.md`
+    /// and the legacy `~/.codex/prompts/orx.md` for older versions). Each is
+    /// written and reported alongside the primary target. Default: none.
+    fn extra_skill_targets(&self) -> Vec<(PathBuf, &'static str)> {
+        Vec::new()
+    }
+
     /// True if the agent looks set up on this machine (its config home exists).
     fn is_installed_locally(&self) -> bool {
         self.config_home().map(|h| h.exists()).unwrap_or(false)
+    }
+
+    // --- session-skills capability ----------------------------------------
+
+    /// The worktree-relative dir this harness discovers native `SKILL.md` skill
+    /// dirs under, for a **local `orx up` session** — `.claude/skills`,
+    /// `.opencode/skills`, `.agents/skills`. The modular `orx` skills are
+    /// written there (fresh every turn, beside the playbook) so the session's
+    /// own agent auto-loads them. `None` for a harness with no local chat
+    /// session that can host per-session skills (Cursor).
+    fn session_skills_dir(&self) -> Option<&'static str> {
+        None
     }
 }
 
@@ -222,9 +243,10 @@ pub(crate) fn xdg_config_home() -> PathBuf {
 // stays in the CLI's SKILL.md and is fetched fresh each session, so the
 // installed shim never drifts as that guide changes — which it does, often.
 
-/// Claude Code / OpenCode / Cursor skill (`skills/orx/SKILL.md`). The frontmatter
-/// `description` drives auto-discovery and the `/orx` invocation; the body only
-/// points the agent at the live guide.
+/// Native `SKILL.md` shim (`skills/orx/SKILL.md`) — Claude Code, OpenCode,
+/// Cursor, and now Codex (`~/.agents/skills/orx/`) all read this same format.
+/// The frontmatter `description` drives auto-discovery and the `/orx`
+/// invocation; the body only points the agent at the live guide.
 pub(super) const CLAUDE_SKILL: &str = r#"---
 name: orx
 description: Drive automated ML research on OpenResearch with the `orx` CLI — create experiments, launch and monitor runs on GPU compute, analyze results and logs, query the evidence DB, and search literature. Use whenever the user wants to understand, explain, explore, or work on an OpenResearch project, run experiments, do auto-research, or mentions orx or OpenResearch.
@@ -242,10 +264,12 @@ start of every session** instead of relying on this file or prior memory.
 orx skill
 ```
 
-This prints the current manual: the cardinal rules, the full command reference,
-the experiment-tree model, and the auto-research loop. Read it before taking any
-action. For a deeper reference on a specific area, run `orx skill <path>` using
-the paths listed at the end of that output.
+This prints the current manual — the cardinal rules and a command
+quick-reference — followed by a **live index of modules**. Read it before taking
+any action. For the detail on a specific area, run `orx skill <name>` to print
+that module (e.g. `orx skill experiment-tree`, `orx skill compute`); the same
+command fetches deeper API-served references by the paths listed at the end of
+the output.
 
 ## 2. Carry out the user's research goal
 
@@ -260,15 +284,19 @@ The user must be logged in. If any command reports `Not logged in`, ask them to
 run `orx login`.
 "#;
 
-/// Codex prompt (`~/.codex/prompts/orx.md`), invoked as `/orx`. Plain markdown for
-/// broad version compatibility; `$ARGUMENTS` is substituted with whatever the user
-/// types after the command (and reads fine as-is if their Codex doesn't expand it).
+/// Legacy Codex prompt (`~/.codex/prompts/orx.md`), invoked as `/orx`. Codex now
+/// reads native SKILL.md skills (`~/.agents/skills/`, gets `CLAUDE_SKILL`); this
+/// prompt is still written alongside for older codex versions that don't.
+/// Plain markdown for broad version compatibility; `$ARGUMENTS` is substituted
+/// with whatever the user types after the command (and reads fine as-is if their
+/// Codex doesn't expand it).
 pub(super) const CODEX_PROMPT: &str = r#"Drive automated ML research on OpenResearch using the `orx` CLI.
 
 Start by running `orx skill` to load the current operating manual — the cardinal
-rules, the full command reference, the experiment-tree model, and the
-auto-research loop. It changes often, so always read it fresh rather than relying
-on memory or a cached copy.
+rules, a command quick-reference, and a live index of modules. It changes often,
+so always read it fresh rather than relying on memory or a cached copy. Pull up a
+module's detail with `orx skill <name>` (e.g. `orx skill experiment-tree`,
+`orx skill compute`).
 
 Then carry out the user's research goal, following the auto-research loop from that
 guide: create the baseline experiment first when the project is empty, branch
