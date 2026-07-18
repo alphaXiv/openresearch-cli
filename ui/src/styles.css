@@ -2646,6 +2646,31 @@ button.files-pill-link:hover {
   padding-bottom: 10px;
   border-bottom: 1px solid var(--border-variant);
 }
+/* Reports are long-form documents, so preserve their Markdown hierarchy.
+   The shared .md rules intentionally keep chat headings compact. */
+.report-md {
+  font-size: 15px;
+}
+.report-md h1 {
+  font-size: 2em;
+  line-height: 1.18;
+  margin: 28px 0 14px;
+}
+.report-md h2 {
+  font-size: 1.5em;
+  line-height: 1.25;
+  margin: 28px 0 10px;
+}
+.report-md h3 {
+  font-size: 1.2em;
+  line-height: 1.35;
+  margin: 22px 0 8px;
+}
+.report-md h4 {
+  font-size: 1em;
+  line-height: 1.4;
+  margin: 18px 0 6px;
+}
 /* Wide GFM tables scroll in place instead of widening the report pane. */
 .report-md table {
   display: block;
