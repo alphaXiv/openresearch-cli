@@ -88,6 +88,7 @@ Workflow:
 Write a visual autoresearch report:
 - Write for readers who may not understand the paper. Lead with its central question, then explain the implementation, experiments, and evidence.
 - Open with evidence: place the strongest result figure immediately after the title, before the main explanatory prose. It should give readers an immediate visual understanding of the reproduction's central result.
+- Aim for four or five distinct, evidence-bearing figures when the results support them—for example, a headline result, mechanism or training curve, robustness comparison, and diagnostic or negative control. Use fewer when the available evidence does not justify them; never pad the report with decorative or redundant plots.
 - Make the report implementation-led rather than a run log. Trace the important code path, consequential design choices, and the smallest code or configuration changes used to test them.
 - Use figures, compact tables, diagrams, and short code excerpts when they explain the result better than prose. Avoid long uninterrupted text, repeated conclusions, and exhaustive infrastructure histories.
 - Clearly separate paper evidence, reproduced evidence, negative results, partial runs, and unattempted claims. End with a concise verdict and descriptive links to the relevant experiment branches.
@@ -319,6 +320,7 @@ mod tests {
         assert!(out.contains("every reader-facing report on `main`"));
         assert!(out.contains("not considered published"));
         assert!(out.contains("strongest result figure immediately after the title"));
+        assert!(out.contains("four or five distinct, evidence-bearing figures"));
         assert!(out.contains("implementation-led rather than a run log"));
         assert!(out.contains("images/<filename>"));
         assert!(out.contains("illustrated technical article"));
