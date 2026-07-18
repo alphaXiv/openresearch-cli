@@ -1,5 +1,5 @@
-//! Relocating the orx data dir (`orx.db` + `run-logs/` + `artifacts/` +
-//! `chat-attachments/` + `agent-*.log`) to a user-chosen path.
+//! Relocating the orx data dir (`orx.db` + `run-logs/` + `files/` +
+//! `memory/` + `chat-attachments/` + `agent-*.log`) to a user-chosen path.
 //!
 //! The whole dir is a self-contained, relocatable unit (the api already tars it
 //! for R2 snapshot/restore), so a move is: validate target → checkpoint the DB →
