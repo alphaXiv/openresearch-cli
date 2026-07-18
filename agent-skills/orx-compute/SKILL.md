@@ -182,6 +182,57 @@ Rules and notes:
   process group. Everything downstream (`orx exp wait` / `runs` / `logs`) is
   identical; a detached `orx supervise` polls it over ssh — don't kill it.
 
+## Running on your Slurm cluster — `--backend slurm`
+
+**Same rule: use `--backend slurm` ONLY when the user explicitly asks for their
+Slurm cluster** ("submit it to the cluster", "run it via sbatch") or it is the
+configured default target. Local projects (`orx up`) only. It submits the
+experiment as a batch job via `sbatch` on the login node, reached over ssh — the
+host's environment as-is, no container.
+
+```sh
+orx exp run <expId> --backend slurm --host login-node --flavor h100:2 --timeout 4h
+orx exp run <expId> --backend slurm                    # CPU-only, settings default host
+```
+
+Rules and notes:
+- **`--host` is the login node's `~/.ssh/config` alias**; omit it to use the
+  default from the slurm settings (`orx up` Settings → Compute → Slurm).
+- **`--flavor` is a GRES GPU request** (`h100:2` = two H100s) — omit it for a
+  CPU-only job. There is no `--image`; the job runs in the cluster's own
+  environment (modules, conda, whatever the login profile provides).
+- `--timeout` (default `4h`) applies — size it to cover the whole run; a job
+  killed at the timeout reads as a failed run.
+- Same clone contract as every backend: the job clones the experiment branch's
+  GitHub tip and runs the fixed command — commit and push first. Everything
+  downstream (`orx exp wait` / `orx runs` / `orx logs` / `orx exp cancel`) is
+  identical; a detached `orx supervise` mirrors status and logs — don't kill it.
+
+## Running on an OpenResearch box — `--backend openresearch`
+
+**Same rule: use `--backend openresearch` ONLY when the user explicitly asks
+for it** ("use an openresearch box", "bill it to the org") or it is the
+configured default target. It provisions an **ephemeral OpenResearch machine
+billed to the user's org** — created for this run and deleted when it ends —
+with a fixed CUDA + PyTorch + uv image. Needs `orx login` and a registered SSH
+key.
+
+```sh
+orx exp run <expId> --backend openresearch --flavor h100_sxm:2 --timeout 4h
+orx exp run <expId> --backend openresearch --flavor cpu5c:32 --org <orgId>
+```
+
+Rules and notes:
+- **`--flavor` is a GPU id from `orx compute`** (`h100_sxm`, `h100_sxm:2` for a
+  count) **or a CPU flavor** (`cpu5c` / `cpu5g` / `cpu5m`, with `:vcpus` like
+  `cpu5c:32`). Run `orx compute` to see what's available.
+- Optional: `--org <id>` (when you belong to several), `--disk <GB>`, and
+  `--provider <P>`. No `--image` — the platform's image is fixed.
+- `--timeout` (default `4h`) applies — the box is deleted when the run ends
+  either way, so nothing persists on it; everything you need must be in the log.
+- Same clone contract and downstream commands as every backend; a detached
+  `orx supervise` mirrors status and logs — don't kill it.
+
 ## Running on this machine — `--backend local`
 
 **Same rule: use `--backend local` ONLY when the user explicitly asks to run

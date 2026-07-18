@@ -135,7 +135,8 @@ Carry one goal across many runs (full guidance: **`orx-experiment-tree`** skill)
 {launch_step}
 4. **Wait — hold your turn open**: call `orx exp wait <expId> --timeout 480`
    (or `--project` when several are in flight) in a loop. Exit 0 → terminal, go
-   analyze; non-zero → immediately call it again.
+   analyze; non-zero → immediately call it again (each call stays under your
+   shell tool's own time limit).
 5. **Analyze**: `orx logs <runId>`. Logs are the only evidence channel — make
    the run command print every metric you'll need (**`orx-evidence`** skill).
 6. **Decide**: refill the round with another sibling, promote the winner and
