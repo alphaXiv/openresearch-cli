@@ -176,20 +176,6 @@ pub fn run_duration_secs(run: &StoredRun) -> i64 {
     (run.ended_at.unwrap_or_else(now_ms) - run.created_at) / 1000
 }
 
-/// Local twin of `output::run_failure_detail` for store-backed runs.
-pub fn run_failure_detail(run: &StoredRun) -> Option<String> {
-    if run.status != "failed" {
-        return None;
-    }
-    match run.result_markdown.as_deref().map(str::trim) {
-        Some(reason) if !reason.is_empty() => Some(format!("reason: {reason}")),
-        _ => Some(format!(
-            "reason: — (no message recorded — see `orx logs {}`)",
-            run.id
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
