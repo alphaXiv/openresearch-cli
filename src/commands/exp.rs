@@ -20,6 +20,7 @@ use crate::client::{
 use crate::error::{anyhow, require_credentials, Result};
 use crate::jobs::{huggingface as hf, BackendDescriptor};
 use crate::local::model::LocalExperiment;
+use crate::local::resolve::resolve_project;
 use crate::output::{format_duration, run_failure_detail};
 use crate::store::{now_ms, Store, StoredRun};
 use crate::{ExpCommand, ExpRunArgs};
@@ -112,7 +113,7 @@ async fn wait(
             wait_experiment(&creds, &exp_id, interval, deadline).await
         }
         (None, Some(project_id)) => {
-            if store.get_local_project(&project_id)?.is_some() {
+            if resolve_project(store, &project_id)?.is_local() {
                 return local_wait_project(store, &project_id, interval, deadline).await;
             }
             let creds = require_credentials().await;

@@ -9,10 +9,11 @@ use std::io::Write;
 use crate::client::read_artifact;
 use crate::error::require_credentials;
 use crate::error::{anyhow, Result};
+use crate::local::resolve::resolve_run;
 
 pub async fn run(args: crate::ArtifactArgs) -> Result<()> {
     let store = crate::store::Store::open()?;
-    if crate::local::local_run(&store, &args.run_id)?.is_some() {
+    if resolve_run(&store, &args.run_id)?.is_local() {
         return Err(crate::local::unsupported("artifact"));
     }
     let creds = require_credentials().await;

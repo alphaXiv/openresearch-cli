@@ -13,6 +13,7 @@ use crate::client::{
 };
 use crate::commands::experiments::print_tree;
 use crate::error::{anyhow, require_credentials, Result};
+use crate::local::resolve::{resolve_project, ProjectRef};
 use crate::ProjectCommand;
 
 pub async fn run(args: crate::ProjectArgs) -> Result<()> {
@@ -20,7 +21,7 @@ pub async fn run(args: crate::ProjectArgs) -> Result<()> {
         ProjectCommand::View { project_id } | ProjectCommand::Edit { project_id, .. } => project_id,
     };
     let store = crate::store::Store::open()?;
-    if let Some(project) = store.get_local_project(project_id)? {
+    if let ProjectRef::Local(project) = resolve_project(&store, project_id)? {
         return match args.command {
             ProjectCommand::View { .. } => view_local(&store, &project),
             ProjectCommand::Edit {
@@ -37,7 +38,7 @@ pub async fn run(args: crate::ProjectArgs) -> Result<()> {
                         "Local projects support --name and --run-command only."
                     ));
                 }
-                edit_local(&store, project, name, run_command)
+                edit_local(&store, *project, name, run_command)
             }
         };
     }

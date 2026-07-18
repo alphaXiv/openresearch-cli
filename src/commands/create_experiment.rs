@@ -19,6 +19,7 @@ use crate::client::{
     CreateChildBody, Experiment,
 };
 use crate::error::{anyhow, require_credentials, Result};
+use crate::local::resolve::{resolve_project, ProjectRef};
 use crate::store::Store;
 
 const USAGE: &str = "Usage: orx create-experiment <projectId> --title \"<title>\" [--parent <experimentId>] [--description \"<text>\"] [--run-command \"<cmd>\"]";
@@ -34,7 +35,7 @@ pub async fn run(args: crate::CreateExperimentArgs) -> Result<()> {
 
     // Local project (orx up): create the row + branch locally, no api.
     let store = Store::open()?;
-    if let Some(project) = store.get_local_project(&args.project_id)? {
+    if let ProjectRef::Local(project) = resolve_project(&store, &args.project_id)? {
         run_local(
             &store,
             &project,

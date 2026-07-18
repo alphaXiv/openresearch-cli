@@ -3,6 +3,7 @@ use std::io::{Read as _, Seek as _, Write};
 use crate::client::read_run_log;
 use crate::error::require_credentials;
 use crate::error::Result;
+use crate::local::resolve::resolve_run;
 use crate::store::{log_path, Store};
 
 /// Parses a string the way JS `Number(s)` does for our purposes and returns it
@@ -61,7 +62,7 @@ pub async fn run(args: crate::LogsArgs) -> Result<()> {
     // Local run (orx up): the log is a plain file beside the store — read it
     // directly, no api / login needed.
     let store = Store::open()?;
-    if crate::local::local_run(&store, &args.run_id)?.is_some() {
+    if resolve_run(&store, &args.run_id)?.is_local() {
         return run_local(&args.run_id, mode, max_bytes, start_byte, end_byte);
     }
 

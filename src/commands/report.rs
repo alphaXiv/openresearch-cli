@@ -14,6 +14,7 @@ use crate::client::{
 };
 use crate::config::Credentials;
 use crate::error::{anyhow, require_credentials, Result};
+use crate::local::resolve::{resolve_project, ProjectRef};
 
 pub async fn run(args: crate::ReportArgs) -> Result<()> {
     let project_id = match &args.command {
@@ -23,7 +24,7 @@ pub async fn run(args: crate::ReportArgs) -> Result<()> {
         | crate::ReportCommand::Download { project_id, .. } => project_id,
     };
     let store = crate::store::Store::open()?;
-    if let Some(project) = store.get_local_project(project_id)? {
+    if let ProjectRef::Local(project) = resolve_project(&store, project_id)? {
         return local_guidance(&project);
     }
     match args.command {

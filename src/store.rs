@@ -154,7 +154,14 @@ impl Store {
     /// Open (creating dirs/schema as needed). WAL so the supervise writers and
     /// the serve readers never block each other.
     pub fn open() -> Result<Self> {
-        let dir = data_dir();
+        Self::open_at(data_dir())
+    }
+
+    /// Open a store rooted at an explicit directory, bypassing `data_dir()`
+    /// resolution. For tests: a throwaway temp dir here avoids mutating the
+    /// process-global `$ORX_DATA_DIR`, which the localbox lifecycle test owns
+    /// (tests in different modules share env under the parallel runner).
+    pub fn open_at(dir: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(dir.join("run-logs"))
             .map_err(|e| anyhow!("Could not create {}: {}", dir.display(), e))?;
         let conn = Connection::open(dir.join("orx.db"))?;

@@ -2,6 +2,7 @@
 
 use crate::client::{query_project, SyncStatus};
 use crate::error::{require_credentials, Result};
+use crate::local::resolve::resolve_project;
 use crate::output::{cell, print_table};
 
 /// Renders the wire form of a sync status (matches the TS `"ready" | ...` union).
@@ -17,7 +18,7 @@ pub async fn run(args: crate::QueryArgs) -> Result<()> {
     // clap enforces the required positionals, so the TS `if (!projectId || !sql)`
     // usage guard is unnecessary here.
     let store = crate::store::Store::open()?;
-    if store.get_local_project(&args.project_id)?.is_some() {
+    if resolve_project(&store, &args.project_id)?.is_local() {
         return Err(crate::local::unsupported("query"));
     }
     let creds = require_credentials().await;
