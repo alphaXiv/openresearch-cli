@@ -77,7 +77,7 @@ Paper and compute: {args}
 Before running anything:
 1. Confirm the compute. The user should name where runs execute — an `~/.ssh/config` host alias (`orx exp run --backend ssh --host <alias>`, configurable in orx up Settings → Compute), another `orx` backend (`hf`, `modal`, `k8s` with a `--flavor`), or the local machine. If unspecified, use the default compute target configured in orx up Settings → Compute when one is set (omit `--backend` to launch there); otherwise ask before launching anything.
 2. Read the paper. If it's on alphaXiv, `orx paper <id>` gives a structured report (`--full` for raw text); `orx lit "<query>"` can find it. Otherwise ask the user for a PDF or link.
-3. Plan to the user's compute budget. Treat GPU-hours as the primary cost unit (`GPU-hours = allocated GPUs × wall-clock hours`). Treat an unqualified request to "run for N hours" as a wall-clock limit and translate it using the intended GPU count; ask only if ambiguity materially changes the plan. For vague small-budget language such as "for a little bit," prefer published-checkpoint evaluation and targeted checks. Larger budgets may support broader sweeps, added seeds, fine-tuning, or retraining only when the estimated cost fits with a retry reserve; they make training eligible, not mandatory. State the planned allocation before launching, track cumulative allocated GPU-hours including failed runs, and do not spend compute merely to exhaust the budget.
+3. Plan to the user's compute window. When the caller supplies an absolute deadline and available accelerator capacity, treat both as authoritative: keep the available GPUs occupied with scientifically useful parallel variants, seeds, ablations, controls, or profiling runs; refill freed capacity after each completion; and stop early when the target claims are adequately evaluated. Interpret capacity by total GPUs across in-flight runs, not by raw run count. Do not invent or maintain a GPU-hour ledger unless the user explicitly asks for one. For vague small-budget language such as "for a little bit," prefer published-checkpoint evaluation and targeted checks. Larger windows may support broader sweeps, added seeds, fine-tuning, or retraining, but they make training eligible, not mandatory.
 4. Optional tracking: if the user wants metrics logged, prefer Weights & Biases — check `wandb login` / `WANDB_API_KEY` and log each run to a project named after the paper. Don't require it.
 
 Workflow:
@@ -330,11 +330,11 @@ mod tests {
         assert!(out.contains("this run did not show the reported effect"));
         assert!(out.contains("Do not characterize the claim as wrong"));
         assert!(out.contains("per-claim assessments"));
-        assert!(out.contains("GPU-hours = allocated GPUs × wall-clock hours"));
+        assert!(out.contains("absolute deadline and available accelerator capacity"));
+        assert!(out.contains("total GPUs across in-flight runs"));
+        assert!(out.contains("Do not invent or maintain a GPU-hour ledger"));
         assert!(out.contains("published-checkpoint evaluation"));
         assert!(out.contains("training eligible, not mandatory"));
-        assert!(out.contains("including failed runs"));
-        assert!(out.contains("merely to exhaust the budget"));
         assert!(out.contains("self-contained, tutorial-style marimo notebook"));
         assert!(out.contains("marimo check <notebook.py>"));
         assert!(out.contains("already-produced evidence"));

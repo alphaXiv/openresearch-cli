@@ -1,6 +1,7 @@
 //! Minimal GitHub REST calls for local mode — create a repo on the signed-in
-//! user's account, check push access, fork-by-copy. Token from `GITHUB_TOKEN`
-//! or `gh auth token`, same resolution the clone path uses.
+//! user's account or in an organization, check push access, fork-by-copy.
+//! Token from `GITHUB_TOKEN` or `gh auth token`, same resolution the clone path
+//! uses.
 
 use serde_json::{json, Value};
 
@@ -9,11 +10,14 @@ use crate::error::{anyhow, Result};
 
 const UA: &str = concat!("orx/", env!("CARGO_PKG_VERSION"));
 
-/// Create a blank private repo named `repo` under the token's user, with an
-/// auto-init commit so the clone/branch flow works immediately. Returns
-/// (owner, repo, default_branch).
-pub async fn create_user_repo(repo: &str) -> Result<(String, String, String)> {
-    create_repo_api(repo, true).await
+/// Create a blank private repo with an auto-init commit so the clone/branch
+/// flow works immediately. An organization target is optional; without one,
+/// GitHub creates the repo under the token's user.
+pub async fn create_repo(
+    repo: &str,
+    organization: Option<&str>,
+) -> Result<(String, String, String)> {
+    create_repo_api(repo, true, organization).await
 }
 
 /// Whether the token can push to `owner/repo`. `None` means "could not
@@ -52,10 +56,11 @@ pub async fn fork_copy_repo(
     src_owner: &str,
     src_repo: &str,
     src_branch: Option<String>,
+    destination_organization: Option<&str>,
 ) -> Result<(String, String, String)> {
     let hash = &uuid::Uuid::new_v4().simple().to_string()[..8];
     let name = format!("{}-{hash}", crate::local::slugify(src_repo));
-    let (owner, name, _) = create_repo_api(&name, false).await?;
+    let (owner, name, _) = create_repo_api(&name, false, destination_organization).await?;
     let (src_owner, src_repo) = (src_owner.to_string(), src_repo.to_string());
     let (dst_owner, dst_repo) = (owner.clone(), name.clone());
     tokio::task::spawn_blocking(move || {
@@ -72,14 +77,38 @@ pub async fn fork_copy_repo(
     Ok((owner, name, "main".to_string()))
 }
 
-async fn create_repo_api(repo: &str, auto_init: bool) -> Result<(String, String, String)> {
+fn create_repo_endpoint(organization: Option<&str>) -> Result<String> {
+    let Some(organization) = organization
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok("https://api.github.com/user/repos".to_string());
+    };
+    let valid = organization.len() <= 39
+        && !organization.starts_with('-')
+        && !organization.ends_with('-')
+        && !organization.contains("--")
+        && organization
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-');
+    if !valid {
+        return Err(anyhow!("Invalid GitHub organization login: {organization}"));
+    }
+    Ok(format!("https://api.github.com/orgs/{organization}/repos"))
+}
+
+async fn create_repo_api(
+    repo: &str,
+    auto_init: bool,
+    organization: Option<&str>,
+) -> Result<(String, String, String)> {
     let token = resolve_github_token().ok_or_else(|| {
         anyhow!(
             "Creating a GitHub repo needs credentials — run `gh auth login` or set GITHUB_TOKEN."
         )
     })?;
     let res = reqwest::Client::new()
-        .post("https://api.github.com/user/repos")
+        .post(create_repo_endpoint(organization)?)
         .bearer_auth(&token)
         .header("user-agent", UA)
         .header("accept", "application/vnd.github+json")
@@ -120,4 +149,22 @@ async fn create_repo_api(repo: &str, auto_init: bool) -> Result<(String, String,
         .unwrap_or("main")
         .to_string();
     Ok((owner, name, default_branch))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::create_repo_endpoint;
+
+    #[test]
+    fn repository_endpoint_targets_user_or_organization() {
+        assert_eq!(
+            create_repo_endpoint(None).unwrap(),
+            "https://api.github.com/user/repos"
+        );
+        assert_eq!(
+            create_repo_endpoint(Some("alphaXiv")).unwrap(),
+            "https://api.github.com/orgs/alphaXiv/repos"
+        );
+        assert!(create_repo_endpoint(Some("not/an/org")).is_err());
+    }
 }
