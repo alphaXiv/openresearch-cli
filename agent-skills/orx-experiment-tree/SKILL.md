@@ -55,8 +55,8 @@ variants that should have been siblings.
 
 ## The auto-research loop
 
-To drive a project toward a goal (e.g. "best convergence for d=8") under a fixed
-GPU budget, this is the intended flow — do **not** edit the baseline or rewrite the
+To drive a project toward a goal (e.g. "best convergence for d=8") with fixed
+GPU capacity, this is the intended flow — do **not** edit the baseline or rewrite the
 run command:
 
 1. **Read the baseline's code.** Clone the project's repo into the cache dir and
@@ -109,12 +109,16 @@ run command:
    Those files sync to storage and become readable in step 7 via `orx artifacts` /
    `orx artifact`. A run you can only read the tail-log of is far weaker evidence
    than one that dumped its rollouts. See the `orx-evidence` skill.
-5. **Launch up to your GPU budget** — one run per ready child, in parallel:
+5. **Fill the available GPU capacity** — launch ready children in parallel until
+   the sum of GPUs requested by in-flight runs reaches the available capacity.
+   Capacity is GPU-weighted, not a raw run-count limit: with 16 available GPUs,
+   one-GPU experiments mean up to 16 concurrent runs, four-GPU experiments mean
+   up to four, and an experiment that requires all 16 runs alone.
    ```sh
    orx exp run <childId> --gpu H100_SXM --count 1
    ```
-6. **Keep the budget saturated — drive a per-completion loop, not a wait-for-all
-   barrier.** With a cap of N concurrent runs, you want control back the moment
+6. **Keep GPU capacity saturated — drive a per-completion loop, not a wait-for-all
+   barrier.** You want control back the moment
    *any one* run finishes so you can analyze the state of experiments and either refill its slot or stop if no experiment further is needed — not after the whole batch
    drains. `orx exp wait --project <projectId>` is built for exactly this: it
    returns on the **first** completion. Treat it as one **tick** of a loop, where
@@ -155,7 +159,7 @@ run command:
    the `orx-git` skill). Don't infer from status alone. Each
    completion is a decision point with three moves:
    - **Refill** — result is mediocre or inconclusive: launch the next queued child to
-     keep the GPU budget saturated (step 5).
+     keep the GPU capacity saturated (step 5).
    - **Promote** — result is a clear win: this node becomes the **parent for the next
      round**. The next batch of children branch off *it*, not the baseline, so the win
      carries forward and the next ideas stack on top of it. This is the move that makes

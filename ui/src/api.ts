@@ -82,6 +82,7 @@ export interface NewProject {
   name: string;
   githubOwner?: string;
   githubRepo?: string;
+  githubOrganization?: string;
   baselineBranch?: string;
   runCommand?: string;
   /** arXiv id the project starts from (versionless). */

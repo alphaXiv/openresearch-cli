@@ -156,5 +156,5 @@ orx logs <runId>                 # read its output
 ```
 
 To actually **drive** a project toward a goal — branch children off the baseline,
-edit each child's code on its git branch, and keep the GPU budget saturated —
+edit each child's code on its git branch, and keep the GPU capacity saturated —
 follow the auto-research loop in the `orx-experiment-tree` module.

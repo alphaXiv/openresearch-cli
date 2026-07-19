@@ -384,17 +384,19 @@ struct CreateProjectReq {
     name: String,
     github_owner: Option<String>,
     github_repo: Option<String>,
+    /// Optional destination organization for a created or fork-copied repo.
+    github_organization: Option<String>,
     baseline_branch: Option<String>,
     run_command: Option<String>,
     /// arXiv id of the paper this project starts from (versionless).
     paper_id: Option<String>,
-    /// Create a blank private repo named after the project on the user's
-    /// GitHub account instead of pointing at an existing one.
+    /// Create a blank private repo named after the project under the requested
+    /// GitHub organization, or under the signed-in user when none is supplied.
     #[serde(default)]
     create_repo: bool,
     /// Fork-by-copy the entered repo into a fresh `<repo>-<hash>` repo on the
-    /// user's account. Also applied automatically when the user lacks push
-    /// access to the entered repo — experiments need somewhere to push.
+    /// requested organization or signed-in user's account. Also applied
+    /// automatically when the user lacks push access to the entered repo.
     #[serde(default)]
     fork_repo: bool,
 }
@@ -409,9 +411,10 @@ async fn create_project(
         return Err(bad_request("name is required"));
     }
     let (owner, repo, baseline_branch) = if req.create_repo {
-        let (owner, repo, default_branch) = local::github::create_user_repo(&local::slugify(&name))
-            .await
-            .map_err(bad_request)?;
+        let (owner, repo, default_branch) =
+            local::github::create_repo(&local::slugify(&name), req.github_organization.as_deref())
+                .await
+                .map_err(bad_request)?;
         (owner, repo, Some(default_branch))
     } else {
         let owner = req.github_owner.unwrap_or_default().trim().to_string();
@@ -430,10 +433,14 @@ async fn create_project(
         if fork {
             // The entered branch picks what gets copied; the fork itself
             // starts at its default branch.
-            let (owner, repo, default_branch) =
-                local::github::fork_copy_repo(&owner, &repo, branch)
-                    .await
-                    .map_err(bad_request)?;
+            let (owner, repo, default_branch) = local::github::fork_copy_repo(
+                &owner,
+                &repo,
+                branch,
+                req.github_organization.as_deref(),
+            )
+            .await
+            .map_err(bad_request)?;
             (owner, repo, Some(default_branch))
         } else {
             (owner, repo, branch)
