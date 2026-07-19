@@ -13,6 +13,13 @@ The folder holds `report.md` plus an `images/` subfolder; the markdown reference
 images by relative path (`![](images/foo.png)`). A report's first `# ` heading
 becomes its title.
 
+Include a figure only when it plots measured outputs from completed run logs or
+artifacts. There is no minimum figure count, and a report with no observed data
+must contain no figures. Use prose or a compact table for protocols, lineage,
+blockers, intended configurations, paper-only numbers, and missing evidence;
+never manufacture a workflow, experiment-tree, or evidence-boundary diagram to
+make the report look visual.
+
 For the canonical section structure and worked layout, fetch the report skill:
 
 ```sh

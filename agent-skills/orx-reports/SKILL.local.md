@@ -24,3 +24,10 @@ experiment slug:
 A report's first `# ` heading becomes its title. The markdown references images by
 relative path (`![](images/foo.png)`). There is no upload step — save the files and
 they show up in the Files tab, grouped by experiment.
+
+Include a figure only when it plots measured outputs from completed run logs or
+artifacts. There is no minimum figure count, and a report with no observed data
+must contain no figures. Use prose or a compact table for protocols, lineage,
+blockers, intended configurations, paper-only numbers, and missing evidence;
+never manufacture a workflow, experiment-tree, or evidence-boundary diagram to
+make the report look visual.

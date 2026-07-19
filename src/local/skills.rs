@@ -88,14 +88,15 @@ Workflow:
 
 Write a visual autoresearch report:
 - Write for readers who may not understand the paper. Lead with its central question, then explain the implementation, experiments, and evidence.
-- Open with evidence: place the strongest result figure immediately after the title, before the main explanatory prose. It should give readers an immediate visual understanding of the reproduction's central result.
-- Aim for four or five distinct, evidence-bearing figures when the results support them—for example, a headline result, mechanism or training curve, robustness comparison, and diagnostic or negative control. Use fewer when the available evidence does not justify them; never pad the report with decorative or redundant plots.
+- When completed runs produced measured data, place the strongest useful result plot immediately after the title. Every plotted value must be traceable to run logs or artifacts.
+- There is no minimum figure count. If no completed run produced measurements, include no figures. Never turn prose, paper-only reference numbers, intended configurations, experiment-tree structure, process stages, missing evidence, or zero runs into a diagram merely to make the report visual.
+- Prefer actual result plots—comparisons, training curves, robustness results, or diagnostics—from observed run data. Use a compact table or prose for protocols, lineage, blockers, and evidence boundaries rather than a synthetic infographic.
 - Make the report implementation-led rather than a run log. Trace the important code path, consequential design choices, and the smallest code or configuration changes used to test them.
-- Use figures, compact tables, diagrams, and short code excerpts when they explain the result better than prose. Avoid long uninterrupted text, repeated conclusions, and exhaustive infrastructure histories.
+- Use measured plots, compact tables, and short code excerpts only when they explain the result better than prose. Avoid long uninterrupted text, repeated conclusions, and exhaustive infrastructure histories.
 - Clearly separate paper evidence, observed evidence, divergent or inconclusive results, partial runs, and unattempted claims. End with a concise assessment and descriptive links to the relevant experiment branches.
 - Use one clear title and normal Markdown hierarchy: H2 for major sections and H3 only for genuine subsections.
 - Keep the report self-contained: store figures in an `images/` directory beside `report.md`, reference them as `images/<filename>`, and verify every image renders before publication.
-- Perform a final editorial pass for clarity and concision. The result should feel like an illustrated technical article, not an experiment database dump.
+- Perform a final editorial pass for clarity and concision. The result should feel like a rigorous technical report, not an experiment database dump.
 
 Publish a polished GitHub artifact:
 - Treat the repository README as the public landing page, not as an afterthought. Add a project-specific reproduction section at the very top, before any upstream README content. It must state which paper claim was tested, what was done, the assessment, the paper number versus the observed number, the downscaling/substitutions, the agreed compute, and links to the detailed report or notebook when present.
@@ -321,11 +322,15 @@ mod tests {
         assert!(out.contains("Not run as an experiment (publication surface)"));
         assert!(out.contains("every reader-facing report on `main`"));
         assert!(out.contains("not considered published"));
-        assert!(out.contains("strongest result figure immediately after the title"));
-        assert!(out.contains("four or five distinct, evidence-bearing figures"));
+        assert!(out.contains("strongest useful result plot immediately after the title"));
+        assert!(out.contains("Every plotted value must be traceable to run logs or artifacts"));
+        assert!(out.contains("There is no minimum figure count"));
+        assert!(out.contains("If no completed run produced measurements, include no figures"));
+        assert!(out.contains("zero runs into a diagram merely to make the report visual"));
+        assert!(out.contains("Use a compact table or prose for protocols"));
         assert!(out.contains("implementation-led rather than a run log"));
         assert!(out.contains("images/<filename>"));
-        assert!(out.contains("illustrated technical article"));
+        assert!(out.contains("rigorous technical report"));
         assert!(out.contains("inconclusive under this setup"));
         assert!(out.contains("this run did not show the reported effect"));
         assert!(out.contains("Do not characterize the claim as wrong"));
