@@ -102,6 +102,7 @@ Publish a polished GitHub artifact:
 - In that top section, add a compact `Experiment log` or provenance table covering the important branches only. Use descriptive links to each branch and include columns for branch/experiment, purpose or change, **exact run command**, assessment/outcome, and compute. Copy the command verbatim from `orx exp status`; do not abbreviate it, replace it with pseudocode, or show only the entrypoint.
 - Account for `main` explicitly. If a formal experiment was ever launched from `main`, include `main` in the table with the exact command and result. If `main` is presentation-only, say `Not run as an experiment (publication surface)` rather than inventing a command.
 - Publish every reader-facing report on `main`, alongside the README and other small presentation artifacts. A report is not considered published if it exists only in the dashboard Files directory, a local artifact directory, an `orx/*` experiment branch, or an internal run log. Copy or recreate the final report under a clear repository path such as `reports/<topic>/report.md` or `artifacts/<topic>/report.md`, then add a descriptive link to it in the README's top reproduction section. If several reports are produced, link every important one and briefly say what each contains.
+- Also publish a self-contained, tutorial-style marimo notebook on `main` that explains the central claim and opens with the already-produced evidence; do not make readers rerun expensive experiments to see the result. Validate it with `marimo check <notebook.py>`, embed small results or fetch them from public URLs instead of assuming repository-relative artifacts exist in Molab, and keep optional interactive work bounded and separate from formal reproduction evidence. If the repository is public—or the user explicitly requested public publication and its history is safe to expose—add and verify `[![Open in molab](https://marimo.io/molab-shield.svg)](https://molab.marimo.io/github/<owner>/<repo>/blob/main/<notebook.py>)` in the README. Otherwise preserve private visibility, omit the unusable Molab link, and include concise local `marimo edit <notebook.py>` and `marimo run <notebook.py>` instructions. Never change repository visibility without explicit authorization.
 - Include failed branches only when they explain the lineage to the successful result. Keep raw experiment and run IDs in `orx exp desc`, not in the README.
 - Keep the README current whenever another important branch is run or its assessment changes. A reader landing on GitHub should be able to understand what was tried and reproduce the command without inspecting the internal experiment database.
 "#;
@@ -334,6 +335,15 @@ mod tests {
         assert!(out.contains("Do not invent or maintain a GPU-hour ledger"));
         assert!(out.contains("published-checkpoint evaluation"));
         assert!(out.contains("training eligible, not mandatory"));
+        assert!(out.contains("self-contained, tutorial-style marimo notebook"));
+        assert!(out.contains("marimo check <notebook.py>"));
+        assert!(out.contains("already-produced evidence"));
+        assert!(
+            out.contains("https://molab.marimo.io/github/<owner>/<repo>/blob/main/<notebook.py>")
+        );
+        assert!(out.contains("preserve private visibility"));
+        assert!(out.contains("marimo edit <notebook.py>"));
+        assert!(out.contains("Never change repository visibility without explicit authorization"));
         assert!(!out.contains("trackio"));
         assert!(expand("/reproduce-paper").unwrap().contains("ask the user"));
     }
