@@ -82,8 +82,8 @@ Before running anything:
 Workflow:
 1. Enumerate the paper's main empirical claims (headline table/figure results first). Unless the user specifies, focus on the main illustrative claim of the paper.
 2. Reproduce claim by claim on the agreed compute. Simplified setups and toy-scale runs are fine when full scale is out of budget — say so explicitly when you downscale.
-3. For each claim record an honest verdict (reproduced / partially / not reproduced / not attempted), the evidence (numbers vs. paper's numbers), and the compute cost.
-4. Finish with a summary: per-claim verdicts, where results diverged and why, and what a full-scale reproduction would still need.
+3. For each claim, record the paper's result, the observed result, an assessment (aligned / partially aligned / inconclusive under this setup / not attempted), and the compute cost. When results diverge, state that this run did not show the reported effect, quantify the difference, and explain relevant uncertainty or substitutions. Do not characterize the claim as wrong, incorrect, failed, or "not reproduced," and do not infer beyond the tested setup.
+4. Finish with a summary: per-claim assessments, where results diverged and why, and what a full-scale reproduction would still need.
 
 Write a visual autoresearch report:
 - Write for readers who may not understand the paper. Lead with its central question, then explain the implementation, experiments, and evidence.
@@ -91,18 +91,18 @@ Write a visual autoresearch report:
 - Aim for four or five distinct, evidence-bearing figures when the results support them—for example, a headline result, mechanism or training curve, robustness comparison, and diagnostic or negative control. Use fewer when the available evidence does not justify them; never pad the report with decorative or redundant plots.
 - Make the report implementation-led rather than a run log. Trace the important code path, consequential design choices, and the smallest code or configuration changes used to test them.
 - Use figures, compact tables, diagrams, and short code excerpts when they explain the result better than prose. Avoid long uninterrupted text, repeated conclusions, and exhaustive infrastructure histories.
-- Clearly separate paper evidence, reproduced evidence, negative results, partial runs, and unattempted claims. End with a concise verdict and descriptive links to the relevant experiment branches.
+- Clearly separate paper evidence, observed evidence, divergent or inconclusive results, partial runs, and unattempted claims. End with a concise assessment and descriptive links to the relevant experiment branches.
 - Use one clear title and normal Markdown hierarchy: H2 for major sections and H3 only for genuine subsections.
 - Keep the report self-contained: store figures in an `images/` directory beside `report.md`, reference them as `images/<filename>`, and verify every image renders before publication.
 - Perform a final editorial pass for clarity and concision. The result should feel like an illustrated technical article, not an experiment database dump.
 
 Publish a polished GitHub artifact:
-- Treat the repository README as the public landing page, not as an afterthought. Add a project-specific reproduction section at the very top, before any upstream README content. It must state which paper claim was tested, what was done, the verdict, the paper number versus the reproduced number, the downscaling/substitutions, the agreed compute, and links to the detailed report or notebook when present.
-- In that top section, add a compact `Experiment log` or provenance table covering the important branches only. Use descriptive links to each branch and include columns for branch/experiment, purpose or change, **exact run command**, verdict/outcome, and compute. Copy the command verbatim from `orx exp status`; do not abbreviate it, replace it with pseudocode, or show only the entrypoint.
+- Treat the repository README as the public landing page, not as an afterthought. Add a project-specific reproduction section at the very top, before any upstream README content. It must state which paper claim was tested, what was done, the assessment, the paper number versus the observed number, the downscaling/substitutions, the agreed compute, and links to the detailed report or notebook when present.
+- In that top section, add a compact `Experiment log` or provenance table covering the important branches only. Use descriptive links to each branch and include columns for branch/experiment, purpose or change, **exact run command**, assessment/outcome, and compute. Copy the command verbatim from `orx exp status`; do not abbreviate it, replace it with pseudocode, or show only the entrypoint.
 - Account for `main` explicitly. If a formal experiment was ever launched from `main`, include `main` in the table with the exact command and result. If `main` is presentation-only, say `Not run as an experiment (publication surface)` rather than inventing a command.
 - Publish every reader-facing report on `main`, alongside the README and other small presentation artifacts. A report is not considered published if it exists only in the dashboard Files directory, a local artifact directory, an `orx/*` experiment branch, or an internal run log. Copy or recreate the final report under a clear repository path such as `reports/<topic>/report.md` or `artifacts/<topic>/report.md`, then add a descriptive link to it in the README's top reproduction section. If several reports are produced, link every important one and briefly say what each contains.
 - Include failed branches only when they explain the lineage to the successful result. Keep raw experiment and run IDs in `orx exp desc`, not in the README.
-- Keep the README current whenever another important branch is run or its verdict changes. A reader landing on GitHub should be able to understand what was tried and reproduce the command without inspecting the internal experiment database.
+- Keep the README current whenever another important branch is run or its assessment changes. A reader landing on GitHub should be able to understand what was tried and reproduce the command without inspecting the internal experiment database.
 "#;
 
 const PAPER_TO_MARIMO_TEMPLATE: &str = r#"Reproduce a research paper's main illustrative claim and publish it as a self-contained, tutorial-style marimo notebook that opens in molab.
@@ -324,6 +324,10 @@ mod tests {
         assert!(out.contains("implementation-led rather than a run log"));
         assert!(out.contains("images/<filename>"));
         assert!(out.contains("illustrated technical article"));
+        assert!(out.contains("inconclusive under this setup"));
+        assert!(out.contains("this run did not show the reported effect"));
+        assert!(out.contains("Do not characterize the claim as wrong"));
+        assert!(out.contains("per-claim assessments"));
         assert!(!out.contains("trackio"));
         assert!(expand("/reproduce-paper").unwrap().contains("ask the user"));
     }
