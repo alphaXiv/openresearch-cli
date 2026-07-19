@@ -75,7 +75,7 @@ const REPRODUCE_PAPER_TEMPLATE: &str = r#"Reproduce a research paper claim by cl
 Paper and compute: {args}
 
 Before running anything:
-1. Confirm the compute. The user should name where runs execute — an `~/.ssh/config` host alias (`orx exp run --backend ssh --host <alias>`, configurable in orx up Settings → Compute), another `orx` backend (`hf`, `modal`, `k8s` with a `--flavor`), or the local machine. If unspecified, use the default compute target configured in orx up Settings → Compute when one is set (omit `--backend` to launch there); otherwise ask before launching anything.
+1. Confirm the compute. The user should name where runs execute — an `~/.ssh/config` host alias (`orx exp run --backend ssh --host <alias>`, configurable in orx up Settings → Compute), another `orx` backend (`hf`, `modal`, `k8s` with a `--flavor`), or the local machine. An explicitly named backend is already selected and authorized: use it directly and do not require a default target, provider choice, billing target, or another approval. In particular, when the caller specifies the configured Kubernetes cluster, pass `--backend k8s`; the absence of a default compute target is not a blocker. Only when the caller leaves compute unspecified should you use the default compute target configured in orx up Settings → Compute, or ask before launching if no default exists.
 2. Read the paper. If it's on alphaXiv, `orx paper <id>` gives a structured report (`--full` for raw text); `orx lit "<query>"` can find it. Otherwise ask the user for a PDF or link.
 3. Plan to the user's compute window. When the caller supplies an absolute deadline and available accelerator capacity, treat both as authoritative: keep the available GPUs occupied with scientifically useful parallel variants, seeds, ablations, controls, or profiling runs; refill freed capacity after each completion; and stop early when the target claims are adequately evaluated. Interpret capacity by total GPUs across in-flight runs, not by raw run count. Do not invent or maintain a GPU-hour ledger unless the user explicitly asks for one. For vague small-budget language such as "for a little bit," prefer published-checkpoint evaluation and targeted checks. Larger windows may support broader sweeps, added seeds, fine-tuning, or retraining, but they make training eligible, not mandatory.
 4. Optional tracking: if the user wants metrics logged, prefer Weights & Biases — check `wandb login` / `WANDB_API_KEY` and log each run to a project named after the paper. Don't require it.
@@ -338,6 +338,8 @@ mod tests {
         assert!(out.contains("absolute deadline and available accelerator capacity"));
         assert!(out.contains("total GPUs across in-flight runs"));
         assert!(out.contains("Do not invent or maintain a GPU-hour ledger"));
+        assert!(out.contains("An explicitly named backend is already selected and authorized"));
+        assert!(out.contains("the absence of a default compute target is not a blocker"));
         assert!(out.contains("published-checkpoint evaluation"));
         assert!(out.contains("training eligible, not mandatory"));
         assert!(out.contains("self-contained, tutorial-style marimo notebook"));
