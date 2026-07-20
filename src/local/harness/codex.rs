@@ -38,12 +38,13 @@ use super::detect::{
     HarnessInfo,
 };
 use super::options::{HarnessOptions, PermissionMode};
-use super::{Harness, ResumeAction};
+use super::{should_synthesize_plan, synthesize_resume, Harness, ResumeAction};
 use crate::error::{anyhow, Result};
 use crate::local::chat::{
-    prepare_env, PromptAnswer, ResumeCtx, TurnCtx, WirePart, WirePrompt, WireToolState,
+    prepare_env, PromptAnswer, ResumeCtx, TurnCtx, WirePart, WirePrompt, WireQuestionOption,
+    WireToolState,
 };
-use crate::local::codex::{CodexClient, TurnEvent};
+use crate::local::codex::{CodexClient, ServerReqKind, TurnEvent};
 use crate::local::opencode::ensure_playbook;
 
 // The 5.6 variants (Sol = frontier, Terra = balanced, Luna = fast) plus 5.5;
@@ -134,7 +135,7 @@ impl Harness for Codex {
                 .is_some_and(|v| v < MIN_APP_SERVER_VERSION);
             if too_old {
                 info.agent_note = Some(
-                    "This Codex version chats via the legacy exec path — update to 0.144+ for permission prompts.".to_string(),
+                    "This Codex version chats via the legacy exec path — update to 0.144+ for plan mode & permission prompts.".to_string(),
                 );
             }
         } else {
@@ -156,11 +157,18 @@ impl Harness for Codex {
     }
 
     fn options(&self) -> HarnessOptions {
-        // Two modes, matching Claude. (A real Plan mode — which app-server
-        // does support — is a candidate follow-up now that approvals work;
-        // the legacy exec fallback has no approval channel and dropped
-        // `Plan`→`read-only` because it blocks the `orx` inspection the agent
-        // needs *and* the launches that are the point.)
+        // Plan + Auto + Bypass over the app-server (codex ≥ 0.144). Plan is a
+        // native *collaboration mode*: `turn/start.collaborationMode` injects
+        // codex's own plan.md template, enables the `request_user_input` tool,
+        // and streams the finished plan as a dedicated `plan` item — the same
+        // scheme the codex TUI's `/plan` uses (see `run_turn_app_server`). The
+        // legacy exec fallback (< 0.144) has no collaboration mode, so Plan
+        // there degrades to a read-only sandbox with no cards (see
+        // `codex_sandbox`) — harmless, and noted in the detect-time agent note.
+        //   * Plan  — read-mostly planning turn: same sandbox as Auto
+        //     (workspace-write + on-request), restricted only by the prompt-level
+        //     plan template (see `codex_policies` for the parity gap vs Claude's
+        //     hook-gated plan mode).
         //   * Auto  — workspace-write + `on-request` approvals: the writable
         //     roots (orx data dir, hub `.git` — see `sandbox_policy_json`)
         //     plus network keep routine work prompt-free, and anything past
@@ -169,57 +177,114 @@ impl Harness for Codex {
         //   * Bypass— full access, approvals off.
         HarnessOptions::none()
             .with_permission_modes(
-                &[PermissionMode::Auto, PermissionMode::Bypass],
+                &[
+                    PermissionMode::Plan,
+                    PermissionMode::Auto,
+                    PermissionMode::Bypass,
+                ],
                 PermissionMode::Auto,
             )
             // Codex's own reasoning tiers via `-c model_reasoning_effort`.
             .with_reasoning_levels(&CODEX_REASONING_LEVELS, "high")
     }
 
-    /// Codex is paused mid-turn on a server→client approval request; the
-    /// answer is the JSON-RPC reply, delivered over the live app-server child.
-    /// Inline (the opencode pattern): the still-running turn loop keeps
-    /// streaming once codex unblocks, so this returns
-    /// [`ResumeAction::Handled`] — never the new-message path. Only
-    /// `answer.approve` is consulted (accept/decline; codex has no
-    /// question-style answers here).
+    /// Three prompt kinds resume differently:
+    ///
+    /// * `permission` (native, held mid-turn): the answer is the JSON-RPC
+    ///   `{decision}` reply, delivered inline over the live app-server child —
+    ///   the still-running turn keeps streaming once codex unblocks
+    ///   ([`ResumeAction::Handled`], never the new-message path).
+    /// * `question` (native, held mid-turn): a `request_user_input` reply,
+    ///   delivered inline the same way (`user_input_reply`).
+    /// * `plan` (end-turn card, no `native_id`): resumes by a NEW user message
+    ///   ([`ResumeAction::SendMessage`]) — approve sends the implementation
+    ///   prompt under the chosen (default Auto) mode; whose maskless→`default`
+    ///   collaborationMode is what actually exits plan mode. Revise stays in
+    ///   Plan (shared `synthesize_resume`); a note-less reject just closes the
+    ///   card ([`ResumeAction::Nothing`]).
     async fn resume_from_prompt(
         &self,
         ctx: &ResumeCtx,
         prompt: &WirePrompt,
         answer: &PromptAnswer,
     ) -> Result<ResumeAction> {
-        if prompt.kind != "permission" {
-            return Err(anyhow!("codex cannot reply to a `{}` prompt", prompt.kind));
+        match prompt.kind.as_str() {
+            // End-turn plan card (no native_id): resume by message, exactly
+            // like Claude's plan card. The fresh turn's collaborationMode mask
+            // (`default` on approve/leave, `plan` on revise) is what un-sticks
+            // or keeps plan mode — no inline reply, so no busy-check here.
+            "plan" => {
+                // Note-less reject on an end-turn card: the turn is already over
+                // and there's nothing to un-stick with a message — resuming just
+                // to say "stop" would end in fresh text that becomes ANOTHER
+                // plan card, so it could never dismiss the strip. Close it.
+                if !answer.approve && answer.note.as_deref().is_none_or(|s| s.trim().is_empty()) {
+                    return Ok(ResumeAction::Nothing);
+                }
+                let note = answer.note.as_deref().filter(|s| !s.trim().is_empty());
+                let chosen = answer
+                    .resume_mode
+                    .as_deref()
+                    .and_then(PermissionMode::from_id);
+                let (text, mode) = if answer.approve {
+                    // Codex's plan template primes the model for "Implement the
+                    // plan." — its own proven approval phrasing (the TUI uses
+                    // it). Approving leaves plan mode; default to Auto, whose
+                    // fresh turn attaches the `default` mask that un-sticks.
+                    let mut text = "Implement the plan.".to_string();
+                    if let Some(note) = note {
+                        text.push_str(&format!("\n\nAdditional guidance: {note}"));
+                    }
+                    (text, chosen.or(Some(PermissionMode::Auto)))
+                } else {
+                    // Revise (a note-carrying reject): stay in Plan. Reuse the
+                    // shared plan-deny wording so the phrasing matches Claude.
+                    synthesize_resume("plan", answer)
+                };
+                Ok(ResumeAction::SendMessage { text, mode })
+            }
+            // Native held cards (permission / question): reply inline over the
+            // live child. A reply only lands if the turn is still paused on it —
+            // after an interrupt/error the request was already settled and a
+            // late reply would be a stale answer into the void. Mirror Claude's
+            // zombie collapse so a card left by a crashed turn stops swallowing
+            // answers.
+            "permission" | "question" => {
+                if !ctx.is_busy().await {
+                    ctx.host
+                        .resolve_zombie_prompt(&ctx.session_id, &answer.prompt_id);
+                    return Err(anyhow!(
+                        "this turn is no longer running — its prompt can't be answered"
+                    ));
+                }
+                let native = prompt
+                    .native_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("codex prompt has no reply id"))?;
+                // native_id is the JSON-RPC request id's raw text.
+                let rpc_id: Value = serde_json::from_str(native)
+                    .map_err(|_| anyhow!("codex prompt reply id is invalid"))?;
+                // Build the reply BEFORE reaching the client, so a bad answer
+                // (a question with no selection/note) errs before delivery and
+                // leaves the card actionable.
+                let reply = if prompt.kind == "permission" {
+                    serde_json::json!({ "decision": approval_decision(answer.approve) })
+                } else {
+                    user_input_reply(prompt, answer)?
+                };
+                let client = ctx
+                    .host
+                    .codex
+                    .client_for(&ctx.session_id)
+                    .await
+                    .ok_or_else(|| {
+                        anyhow!("codex app-server is not running — cannot deliver the reply")
+                    })?;
+                client.respond(&rpc_id, reply).await?;
+                Ok(ResumeAction::Handled)
+            }
+            other => Err(anyhow!("codex cannot reply to a `{other}` prompt")),
         }
-        // A reply only lands if the turn is still paused on it — after an
-        // interrupt/error the request was already cancelled and a late reply
-        // would be a stale answer into the void.
-        if !ctx.is_busy().await {
-            return Err(anyhow!(
-                "this turn is no longer running — its prompt can't be answered"
-            ));
-        }
-        let native = prompt
-            .native_id
-            .as_deref()
-            .ok_or_else(|| anyhow!("codex prompt has no reply id"))?;
-        // native_id is the JSON-RPC request id's raw text (integer or string).
-        let rpc_id: Value = serde_json::from_str(native)
-            .map_err(|_| anyhow!("codex prompt reply id is invalid"))?;
-        let client = ctx
-            .host
-            .codex
-            .client_for(&ctx.session_id)
-            .await
-            .ok_or_else(|| anyhow!("codex app-server is not running — cannot deliver the reply"))?;
-        client
-            .respond(
-                &rpc_id,
-                serde_json::json!({ "decision": approval_decision(answer.approve) }),
-            )
-            .await?;
-        Ok(ResumeAction::Handled)
     }
 
     fn config_home(&self) -> Option<PathBuf> {
@@ -323,8 +388,16 @@ async fn app_server_supported() -> bool {
 fn codex_policies(mode: Option<PermissionMode>) -> (&'static str, &'static str) {
     match mode.unwrap_or(PermissionMode::Auto) {
         PermissionMode::Bypass => ("danger-full-access", "never"),
-        // Plan/AcceptEdits/Ask have no distinct semantics here (mirrors
-        // `codex_sandbox` on the exec path): the balanced default.
+        // Plan runs the SAME sandbox as Auto (workspace-write + on-request).
+        // Native plan mode restricts *at the prompt level* — codex's built-in
+        // plan.md template tells the model to propose without editing — not at
+        // the sandbox level, so this is the parity gap vs Claude's hook-gated
+        // plan mode: an off-script write inside the workspace would not prompt
+        // (user-accepted). This arm is the variation point if we ever want a
+        // harder read-only floor: swap to `("read-only", "on-request")` here
+        // and nowhere else. AcceptEdits/Ask still collapse to the balanced
+        // default (mirrors `codex_sandbox` on the exec path).
+        PermissionMode::Plan => ("workspace-write", "on-request"),
         _ => ("workspace-write", "on-request"),
     }
 }
@@ -356,9 +429,39 @@ async fn sandbox_policy_json(mode: Option<PermissionMode>, workspace: &Path) -> 
     }
 }
 
+/// The per-turn `collaborationMode` mask (experimental API). Codex's native
+/// plan mode is a *collaboration mode*, not a sandbox setting: `plan` injects
+/// codex's built-in plan.md template and enables `request_user_input`; `default`
+/// injects the Default template. Attaching a mask is never free — even
+/// `{mode:"default"}` on a fresh (template-less) thread INJECTS the Default
+/// template (verified in the 0.144 spike) — so the caller attaches this only
+/// when it actually wants a template (see `run_turn_app_server`).
+///
+/// Envelope keys are camelCase (`collaborationMode`), `settings` keys snake_case
+/// (`reasoning_effort`, `developer_instructions`). `model` is REQUIRED. The
+/// built-in template rides `developer_instructions: null`; it's an independent
+/// channel from the thread-level `developerInstructions` playbook, so the
+/// playbook is never disturbed by leaving this null.
+fn collaboration_mode_json(mode: &str, model: &str, effort: Option<&str>) -> Value {
+    let mut settings = serde_json::Map::new();
+    settings.insert("model".to_string(), Value::String(model.to_string()));
+    if let Some(effort) = effort {
+        settings.insert(
+            "reasoning_effort".to_string(),
+            Value::String(effort.to_string()),
+        );
+    }
+    settings.insert("developer_instructions".to_string(), Value::Null);
+    serde_json::json!({ "mode": mode, "settings": Value::Object(settings) })
+}
+
 /// How a turn ended, from `turn/completed`.
 enum TurnEnd {
-    Done,
+    /// Completed or interrupted. `interrupted` drives whether an end-turn plan
+    /// card is synthesized — an interrupted plan turn has no finished plan.
+    Done {
+        interrupted: bool,
+    },
     Failed(String),
 }
 
@@ -379,6 +482,23 @@ fn apply_notification(ctx: &mut TurnCtx, method: &str, params: &Value) -> Option
         // fallback shape. Only one of the two fires per item in practice.
         "item/reasoning/summaryTextDelta" | "item/reasoning/textDelta" => {
             append_delta(ctx, params, |id| WirePart::reasoning(id, ""));
+        }
+        // Plan mode streams the finished plan token-by-token before the
+        // completed `plan` item lands. Rendered as a plain markdown text part
+        // (WirePart kinds are text|reasoning|tool|prompt) under a derived id so
+        // the completed item upserts the same part. The end-turn plan card then
+        // reads this part's text as the authoritative plan.
+        "item/plan/delta" => {
+            let plan_delta = |id: String| WirePart::text(id, "");
+            if let Some(item_id) = params.get("itemId").and_then(Value::as_str) {
+                let part_id = plan_part_id(item_id);
+                if !part_exists(ctx, &part_id) {
+                    ctx.upsert_part(plan_delta(part_id.clone()));
+                }
+                if let Some(delta) = params.get("delta").and_then(Value::as_str) {
+                    ctx.append_part_text(&part_id, delta);
+                }
+            }
         }
         "item/commandExecution/outputDelta" => {
             let (Some(item_id), Some(delta)) = (
@@ -428,7 +548,9 @@ fn apply_notification(ctx: &mut TurnCtx, method: &str, params: &Value) -> Option
             if status == "inProgress" {
                 return None;
             }
-            return Some(TurnEnd::Done); // completed | interrupted
+            return Some(TurnEnd::Done {
+                interrupted: status == "interrupted",
+            });
         }
         _ => {}
     }
@@ -562,10 +684,28 @@ fn apply_item(ctx: &mut TurnCtx, item: &Value, completed: bool) {
                 None,
             ));
         }
-        // userMessage (our own echo), mcpToolCall, webSearch, plan, …: not
-        // rendered (parity with the exec path); unknown types tolerated.
+        Some("plan") => {
+            // The completed plan item's `text` is authoritative — but never
+            // wipe streamed `item/plan/delta` text with an empty final (same
+            // guard as agentMessage). Keyed on the derived plan part id so the
+            // completed item upserts the part the deltas built.
+            let text = item.get("text").and_then(Value::as_str).unwrap_or("");
+            let part_id = plan_part_id(&id);
+            if !completed || !text.is_empty() || !part_exists(ctx, &part_id) {
+                ctx.upsert_part(WirePart::text(part_id, text));
+            }
+        }
+        // userMessage (our own echo), mcpToolCall, webSearch, …: not rendered
+        // (parity with the exec path); unknown types tolerated.
         _ => {}
     }
+}
+
+/// The WirePart id of a plan item's text — a pure function of the plan item id
+/// so the streamed `item/plan/delta` parts and the completed `plan` item upsert
+/// the same part, and `plan_card` can find the authoritative plan text.
+fn plan_part_id(item_id: &str) -> String {
+    format!("plan-item-{item_id}")
 }
 
 /// Display text for a reasoning item: streamed content, else the summary.
@@ -603,13 +743,17 @@ fn error_message(error: Option<&Value>) -> String {
 }
 
 async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
-    // Entry sweep: any card still unresolved from an earlier turn is a zombie
-    // — its JSON-RPC request died with its turn (or child), and worse, codex
-    // request ids restart per child, so a click on a stale card could be
-    // delivered to a live request minted later. Resolve them all before this
-    // turn can surface anything.
+    // Entry sweep: any HELD (native_id) card still unresolved from an earlier
+    // turn is a zombie — its JSON-RPC request died with its turn (or child), and
+    // worse, codex request ids restart per child, so a click on a stale card
+    // could be delivered to a live request minted later. Resolve them before
+    // this turn can surface anything. Native-only (`true`) now that end-turn
+    // cards exist (the synthesized plan card): those carry no native_id and
+    // resume by message — the next user message replaces them, exactly like
+    // Claude's precedent. Behavior-preserving for the pre-plan-mode cards (all
+    // of which were native).
     ctx.host
-        .resolve_stale_prompts(&ctx.session_id, false)
+        .resolve_stale_prompts(&ctx.session_id, true)
         .await?;
     let project = ctx.project.clone();
     let session_id = ctx.session_id.clone();
@@ -646,7 +790,12 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
             let mut params = thread_setup.clone();
             params["threadId"] = Value::String(id.clone());
             match client.try_request("thread/resume", params).await? {
-                Ok(_) => {
+                Ok(resumed) => {
+                    // Capture the effective model codex reports (top-level
+                    // `model`) — the required `settings.model` for a
+                    // collaborationMode mask, and the escape path when the
+                    // session carries no explicit model.
+                    client.set_thread_model(resumed.get("model").and_then(Value::as_str));
                     client.set_resumed_thread(&id);
                     id
                 }
@@ -681,9 +830,60 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
     if let Some(model) = &ctx.model {
         turn_params["model"] = Value::String(model.clone());
     }
-    if let Some(effort) = codex_reasoning(ctx.reasoning_level.as_deref()) {
+    let effort = codex_reasoning(ctx.reasoning_level.as_deref());
+    if let Some(effort) = effort {
         turn_params["effort"] = Value::String(effort.to_string());
     }
+
+    // Conditional collaborationMode mask (see `collaboration_mode_json`).
+    // Attaching a mask always injects a template, so attach one ONLY when we
+    // want it:
+    //   * Plan turn → the `plan` mask (codex's plan.md template + question tool).
+    //   * Non-plan turn whose thread MAY be sticky-planned → the `default` mask,
+    //     once, to un-stick (a `plan` turn leaves the thread planning until a
+    //     turn carries `default`; there is no way back to "no template"). "May
+    //     be sticky-planned" fires on either signal: the DB `prev_permission_mode`
+    //     (survives restarts) or this child's in-memory `last_collab_mode` (a
+    //     `plan` mask we sent and haven't cleared).
+    //   * Otherwise → attach nothing (preserves today's template-free context).
+    // The mask's required `settings.model` is the session model, falling back to
+    // codex's reported thread model; keep the top-level `model`/`effort` above
+    // so the None-model escape path still works (mask omitted, plain turn).
+    let plan_turn = ctx.permission_mode == Some(PermissionMode::Plan);
+    let may_be_sticky = ctx.prev_permission_mode == Some(PermissionMode::Plan)
+        || client.last_collab_mode() == Some("plan");
+    let mask_mode = if plan_turn {
+        Some("plan")
+    } else if may_be_sticky {
+        Some("default")
+    } else {
+        None
+    };
+    if let Some(mode) = mask_mode {
+        let collab_model = ctx.model.clone().or_else(|| client.thread_model());
+        match collab_model {
+            Some(model) => {
+                turn_params["collaborationMode"] = collaboration_mode_json(mode, &model, effort);
+                client.set_last_collab_mode(mode);
+            }
+            None if plan_turn => {
+                // Plan mode with no known model can't build the mask (settings
+                // .model is required) — fail clearly rather than silently run a
+                // plain (non-planning) turn the user asked to plan.
+                return Err(anyhow!(
+                    "codex did not report a model — cannot enter plan mode"
+                ));
+            }
+            None => {
+                // Un-stick wanted but no model to build the mask: omit it and
+                // log. Degrades to today's behavior (the thread stays planned
+                // until a turn carries `default`); rare (a resume before any
+                // start/resume reported a model).
+                eprintln!("orx up: codex reported no model — skipping the plan-mode un-stick mask");
+            }
+        }
+    }
+
     let started = client.request("turn/start", turn_params).await?;
     // Everything below is filtered to this turn: an earlier turn of the same
     // session that was orx-side aborted (its native interrupt raced or never
@@ -700,20 +900,22 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
         client.set_active_turn(turn_id);
     }
 
-    // Approval cards surfaced this turn: WirePart id → JSON-RPC request id.
-    // Invariant: no unresolved codex card outlives its turn — every exit path
-    // below sweeps them (resolve + settle with codex), so a dead turn can't
-    // leave a live-looking card. (A task *abort* skips the sweep, but
-    // `ChatHost::interrupt` cancels pending approvals natively first, and the
-    // next turn's entry sweep in this function resolves whatever survived.)
-    let mut open_approvals: HashMap<String, Value> = HashMap::new();
+    // Open request cards surfaced this turn: WirePart id → (JSON-RPC request
+    // id, kind). Kind picks the settle shape (a permission `decline` vs a
+    // userInput empty-answers) on every exit path. Invariant: no unresolved
+    // codex card outlives its turn — every exit path below sweeps them (resolve
+    // + settle with codex), so a dead turn can't leave a live-looking card. (A
+    // task *abort* skips the sweep, but `ChatHost::interrupt` settles pending
+    // requests natively first, and the next turn's entry sweep in this function
+    // resolves whatever survived.)
+    let mut open_requests: HashMap<String, (Value, ServerReqKind)> = HashMap::new();
 
     loop {
         // Watchdog (see TURN_WATCHDOG for the false-positive trade-off).
         // Suspended while a card is pending — user think-time is unbounded by
-        // design; codex's own ~5-minute approval deadline still applies
-        // server-side.
-        let event = if open_approvals.is_empty() {
+        // design (question think-time too); codex's own ~5-minute approval
+        // deadline still applies server-side.
+        let event = if open_requests.is_empty() {
             match tokio::time::timeout(TURN_WATCHDOG, rx.recv()).await {
                 Ok(event) => event,
                 Err(_) => {
@@ -743,21 +945,29 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
                 // flushed immediately so the card goes read-only right away.
                 if method == "serverRequest/resolved" {
                     if let Some(request_id) = params.get("requestId") {
-                        let part_id = approval_part_id(turn_id.as_deref(), request_id);
-                        if open_approvals.remove(&part_id).is_some() {
+                        let part_id = request_part_id(turn_id.as_deref(), request_id);
+                        if open_requests.remove(&part_id).is_some() {
                             resolve_card(ctx, &part_id);
                             let _ = ctx.flush();
                         }
                     }
                 }
                 match apply_notification(ctx, &method, &params) {
-                    Some(TurnEnd::Done) => {
-                        sweep_open_approvals(ctx, &client, &mut open_approvals).await;
+                    Some(TurnEnd::Done { interrupted }) => {
+                        sweep_open_requests(ctx, &client, &mut open_requests).await;
+                        // Synthesize the end-turn plan card (Plan mode, not
+                        // interrupted). Attach before the final flush so the
+                        // PlanStrip appears atomically with the finished turn.
+                        if plan_turn && !interrupted {
+                            if let Some(part) = plan_card(&ctx.assistant.parts, &ctx.assistant.id) {
+                                ctx.upsert_part(part);
+                            }
+                        }
                         let _ = ctx.flush();
                         return Ok(());
                     }
                     Some(TurnEnd::Failed(message)) => {
-                        sweep_open_approvals(ctx, &client, &mut open_approvals).await;
+                        sweep_open_requests(ctx, &client, &mut open_requests).await;
                         // A terminal `error` notification may have already
                         // pushed this exact message — don't render it twice.
                         if !has_error_part(ctx, &message) {
@@ -772,45 +982,74 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
                 }
             }
             TurnEvent::Request { id, method, params } => {
+                let kind = crate::local::codex::server_req_kind(&method);
                 if event_turn_mismatch(turn_id.as_deref(), &params) {
                     // A stale turn's request (aborted predecessor still
-                    // streaming) is declined, never surfaced — with the reply
+                    // streaming) is settled, never surfaced — with the reply
                     // shape its method can actually parse.
-                    if crate::local::codex::is_approval_request(&method) {
-                        let _ = client.respond_decline(&id).await;
-                    } else {
-                        let _ = client.respond_method_unsupported(&id).await;
-                    }
-                } else if let Some((part_id, part)) =
-                    approval_card(turn_id.as_deref(), &method, &id, &params)
-                {
-                    if matches!(ctx.permission_mode, Some(PermissionMode::Bypass)) {
-                        // Bypass runs sandbox-less with approvals off; if codex
-                        // asks anyway, the user's chosen mode answers for them.
-                        let _ = client
-                            .respond(
-                                &id,
-                                serde_json::json!({ "decision": approval_decision(true) }),
-                            )
-                            .await;
-                    } else {
-                        // Surface the card and keep consuming events — codex
-                        // holds the command; the reply arrives via
-                        // `resume_from_prompt` on the user's click.
-                        open_approvals.insert(part_id, id);
-                        ctx.upsert_part(part);
-                        let _ = ctx.flush();
-                    }
+                    settle_request(&client, &id, kind).await;
                 } else {
-                    // Non-approval request type (different reply schema, e.g.
-                    // item/tool/requestUserInput) — in every mode: fail the
-                    // call rather than answer in a shape codex can't parse.
-                    let _ = client.respond_method_unsupported(&id).await;
+                    match kind {
+                        ServerReqKind::Approval => {
+                            let card = approval_card(turn_id.as_deref(), &method, &id, &params);
+                            if let Some((part_id, part)) = card {
+                                if matches!(ctx.permission_mode, Some(PermissionMode::Bypass)) {
+                                    // Bypass runs sandbox-less with approvals off;
+                                    // if codex asks anyway, the user's chosen mode
+                                    // answers for them. (Question cards are never
+                                    // auto-answered — only approvals.)
+                                    let _ = client
+                                        .respond(
+                                            &id,
+                                            serde_json::json!({
+                                                "decision": approval_decision(true)
+                                            }),
+                                        )
+                                        .await;
+                                } else {
+                                    // Surface the card and keep consuming events —
+                                    // codex holds the command; the reply arrives
+                                    // via `resume_from_prompt` on the user's click.
+                                    open_requests.insert(part_id, (id, kind));
+                                    ctx.upsert_part(part);
+                                    let _ = ctx.flush();
+                                }
+                            } else {
+                                // Classified Approval but no card (unknown method
+                                // variant) — decline rather than block.
+                                let _ = client.respond_decline(&id).await;
+                            }
+                        }
+                        ServerReqKind::UserInput => {
+                            // request_user_input (plan mode's clarifying question)
+                            // → a held question card, answered inline or via the
+                            // composer. All-secret questions can't be surfaced
+                            // (never store secrets) → answer empty so codex
+                            // proceeds without them.
+                            match user_input_card(turn_id.as_deref(), &id, &params) {
+                                Some((part_id, part)) => {
+                                    open_requests.insert(part_id, (id, kind));
+                                    ctx.upsert_part(part);
+                                    let _ = ctx.flush();
+                                }
+                                None => {
+                                    let _ = client
+                                        .respond(&id, serde_json::json!({ "answers": {} }))
+                                        .await;
+                                }
+                            }
+                        }
+                        ServerReqKind::Other => {
+                            // A reply schema we don't speak — fail the call
+                            // rather than answer in a shape codex can't parse.
+                            let _ = client.respond_method_unsupported(&id).await;
+                        }
+                    }
                 }
             }
             TurnEvent::Closed => {
                 // Child gone: nothing to settle with codex; just close cards.
-                for part_id in std::mem::take(&mut open_approvals).into_keys() {
+                for part_id in std::mem::take(&mut open_requests).into_keys() {
                     resolve_card(ctx, &part_id);
                 }
                 return Err(anyhow!(
@@ -824,17 +1063,38 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
 }
 
 /// Turn-exit sweep half of the no-card-outlives-its-turn invariant: cards the
-/// user never answered are resolved in the transcript and declined with codex.
-/// The decline is unconditional — `CodexClient::respond`'s pending-set guard
-/// is the single arbiter, so an already-answered/settled id no-ops there.
-async fn sweep_open_approvals(
+/// user never answered are resolved in the transcript and settled with codex in
+/// the shape their kind requires (approval → decline, userInput → empty
+/// answers). The settle is unconditional — `CodexClient::respond`'s pending-set
+/// guard is the single arbiter, so an already-answered/settled id no-ops there.
+async fn sweep_open_requests(
     ctx: &mut TurnCtx,
     client: &CodexClient,
-    open: &mut HashMap<String, Value>,
+    open: &mut HashMap<String, (Value, ServerReqKind)>,
 ) {
-    for (part_id, rpc_id) in open.drain() {
+    for (part_id, (rpc_id, kind)) in open.drain() {
         resolve_card(ctx, &part_id);
-        let _ = client.respond_decline(&rpc_id).await;
+        settle_request(client, &rpc_id, kind).await;
+    }
+}
+
+/// Settle one server→client request in the reply shape its kind requires, so a
+/// request orx is abandoning never leaves codex blocked. Approval → `decline`;
+/// UserInput → an empty `{"answers": {}}` (codex proceeds without answers);
+/// Other → a JSON-RPC method-not-found error.
+async fn settle_request(client: &CodexClient, id: &Value, kind: ServerReqKind) {
+    match kind {
+        ServerReqKind::Approval => {
+            let _ = client.respond_decline(id).await;
+        }
+        ServerReqKind::UserInput => {
+            let _ = client
+                .respond(id, serde_json::json!({ "answers": {} }))
+                .await;
+        }
+        ServerReqKind::Other => {
+            let _ = client.respond_method_unsupported(id).await;
+        }
     }
 }
 
@@ -864,14 +1124,14 @@ fn approval_decision(approve: bool) -> &'static str {
     }
 }
 
-/// The WirePart id of an approval card, a pure function of (turn, request id)
-/// — shared by `approval_card` and the `serverRequest/resolved` reconciliation
-/// so neither needs a reverse lookup. Turn-scoped because codex request ids
-/// restart at 0 per child process: without the scope, a stale card from a
-/// previous child generation would collide with a live one. (The turn-entry
-/// `resolve_stale_prompts` sweep is the primary defense; this makes ids
-/// honest too.)
-fn approval_part_id(turn: Option<&str>, id: &Value) -> String {
+/// The WirePart id of a server-request card (approval OR question), a pure
+/// function of (turn, request id) — shared by `approval_card`, `user_input_card`,
+/// and the `serverRequest/resolved` reconciliation so none needs a reverse
+/// lookup. Turn-scoped because codex request ids restart at 0 per child process:
+/// without the scope, a stale card from a previous child generation would
+/// collide with a live one. (The turn-entry `resolve_stale_prompts` sweep is the
+/// primary defense; this makes ids honest too.)
+fn request_part_id(turn: Option<&str>, id: &Value) -> String {
     format!("appr-{}-{id}", turn.unwrap_or("t"))
 }
 
@@ -900,7 +1160,7 @@ fn approval_card(
             input.insert(key.to_string(), v.clone());
         }
     }
-    let part_id = approval_part_id(turn, id);
+    let part_id = request_part_id(turn, id);
     let prompt = WirePrompt {
         kind: "permission".into(),
         tool: Some(tool.into()),
@@ -909,6 +1169,167 @@ fn approval_card(
         ..Default::default()
     };
     Some((part_id.clone(), WirePart::prompt(part_id, prompt)))
+}
+
+/// An `item/tool/requestUserInput` server request → a `question` card. Codex's
+/// schema is `{questions: [{id, header, question, isOther, isSecret, options:
+/// [{label, description}]|null}]}`. We surface the FIRST non-secret question
+/// (the composer answers one at a time); `native_id` carries the JSON-RPC id so
+/// `resume_from_prompt` can reply. `tool_input` stashes every question id plus
+/// the one we surfaced, so `user_input_reply` can fill an empty answer for the
+/// rest (codex tolerates a partial `answers` map). `None` when there is no
+/// non-secret question to show (all-secret / empty) — the caller answers empty
+/// (`{"answers":{}}`) and never stores a secret prompt.
+fn user_input_card(turn: Option<&str>, id: &Value, params: &Value) -> Option<(String, WirePart)> {
+    let questions = params.get("questions").and_then(Value::as_array)?;
+    // Every question id, for the multi-question reply fill.
+    let all_ids: Vec<Value> = questions
+        .iter()
+        .filter_map(|q| q.get("id").cloned())
+        .collect();
+    // The first non-secret question is the one we surface.
+    let q = questions
+        .iter()
+        .find(|q| !q.get("isSecret").and_then(Value::as_bool).unwrap_or(false))?;
+    let answered_id = q.get("id").cloned()?;
+    let options = q
+        .get("options")
+        .and_then(Value::as_array)
+        .map(|opts| {
+            opts.iter()
+                .filter_map(|o| {
+                    Some(WireQuestionOption {
+                        label: o.get("label").and_then(Value::as_str)?.to_string(),
+                        description: o
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let part_id = request_part_id(turn, id);
+    let prompt = WirePrompt {
+        kind: "question".into(),
+        question: q
+            .get("question")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        header: q.get("header").and_then(Value::as_str).map(str::to_string),
+        options,
+        // codex's request_user_input takes one answer per question id — no
+        // multi-select notion, so leave it false.
+        multi_select: false,
+        native_id: Some(id.to_string()),
+        tool_input: Some(serde_json::json!({
+            "questionIds": all_ids,
+            "answeredId": answered_id,
+        })),
+        ..Default::default()
+    };
+    Some((part_id.clone(), WirePart::prompt(part_id, prompt)))
+}
+
+/// The `item/tool/requestUserInput` reply for an answered question card: the
+/// surfaced question id gets the selected labels (or the freeform note when
+/// there's no selection), every other stashed id gets an empty `{"answers": []}`
+/// (codex tolerates a partial map and proceeds). `Err` when neither a selection
+/// nor a note was provided — leaves the card actionable rather than sending an
+/// empty answer the user didn't intend.
+fn user_input_reply(prompt: &WirePrompt, answer: &PromptAnswer) -> Result<Value> {
+    let note = answer.note.as_deref().filter(|s| !s.trim().is_empty());
+    let selected: Vec<String> = if !answer.answers.is_empty() {
+        answer.answers.clone()
+    } else if let Some(note) = note {
+        vec![note.to_string()]
+    } else {
+        return Err(anyhow!("select an option (or type an answer) to reply"));
+    };
+    let tool_input = prompt.tool_input.as_ref();
+    let answered_id = tool_input
+        .and_then(|t| t.get("answeredId"))
+        .cloned()
+        .ok_or_else(|| anyhow!("codex question card has no answer id"))?;
+    let mut answers = serde_json::Map::new();
+    answers.insert(
+        json_key(&answered_id),
+        serde_json::json!({ "answers": selected }),
+    );
+    // Fill the remaining question ids empty so the whole call is answered.
+    if let Some(ids) = tool_input
+        .and_then(|t| t.get("questionIds"))
+        .and_then(Value::as_array)
+    {
+        for qid in ids {
+            let key = json_key(qid);
+            answers
+                .entry(key)
+                .or_insert_with(|| serde_json::json!({ "answers": [] }));
+        }
+    }
+    Ok(serde_json::json!({ "answers": Value::Object(answers) }))
+}
+
+/// A JSON value used as a `{"answers": {...}}` map key — a JSON object key is a
+/// string, so a string id is used bare and anything else (a numeric id) by its
+/// JSON text.
+fn json_key(id: &Value) -> String {
+    id.as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// The end-turn plan card for a finished Plan-mode turn, as a ready-to-upsert
+/// `WirePart` (id `plan-synth-{assistant_id}`, exactly like Claude's). Prefers
+/// the authoritative plan item text (the `plan-item-*` part built from
+/// `item/plan/delta` + the completed `plan` item; `synthesized: false`); falls
+/// back to the last non-empty text part gated by the shared
+/// `should_synthesize_plan` predicate (`synthesized: true`) — the model
+/// presented the plan as prose without emitting a `plan` item. `None` when there
+/// is nothing to approve. No `native_id`: an end-turn card resumes by message,
+/// exactly like Claude's synthesized plan card.
+fn plan_card(parts: &[WirePart], assistant_id: &str) -> Option<WirePart> {
+    // Authoritative plan item text, if any streamed/completed this turn.
+    let plan_text = parts
+        .iter()
+        .find(|p| p.id.starts_with("plan-item-"))
+        .and_then(|p| p.text.as_deref())
+        .filter(|t| !t.trim().is_empty());
+    let card = if let Some(text) = plan_text {
+        WirePrompt {
+            kind: "plan".into(),
+            plan: Some(text.to_string()),
+            synthesized: false,
+            ..Default::default()
+        }
+    } else {
+        // No plan item — fall back to the last non-empty text part, gated by the
+        // same predicate Claude uses (plan mode, no prompt surfaced, no error,
+        // non-empty text). `saw_prompt = false`: any surfaced question/approval
+        // card here doesn't count as an exit recourse (mirrors Claude — only a
+        // plan answer exits plan mode), so a texty plan still gets a card.
+        let last_text = parts
+            .iter()
+            .rev()
+            .find(|p| p.kind == "text" && p.text.as_deref().is_some_and(|t| !t.trim().is_empty()))
+            .and_then(|p| p.text.as_deref())?;
+        let errored = parts.iter().any(|p| {
+            p.state
+                .as_ref()
+                .is_some_and(|s| s.status == "error" && s.error.is_some())
+        });
+        if !should_synthesize_plan(true, false, errored, last_text) {
+            return None;
+        }
+        WirePrompt {
+            kind: "plan".into(),
+            plan: Some(last_text.to_string()),
+            synthesized: true,
+            ..Default::default()
+        }
+    };
+    Some(WirePart::prompt(format!("plan-synth-{assistant_id}"), card))
 }
 
 /// Mark a surfaced card resolved in the in-memory transcript (no-op when the
@@ -941,6 +1362,10 @@ async fn start_thread(ctx: &mut TurnCtx, client: &CodexClient, params: Value) ->
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("thread/start returned no thread id"))?
         .to_string();
+    // Capture the effective model (top-level `model`) — the required
+    // `settings.model` for a collaborationMode mask, and the escape path when
+    // the session carries no explicit model.
+    client.set_thread_model(result.get("model").and_then(Value::as_str));
     ctx.set_native_session_id(&thread_id);
     client.set_resumed_thread(&thread_id);
     Ok(thread_id)
@@ -1398,6 +1823,12 @@ mod tests {
             codex_policies(Some(PermissionMode::Auto)),
             ("workspace-write", "on-request")
         );
+        // Plan runs the SAME sandbox as Auto — native plan mode restricts at the
+        // prompt level (the plan.md template), not the sandbox level.
+        assert_eq!(
+            codex_policies(Some(PermissionMode::Plan)),
+            ("workspace-write", "on-request")
+        );
         assert_eq!(
             codex_policies(Some(PermissionMode::Bypass)),
             ("danger-full-access", "never")
@@ -1444,7 +1875,7 @@ mod tests {
                 other => panic!("fixture line classified unexpectedly: {other:?}"),
             }
         }
-        assert!(matches!(ended, Some(TurnEnd::Done)));
+        assert!(matches!(ended, Some(TurnEnd::Done { interrupted: false })));
 
         let parts = &ctx.assistant.parts;
         assert_eq!(parts.len(), 3, "reasoning + command + message: {parts:?}");
@@ -1600,15 +2031,15 @@ mod tests {
     /// Part ids are turn-scoped: codex request ids restart at 0 per child
     /// process, so the same rpc id in two turns must yield distinct cards.
     #[test]
-    fn approval_part_ids_are_turn_scoped() {
+    fn request_part_ids_are_turn_scoped() {
         let id = serde_json::json!(0);
-        assert_eq!(approval_part_id(Some("turn1"), &id), "appr-turn1-0");
+        assert_eq!(request_part_id(Some("turn1"), &id), "appr-turn1-0");
         assert_ne!(
-            approval_part_id(Some("turn1"), &id),
-            approval_part_id(Some("turn2"), &id)
+            request_part_id(Some("turn1"), &id),
+            request_part_id(Some("turn2"), &id)
         );
         // No turn id (filter disabled): still deterministic.
-        assert_eq!(approval_part_id(None, &id), "appr-t-0");
+        assert_eq!(request_part_id(None, &id), "appr-t-0");
     }
 
     #[test]
@@ -1679,13 +2110,21 @@ mod tests {
             Some(TurnEnd::Failed(msg)) => assert_eq!(msg, "boom"),
             _ => panic!("expected Failed"),
         }
-        // Interrupted is a clean end, not a failure.
+        // Interrupted is a clean end, not a failure — and it carries the flag
+        // that suppresses the end-turn plan card.
         let end = apply_notification(
             &mut ctx,
             "turn/completed",
             &serde_json::json!({"turn":{"id":"t","status":"interrupted"}}),
         );
-        assert!(matches!(end, Some(TurnEnd::Done)));
+        assert!(matches!(end, Some(TurnEnd::Done { interrupted: true })));
+        // A plain completed turn is Done with interrupted:false.
+        let end = apply_notification(
+            &mut ctx,
+            "turn/completed",
+            &serde_json::json!({"turn":{"id":"t","status":"completed"}}),
+        );
+        assert!(matches!(end, Some(TurnEnd::Done { interrupted: false })));
     }
 
     #[test]
@@ -1767,5 +2206,349 @@ mod tests {
         // `model_reasoning_effort`.
         assert_eq!(codex_reasoning(Some("max")), None);
         assert_eq!(codex_reasoning(None), None);
+    }
+
+    fn answer(
+        approve: bool,
+        resume_mode: Option<&str>,
+        answers: &[&str],
+        note: Option<&str>,
+    ) -> PromptAnswer {
+        PromptAnswer {
+            session_id: "s".into(),
+            prompt_id: "p".into(),
+            approve,
+            resume_mode: resume_mode.map(str::to_string),
+            answers: answers.iter().map(|s| s.to_string()).collect(),
+            note: note.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn collaboration_mode_json_shapes_the_mask() {
+        // Envelope key `mode`; settings snake_case; developer_instructions null
+        // (independent of the thread-level playbook channel); effort included.
+        let plan = collaboration_mode_json("plan", "gpt-5.6-sol", Some("xhigh"));
+        assert_eq!(plan["mode"], "plan");
+        assert_eq!(plan["settings"]["model"], "gpt-5.6-sol");
+        assert_eq!(plan["settings"]["reasoning_effort"], "xhigh");
+        assert!(plan["settings"]["developer_instructions"].is_null());
+
+        // Default kind; effort omitted → no `reasoning_effort` key at all.
+        let default = collaboration_mode_json("default", "gpt-5.6-sol", None);
+        assert_eq!(default["mode"], "default");
+        assert_eq!(default["settings"]["model"], "gpt-5.6-sol");
+        assert!(default["settings"].get("reasoning_effort").is_none());
+        assert!(default["settings"]["developer_instructions"].is_null());
+    }
+
+    /// A plan turn: streamed deltas accumulate, the completed `plan` item is
+    /// authoritative, and `plan_card` surfaces it as a NON-synthesized card.
+    #[test]
+    fn plan_deltas_accumulate_and_plan_card_is_authoritative() {
+        let mut ctx = TurnCtx::test_stub();
+        for delta in ["## Plan\n", "1. do X\n", "2. do Y\n"] {
+            apply_notification(
+                &mut ctx,
+                "item/plan/delta",
+                &serde_json::json!({"itemId":"plan_1","delta":delta,"threadId":"t","turnId":"turn1"}),
+            );
+        }
+        // The completed plan item's text is authoritative (upserts the part the
+        // deltas built).
+        apply_notification(
+            &mut ctx,
+            "item/completed",
+            &serde_json::json!({"item":{"type":"plan","id":"plan_1","text":"## Plan\n1. do X\n2. do Y\n"},"threadId":"t","turnId":"turn1"}),
+        );
+        let part = ctx
+            .assistant
+            .parts
+            .iter()
+            .find(|p| p.id == "plan-item-plan_1")
+            .expect("plan part");
+        assert_eq!(part.text.as_deref(), Some("## Plan\n1. do X\n2. do Y\n"));
+
+        let card = plan_card(&ctx.assistant.parts, "msgA").expect("plan card");
+        assert_eq!(card.id, "plan-synth-msgA");
+        let prompt = card.prompt.as_ref().unwrap();
+        assert_eq!(prompt.kind, "plan");
+        assert!(!prompt.synthesized, "plan item is authoritative");
+        assert_eq!(prompt.plan.as_deref(), Some("## Plan\n1. do X\n2. do Y\n"));
+        assert!(prompt.native_id.is_none(), "end-turn card has no reply id");
+    }
+
+    /// A completed plan item with empty text never wipes the streamed deltas.
+    #[test]
+    fn empty_completed_plan_item_keeps_streamed_deltas() {
+        let mut ctx = TurnCtx::test_stub();
+        apply_notification(
+            &mut ctx,
+            "item/plan/delta",
+            &serde_json::json!({"itemId":"plan_1","delta":"streamed plan"}),
+        );
+        apply_notification(
+            &mut ctx,
+            "item/completed",
+            &serde_json::json!({"item":{"type":"plan","id":"plan_1","text":""}}),
+        );
+        let part = ctx
+            .assistant
+            .parts
+            .iter()
+            .find(|p| p.id == "plan-item-plan_1")
+            .unwrap();
+        assert_eq!(part.text.as_deref(), Some("streamed plan"));
+    }
+
+    /// No plan item, but a texty plan in the final message → a SYNTHESIZED card.
+    #[test]
+    fn plan_card_falls_back_to_texty_plan() {
+        let mut ctx = TurnCtx::test_stub();
+        ctx.upsert_part(WirePart::text(
+            "msg_1",
+            "Here's the plan: step one, step two.",
+        ));
+        let card = plan_card(&ctx.assistant.parts, "msgA").expect("synthesized card");
+        let prompt = card.prompt.as_ref().unwrap();
+        assert_eq!(prompt.kind, "plan");
+        assert!(prompt.synthesized, "no plan item → synthesized from text");
+        assert_eq!(
+            prompt.plan.as_deref(),
+            Some("Here's the plan: step one, step two.")
+        );
+
+        // Nothing to card → None (empty transcript, or only whitespace text).
+        assert!(plan_card(&[], "msgA").is_none());
+        let mut blank = TurnCtx::test_stub();
+        blank.upsert_part(WirePart::text("msg_1", "   "));
+        assert!(plan_card(&blank.assistant.parts, "msgA").is_none());
+    }
+
+    /// An errored plan turn's transcript → no synthesized card (the error is the
+    /// surface, not a phantom approval). An authoritative plan item still cards.
+    #[test]
+    fn plan_card_suppressed_on_error_unless_plan_item_present() {
+        let mut ctx = TurnCtx::test_stub();
+        ctx.upsert_part(WirePart::text("msg_1", "partial plan"));
+        ctx.push_error("boom".to_string());
+        assert!(
+            plan_card(&ctx.assistant.parts, "msgA").is_none(),
+            "texty plan under an error is not carded"
+        );
+        // A real plan item is authoritative regardless of an error part.
+        ctx.upsert_part(WirePart::text("plan-item-p1", "the plan"));
+        let card = plan_card(&ctx.assistant.parts, "msgA").expect("plan item cards");
+        assert!(!card.prompt.as_ref().unwrap().synthesized);
+    }
+
+    /// requestUserInput → a question card: the first non-secret question is
+    /// surfaced, every question id is stashed for the multi-fill reply.
+    #[test]
+    fn user_input_card_surfaces_first_nonsecret_question() {
+        let id = serde_json::json!(3);
+        let params = serde_json::json!({
+            "threadId":"t","turnId":"turn1","itemId":"call_1",
+            "questions":[
+                {"id":"q1","header":"Color","question":"Which color?","isOther":false,"isSecret":false,
+                 "options":[{"label":"red","description":"warm"},{"label":"blue","description":null}]},
+                {"id":"q2","header":"Size","question":"Which size?","isOther":false,"isSecret":false,"options":null},
+            ],
+        });
+        let (part_id, part) = user_input_card(Some("turn1"), &id, &params).expect("card");
+        assert_eq!(part_id, "appr-turn1-3");
+        let prompt = part.prompt.as_ref().unwrap();
+        assert_eq!(prompt.kind, "question");
+        assert_eq!(prompt.header.as_deref(), Some("Color"));
+        assert_eq!(prompt.question.as_deref(), Some("Which color?"));
+        assert_eq!(prompt.native_id.as_deref(), Some("3"));
+        assert_eq!(prompt.options.len(), 2);
+        assert_eq!(prompt.options[0].label, "red");
+        // Both question ids stashed; the surfaced one recorded.
+        let ti = prompt.tool_input.as_ref().unwrap();
+        assert_eq!(ti["questionIds"], serde_json::json!(["q1", "q2"]));
+        assert_eq!(ti["answeredId"], "q1");
+    }
+
+    /// A secret first question is skipped for the first non-secret one; an
+    /// all-secret call yields no card (never store secrets).
+    #[test]
+    fn user_input_card_skips_secret_questions() {
+        let id = serde_json::json!(0);
+        let mixed = serde_json::json!({
+            "questions":[
+                {"id":"s1","header":"Token","question":"API token?","isSecret":true,"options":null},
+                {"id":"q2","header":"Env","question":"Which env?","isSecret":false,"options":null},
+            ],
+        });
+        let (_, part) = user_input_card(Some("turn1"), &id, &mixed).expect("skips to non-secret");
+        let prompt = part.prompt.unwrap();
+        assert_eq!(prompt.header.as_deref(), Some("Env"));
+        // Still stashes BOTH ids so the reply covers the secret one (empty).
+        assert_eq!(
+            prompt.tool_input.as_ref().unwrap()["questionIds"],
+            serde_json::json!(["s1", "q2"])
+        );
+
+        let all_secret = serde_json::json!({
+            "questions":[{"id":"s1","question":"secret?","isSecret":true,"options":null}],
+        });
+        assert!(user_input_card(Some("turn1"), &id, &all_secret).is_none());
+    }
+
+    /// The reply fills the surfaced id with the selection/note and every other
+    /// stashed id empty; a bare (no selection, no note) answer errs.
+    #[test]
+    fn user_input_reply_fills_selected_and_empties_the_rest() {
+        let prompt = WirePrompt {
+            kind: "question".into(),
+            tool_input: Some(serde_json::json!({
+                "questionIds": ["q1", "q2"],
+                "answeredId": "q1",
+            })),
+            ..Default::default()
+        };
+        // Selection labels fill q1; q2 gets an empty answer.
+        let reply = user_input_reply(&prompt, &answer(true, None, &["red"], None)).unwrap();
+        assert_eq!(
+            reply["answers"]["q1"]["answers"],
+            serde_json::json!(["red"])
+        );
+        assert_eq!(reply["answers"]["q2"]["answers"], serde_json::json!([]));
+
+        // Note-only (freeform) answers the surfaced id.
+        let reply = user_input_reply(&prompt, &answer(true, None, &[], Some("teal"))).unwrap();
+        assert_eq!(
+            reply["answers"]["q1"]["answers"],
+            serde_json::json!(["teal"])
+        );
+
+        // Neither selection nor note → Err (card stays actionable).
+        assert!(user_input_reply(&prompt, &answer(true, None, &[], None)).is_err());
+    }
+
+    /// Numeric question ids stringify to their JSON text as map keys.
+    #[test]
+    fn user_input_reply_stringifies_numeric_ids() {
+        let prompt = WirePrompt {
+            kind: "question".into(),
+            tool_input: Some(serde_json::json!({
+                "questionIds": [1, 2],
+                "answeredId": 1,
+            })),
+            ..Default::default()
+        };
+        let reply = user_input_reply(&prompt, &answer(true, None, &["x"], None)).unwrap();
+        assert_eq!(reply["answers"]["1"]["answers"], serde_json::json!(["x"]));
+        assert_eq!(reply["answers"]["2"]["answers"], serde_json::json!([]));
+    }
+
+    fn plan_prompt_card() -> WirePrompt {
+        // An end-turn plan card: no native_id, so `resume_from_prompt`'s plan
+        // arm never touches the host (no busy-check / no client).
+        WirePrompt {
+            kind: "plan".into(),
+            plan: Some("the plan".into()),
+            synthesized: true,
+            ..Default::default()
+        }
+    }
+
+    fn test_resume_ctx() -> ResumeCtx {
+        ResumeCtx {
+            host: std::sync::Arc::new(crate::local::chat::ChatHost::new(
+                std::sync::Arc::new(crate::local::opencode::AgentHost::new(None)),
+                std::sync::Arc::new(crate::local::codex::CodexHost::new()),
+            )),
+            session_id: "s".into(),
+            native_session_id: None,
+        }
+    }
+
+    /// The codex plan card resume arms: approve → "Implement the plan." under
+    /// Auto (override honored); revise → shared plan-deny wording in Plan mode
+    /// (matching Claude); note-less reject → Nothing.
+    #[tokio::test]
+    async fn plan_resume_arms() {
+        let ctx = test_resume_ctx();
+        let card = plan_prompt_card();
+
+        // Approve, no note → codex's own phrasing, default Auto.
+        let action = Codex
+            .resume_from_prompt(&ctx, &card, &answer(true, None, &[], None))
+            .await
+            .unwrap();
+        match action {
+            ResumeAction::SendMessage { text, mode } => {
+                assert_eq!(text, "Implement the plan.");
+                assert_eq!(mode, Some(PermissionMode::Auto));
+            }
+            _ => panic!("approve should send a message"),
+        }
+
+        // Approve with a note + a resume_mode override.
+        let action = Codex
+            .resume_from_prompt(
+                &ctx,
+                &card,
+                &answer(true, Some("bypass"), &[], Some("skip tests")),
+            )
+            .await
+            .unwrap();
+        match action {
+            ResumeAction::SendMessage { text, mode } => {
+                assert!(text.contains("Implement the plan."));
+                assert!(text.contains("skip tests"));
+                assert_eq!(mode, Some(PermissionMode::Bypass));
+            }
+            _ => panic!("approve should send a message"),
+        }
+
+        // Revise (note-carrying reject) → shared wording, stays in Plan.
+        let action = Codex
+            .resume_from_prompt(&ctx, &card, &answer(false, None, &[], Some("tweak X")))
+            .await
+            .unwrap();
+        let (shared_text, shared_mode) =
+            synthesize_resume("plan", &answer(false, None, &[], Some("tweak X")));
+        match action {
+            ResumeAction::SendMessage { text, mode } => {
+                assert_eq!(text, shared_text, "revise reuses Claude's wording");
+                assert_eq!(mode, shared_mode);
+                assert_eq!(mode, Some(PermissionMode::Plan));
+            }
+            _ => panic!("revise should send a message"),
+        }
+
+        // Note-less reject → close the card, no resume.
+        let action = Codex
+            .resume_from_prompt(&ctx, &card, &answer(false, None, &[], None))
+            .await
+            .unwrap();
+        assert!(matches!(action, ResumeAction::Nothing));
+    }
+
+    /// server_req_kind classifies the three reply schemas the settle paths key
+    /// on.
+    #[test]
+    fn server_req_kind_classifies_reply_schemas() {
+        use crate::local::codex::{server_req_kind, ServerReqKind};
+        assert_eq!(
+            server_req_kind("item/commandExecution/requestApproval"),
+            ServerReqKind::Approval
+        );
+        assert_eq!(
+            server_req_kind("item/fileChange/requestApproval"),
+            ServerReqKind::Approval
+        );
+        assert_eq!(
+            server_req_kind("item/tool/requestUserInput"),
+            ServerReqKind::UserInput
+        );
+        // A reply schema we don't speak (permission-profile object).
+        assert_eq!(
+            server_req_kind("item/permissions/requestApproval"),
+            ServerReqKind::Other
+        );
     }
 }

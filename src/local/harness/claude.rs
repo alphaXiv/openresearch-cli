@@ -407,7 +407,10 @@ fn claude_effort(level: Option<&str>) -> Option<&str> {
 /// default (or the session's mode, applied downstream). The question arm is
 /// also reused as a plain text builder by the bridge's mid-turn question
 /// resume (the denial message that carries the answer).
-fn synthesize_resume(kind: &str, req: &PromptAnswer) -> (String, Option<PermissionMode>) {
+pub(crate) fn synthesize_resume(
+    kind: &str,
+    req: &PromptAnswer,
+) -> (String, Option<PermissionMode>) {
     let note = req.note.as_deref().filter(|s| !s.trim().is_empty());
     let chosen = req.resume_mode.as_deref().and_then(PermissionMode::from_id);
     match kind {
@@ -465,7 +468,7 @@ fn synthesize_resume(kind: &str, req: &PromptAnswer) -> (String, Option<Permissi
 /// chat reply would resume still in plan mode. A trivial Q&A turn in plan mode
 /// also gets a card: in plan mode the only exit *is* a plan answer, so the
 /// card is always the recourse.
-fn should_synthesize_plan(
+pub(crate) fn should_synthesize_plan(
     plan_mode: bool,
     saw_prompt: bool,
     errored: bool,

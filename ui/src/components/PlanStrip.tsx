@@ -18,6 +18,7 @@ import { useEffect, useRef, useState } from "react";
  *  - Open plan: link in the title row → the right-pane plan tab. */
 export function PlanStrip({
   synthesized,
+  agentLabel,
   onView,
   onApprove,
   onReject,
@@ -25,6 +26,9 @@ export function PlanStrip({
 }: {
   /** Card synthesized from the turn's final text (no ExitPlanMode call). */
   synthesized: boolean;
+  /** The harness's display name for the strip copy (e.g. "Claude Code",
+   * "Codex"); falls back to a generic label when the harness is unknown. */
+  agentLabel: string;
   onView: () => void;
   onApprove: (resumeMode: "auto" | "bypass") => void;
   onReject: () => void;
@@ -68,7 +72,7 @@ export function PlanStrip({
       <div className="plan-strip-info">
         <ScrollText size={14} className="plan-strip-icon" />
         <span className="plan-strip-title">
-          {synthesized ? "Claude is ready to proceed" : "Claude proposed a plan"}
+          {synthesized ? `${agentLabel} is ready to proceed` : `${agentLabel} proposed a plan`}
         </span>
         <button className="plan-strip-open" onClick={onView}>
           Open plan

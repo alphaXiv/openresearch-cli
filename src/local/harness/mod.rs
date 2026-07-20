@@ -32,7 +32,7 @@ use async_trait::async_trait;
 use crate::error::{anyhow, Result};
 use crate::local::chat::{PromptAnswer, ResumeCtx, TurnCtx, WirePrompt};
 
-pub(crate) use claude::question_prompt;
+pub(crate) use claude::{question_prompt, should_synthesize_plan, synthesize_resume};
 pub use detect::{HarnessInfo, ModelInfo};
 pub use options::{HarnessOptions, PermissionMode};
 pub use plan_gate::command_is_readonly;
@@ -345,10 +345,13 @@ mod tests {
             ["low", "medium", "high", "xhigh", "max"]
         );
 
-        // Codex: Auto + Bypass (matches Claude — `plan`/read-only dropped for the
-        // same reason; `codex exec` has no real plan mode). Codex reasoning tiers.
+        // Codex: Plan + Auto + Bypass. Plan is a native collaboration mode over
+        // the app-server (codex ≥ 0.144): its plan.md template + request_user_input
+        // question cards + the streamed plan item (the legacy exec fallback
+        // degrades it to a read-only sandbox with no cards). Default stays `auto`.
+        // Codex reasoning tiers.
         let codex = options_for("codex");
-        assert_eq!(mode_ids(&codex), ["auto", "bypass"]);
+        assert_eq!(mode_ids(&codex), ["plan", "auto", "bypass"]);
         assert_eq!(codex.default_permission_mode, Some("auto"));
         assert_eq!(reasoning_ids(&codex), ["low", "medium", "high", "xhigh"]);
 

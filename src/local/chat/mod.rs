@@ -62,8 +62,11 @@ pub struct WireQuestionOption {
 /// The three kinds (`plan` / `permission` / `question`) originated with Claude
 /// Code's ExitPlanMode / permission_denials / AskUserQuestion, but `permission`
 /// and `question` are now shared: OpenCode emits them from its serve
-/// `permission.asked` / `question.asked` events (see `harness/opencode.rs`).
-/// `plan` remains Claude-only.
+/// `permission.asked` / `question.asked` events (see `harness/opencode.rs`),
+/// and Codex emits `question` from `item/tool/requestUserInput`. `plan` is
+/// Claude + Codex, each via its own mechanism (ExitPlanMode vs the end-turn
+/// card synthesized from a collaboration-mode `plan` item — see
+/// `harness/codex.rs`).
 ///
 /// How the answer flows back is per-harness (see [`crate::local::harness::ResumeAction`]):
 /// Claude ends its turn and resumes with a new message; OpenCode is paused
@@ -779,6 +782,17 @@ impl ChatHost {
                 session.model = Some(model);
             }
         }
+        // Read the session's mode BEFORE the composer override rewrites it: the
+        // codex harness needs to know whether the *previous* turn ran under Plan
+        // (the thread may be sticky-planned) to decide whether this turn must
+        // attach a `default` collaborationMode mask to un-stick it. Captured
+        // here because the override below is the last moment the pre-turn value
+        // is visible. Persists across restarts (it's the DB row), so a resume
+        // after `orx up` bounced still un-sticks.
+        let prev_permission_mode = session
+            .permission_mode
+            .as_deref()
+            .and_then(crate::local::harness::PermissionMode::from_id);
         if let Some(mode) = overrides.permission_mode.filter(|m| !m.is_empty()) {
             if session.permission_mode.as_deref() != Some(mode.as_str()) {
                 store.set_chat_session_permission_mode(&session.id, &mode)?;
@@ -875,6 +889,7 @@ impl ChatHost {
                 .permission_mode
                 .as_deref()
                 .and_then(crate::local::harness::PermissionMode::from_id),
+            prev_permission_mode,
             reasoning_level: session.reasoning_level.clone(),
             project,
             text: turn_text,
@@ -1424,6 +1439,13 @@ pub struct TurnCtx {
     /// Effective permission mode for this turn (session value; harness applies
     /// its own default when `None`).
     pub permission_mode: Option<crate::local::harness::PermissionMode>,
+    /// The permission mode the session carried *before* this turn's composer
+    /// override — read pre-override in `send_message`. The codex harness uses it
+    /// to tell "this thread may be sticky-planned" (previous turn was Plan, so a
+    /// non-plan turn must attach a `default` collaborationMode mask to un-stick
+    /// it) from a thread that never entered Plan (attach nothing — a mask always
+    /// injects a template). `None` on the very first turn of a session.
+    pub prev_permission_mode: Option<crate::local::harness::PermissionMode>,
     /// Effective reasoning-level wire id for this turn (harness-owned vocabulary;
     /// the harness interprets it, e.g. Claude → `--effort`). Default when `None`.
     pub reasoning_level: Option<String>,
@@ -1453,6 +1475,7 @@ impl TurnCtx {
             native_session_id: None,
             model: None,
             permission_mode: None,
+            prev_permission_mode: None,
             reasoning_level: None,
             project: crate::local::model::LocalProject {
                 id: "test-project".into(),
