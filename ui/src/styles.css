@@ -479,7 +479,7 @@ textarea::placeholder {
   gap: 6px;
   font-size: 12px;
   font-weight: 500;
-  color: var(--subtext);
+  color: var(--text);
   white-space: nowrap;
 }
 .status-badge .dot {
@@ -555,17 +555,15 @@ textarea::placeholder {
   gap: 10px;
   padding: 7px 10px;
   font-size: 12.5px;
-  color: var(--subtext);
+  color: var(--text);
   border-radius: 8px;
   text-align: left;
 }
 .rail-nav-item:hover {
   background: var(--surface);
-  color: var(--text);
 }
 .rail-nav-item.active {
   background: var(--panel);
-  color: var(--text);
   font-weight: 600;
 }
 
@@ -573,7 +571,7 @@ textarea::placeholder {
   padding: 10px 10px 6px;
   font-size: 12px;
   font-weight: 500;
-  color: var(--muted);
+  color: var(--subtext);
 }
 /* "Recents" label + the session filter button on one line. */
 .rail-section-head {
@@ -724,16 +722,12 @@ textarea::placeholder {
   padding: 5px 12px;
   font-size: 12px;
   font-weight: 600;
-  color: var(--subtext);
+  color: var(--text);
   border-radius: 6px;
   white-space: nowrap;
   flex-shrink: 0;
 }
-.tab:hover {
-  color: var(--text);
-}
 .tab.active {
-  color: var(--text);
   background: var(--surface);
 }
 .tab-body {
@@ -783,7 +777,7 @@ textarea::placeholder {
   padding: 3px 12px;
   font-size: 12px;
   font-weight: 600;
-  color: var(--subtext);
+  color: var(--text);
   border-radius: 6px;
 }
 .seg button:hover {
@@ -791,7 +785,6 @@ textarea::placeholder {
 }
 .seg button.active {
   background: var(--base);
-  color: var(--text);
   box-shadow: 0 1px 3px color-mix(in oklab, var(--text) 25%, transparent);
 }
 
@@ -857,16 +850,14 @@ textarea::placeholder {
   padding: 7px 10px;
   border-radius: 8px;
   font-size: 12.5px;
-  color: var(--subtext);
+  color: var(--text);
   cursor: pointer;
   user-select: none;
 }
 .session-row:hover {
   background: var(--surface);
-  color: var(--text);
 }
 .session-row.active {
-  color: var(--text);
   background: var(--surface);
   font-weight: 500;
 }
@@ -1550,7 +1541,7 @@ textarea::placeholder {
 }
 .exp-node .node-title {
   margin-top: 4px;
-  color: var(--subtext);
+  color: var(--text);
   font-size: 11.5px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -1582,7 +1573,7 @@ textarea::placeholder {
   padding: 3px 6px;
   font-size: 10.5px;
   font-weight: 700;
-  color: var(--subtext);
+  color: var(--text);
   border-radius: 6px;
   /* The GitHub shortcut is an <a> among sibling <button>s. */
   text-decoration: none;
@@ -1651,7 +1642,7 @@ textarea::placeholder {
 }
 .runs-table th {
   text-align: left;
-  color: var(--muted);
+  color: var(--subtext);
   font-size: 10.5px;
   font-weight: 600;
   padding: 8px 12px;
@@ -1688,7 +1679,7 @@ textarea::placeholder {
   margin: 22px 0 10px;
   font-size: 11px;
   font-weight: 600;
-  color: var(--muted);
+  color: var(--text);
 }
 .instances-section-title .count-badge {
   display: inline-flex;
@@ -1784,7 +1775,7 @@ textarea::placeholder {
   margin: 0 0 10px;
   font-size: 10px;
   font-weight: 700;
-  color: var(--muted);
+  color: var(--text);
 }
 
 .kv {
@@ -1794,7 +1785,7 @@ textarea::placeholder {
   font-size: 12.5px;
 }
 .kv .k {
-  color: var(--muted);
+  color: var(--subtext);
 }
 .kv .v {
   font-family: var(--mono);
@@ -1938,7 +1929,7 @@ textarea::placeholder {
   flex-shrink: 0;
   font-size: 9.5px;
   font-weight: 700;
-  color: var(--muted);
+  color: var(--subtext);
 }
 .commit-picker select {
   flex: 1;
@@ -2084,7 +2075,7 @@ textarea::placeholder {
 .onb-gh-option-label {
   font-size: 11px;
   font-weight: 600;
-  color: var(--subtext);
+  color: var(--text);
 }
 .onb-gh-option-body {
   display: flex;
@@ -2247,7 +2238,7 @@ textarea::placeholder {
   flex-direction: column;
   gap: 4px;
   font-size: 11px;
-  color: var(--subtext);
+  color: var(--text);
   font-weight: 700;
 }
 .form .row2 {
@@ -2311,7 +2302,7 @@ textarea::placeholder {
   margin: 0 0 8px;
   font-size: 10px;
   font-weight: 700;
-  color: var(--muted);
+  color: var(--text);
 }
 
 .settings-loading {
@@ -2371,7 +2362,7 @@ textarea::placeholder {
   font-weight: 700;
   padding: 1px 7px;
   border: 1px solid var(--border);
-  color: var(--muted);
+  color: var(--text);
 }
 .badge.ok {
   color: var(--accent-green);
@@ -3051,7 +3042,7 @@ a.files-pill:hover {
   margin: 0 0 10px;
   font-size: 10px;
   font-weight: 700;
-  color: var(--muted);
+  color: var(--text);
 }
 .settings-card .settings-sub {
   margin-bottom: 12px;
@@ -3199,7 +3190,7 @@ a.files-pill:hover {
   padding: 7px 12px;
   font-size: 13px;
   font-weight: 600;
-  color: var(--subtext);
+  color: var(--text);
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
 }
@@ -3207,7 +3198,6 @@ a.files-pill:hover {
   color: var(--text);
 }
 .harness-tabs button.active {
-  color: var(--text);
   border-bottom-color: var(--primary);
 }
 .harness-dot {
@@ -3288,7 +3278,7 @@ a.files-pill:hover {
   border-bottom: 1px solid var(--border);
   text-align: left;
   font-weight: 500;
-  color: var(--muted);
+  color: var(--subtext);
 }
 .flavor-table td {
   padding: 5px 10px 5px 0;
@@ -3683,7 +3673,7 @@ a.files-pill:hover {
 .prompt-head {
   font-size: 11px;
   font-weight: 600;
-  color: var(--muted);
+  color: var(--subtext);
 }
 .prompt-head code {
   font-family: var(--mono);
