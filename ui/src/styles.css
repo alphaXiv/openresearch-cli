@@ -480,7 +480,6 @@ textarea::placeholder {
   font-size: 12px;
   font-weight: 500;
   color: var(--subtext);
-  text-transform: capitalize;
   white-space: nowrap;
 }
 .status-badge .dot {
@@ -1526,8 +1525,6 @@ textarea::placeholder {
   font-family: var(--mono);
   font-size: 9.5px;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--muted);
 }
 .exp-node .node-head {
@@ -1570,8 +1567,6 @@ textarea::placeholder {
   font-size: 10px;
   color: var(--muted);
   font-family: var(--mono);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 /* Direct view shortcuts (Changes / Logs) at the card's foot. */
 .exp-node .node-actions {
@@ -1661,8 +1656,6 @@ textarea::placeholder {
   text-align: left;
   color: var(--muted);
   font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
   font-weight: 600;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
@@ -1698,8 +1691,6 @@ textarea::placeholder {
   margin: 22px 0 10px;
   font-size: 11px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
   color: var(--muted);
 }
 .instances-section-title .count-badge {
@@ -1714,7 +1705,6 @@ textarea::placeholder {
   border: 1px solid var(--border);
   font-size: 11px;
   font-weight: 500;
-  letter-spacing: 0;
   color: var(--text);
 }
 /* Normal-flow wrapper: the shared .runs-table-wrap is position:absolute (it
@@ -1796,8 +1786,6 @@ textarea::placeholder {
 .drawer-section h3 {
   margin: 0 0 10px;
   font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
   font-weight: 700;
   color: var(--muted);
 }
@@ -1954,8 +1942,6 @@ textarea::placeholder {
   font-family: var(--mono);
   font-size: 9.5px;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--muted);
 }
 .commit-picker select {
@@ -2019,8 +2005,6 @@ textarea::placeholder {
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
   color: var(--muted);
   margin-bottom: 14px;
 }
@@ -2105,8 +2089,6 @@ textarea::placeholder {
 .onb-gh-option-label {
   font-size: 11px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
   color: var(--subtext);
 }
 .onb-gh-option-body {
@@ -2137,8 +2119,6 @@ textarea::placeholder {
   gap: 10px;
   color: var(--muted);
   font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 .onb-gh-or::before,
 .onb-gh-or::after {
@@ -2196,8 +2176,6 @@ textarea::placeholder {
 .form .repo-hint {
   font-family: var(--mono);
   font-weight: 400;
-  text-transform: none;
-  letter-spacing: normal;
   font-size: 11px;
   color: var(--muted);
 }
@@ -2276,8 +2254,6 @@ textarea::placeholder {
   font-size: 11px;
   color: var(--subtext);
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 .form .row2 {
   display: grid;
@@ -2295,7 +2271,6 @@ textarea::placeholder {
   color: var(--accent-red);
   font-size: 12.5px;
   white-space: pre-wrap;
-  text-transform: none;
 }
 
 .modal-backdrop {
@@ -2340,8 +2315,6 @@ textarea::placeholder {
 .settings-section h3 {
   margin: 0 0 8px;
   font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
   font-weight: 700;
   color: var(--muted);
 }
@@ -2402,8 +2375,6 @@ textarea::placeholder {
   font-size: 10px;
   font-weight: 700;
   font-family: var(--mono);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
   padding: 1px 7px;
   border: 1px solid var(--border);
   color: var(--muted);
@@ -2559,8 +2530,6 @@ a.files-pill:hover {
   padding: 12px 8px 4px;
   font-size: 10px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
   color: var(--muted);
 }
 /* The files-dir path — demoted from header pills to a quiet footer. */
@@ -3073,7 +3042,6 @@ a.files-pill:hover {
   color: var(--accent-red);
   font-size: 12.5px;
   white-space: pre-wrap;
-  text-transform: none;
   margin: 0 0 12px;
 }
 .settings-sub {
@@ -3091,8 +3059,6 @@ a.files-pill:hover {
 .settings-card h3 {
   margin: 0 0 10px;
   font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
   font-weight: 700;
   color: var(--muted);
 }
@@ -3494,8 +3460,6 @@ a.files-pill:hover {
 .model-group {
   font-size: 10px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
   color: var(--muted);
   padding: 8px 8px 4px;
 }
@@ -3730,14 +3694,11 @@ a.files-pill:hover {
 .prompt-head {
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
   color: var(--muted);
 }
 .prompt-head code {
   font-family: var(--mono);
   font-size: 11.5px;
-  text-transform: none;
   color: var(--text);
 }
 .prompt-sub {

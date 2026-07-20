@@ -53,7 +53,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         {step === 0 ? (
           <>
             <div className="onb-eyebrow">
-              Open<span>Research</span> · step 1 of 4
+              Open<span>Research</span> · Step 1 of 4
             </div>
             <h2 className="onb-title">Your coding agents</h2>
             <p className="onb-sub">
@@ -82,7 +82,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         ) : step === 1 ? (
           <>
             <div className="onb-eyebrow">
-              Open<span>Research</span> · step 2 of 4
+              Open<span>Research</span> · Step 2 of 4
             </div>
             <h2 className="onb-title">Git &amp; GitHub</h2>
             <p className="onb-sub">
@@ -109,7 +109,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         ) : step === 2 ? (
           <>
             <div className="onb-eyebrow">
-              Open<span>Research</span> · step 3 of 4
+              Open<span>Research</span> · Step 3 of 4
             </div>
             <h2 className="onb-title">Where orx keeps your data</h2>
             <p className="onb-sub">
@@ -133,7 +133,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         ) : (
           <>
             <div className="onb-eyebrow">
-              Open<span>Research</span> · step 4 of 4
+              Open<span>Research</span> · Step 4 of 4
             </div>
             <h2 className="onb-title">Usage analytics</h2>
             <p className="onb-sub">

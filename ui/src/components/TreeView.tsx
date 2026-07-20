@@ -75,7 +75,7 @@ const ExpNode = memo(function ExpNode({ data }: NodeProps<ExpFlowNode>) {
   const { exp, latestRun, runs, isBaseline, githubOwner, githubRepo, onOpenView, onOpenCodeBranch } = data;
   const status = latestRun?.status;
   const live = status === "running" || status === "starting";
-  const kind = isBaseline ? "BASELINE" : live ? "RUNNING" : "EXPERIMENT";
+  const kind = isBaseline ? "Baseline" : live ? "Running" : "Experiment";
   const squares = runs.slice(-MAX_SQUARES);
   return (
     <div className={`exp-node ${live ? "live" : ""}`}>
@@ -91,7 +91,7 @@ const ExpNode = memo(function ExpNode({ data }: NodeProps<ExpFlowNode>) {
         <div className="node-title">{exp.title || exp.description}</div>
       )}
       <div className="node-meta">
-        <span>RUNS</span>
+        <span>Runs</span>
         {squares.length > 0 ? (
           <span className="run-squares">
             {squares.map((run) => (
