@@ -8,7 +8,9 @@
 //! Guarantees, enforced by this module:
 //! - **Opt-out.** A `--no-telemetry` flag and a persistent `orx telemetry off`
 //!   (also toggleable from the `orx up` onboarding step). A disabled run sends
-//!   nothing, touches no disk, and generates no install id.
+//!   nothing, touches no disk, and generates no install id. (Sole exception:
+//!   *agreeing* to the consent step persists the install id — an opt-in; see
+//!   `record_consent`.)
 //! - **Never blocks or crashes the CLI.** Sends are fire-and-forget on a
 //!   background task with a bounded flush window (modeled on
 //!   [`crate::updates::UpdateWarning`]); every error is swallowed. A telemetry
@@ -574,6 +576,20 @@ fn capture(event: impl Into<String>, extra: serde_json::Value) {
 /// unlinkable to any real install.
 const CONSENT_SENTINEL_ID: &str = "cli-consent-anonymous";
 
+/// Resolve the consent event's `distinct_id` per the identity policy on
+/// [`record_consent`] below. Split out so the identity rules are unit-testable
+/// without a network send. NB the `agreed` path calls `install_id()`, which
+/// generates + persists an id if absent — acceptable precisely because the
+/// user agreed.
+fn consent_distinct_id(agreed: bool) -> String {
+    if agreed {
+        if let Some(id) = install_id() {
+            return id;
+        }
+    }
+    CONSENT_SENTINEL_ID.to_string()
+}
+
 /// Record a telemetry consent decision — `cli_telemetry_consent` with
 /// `{ agreed: bool }`. This is the ONE event that fires UNCONDITIONALLY: it must
 /// land even when the user chose to disable telemetry, otherwise every rejection
@@ -591,19 +607,6 @@ const CONSENT_SENTINEL_ID: &str = "cli-consent-anonymous";
 /// Awaited with a bounded timeout so a caller (the `orx up` settings handler or
 /// the `orx telemetry on/off` command) can fire-and-confirm without hanging.
 /// Errors are swallowed — recording consent must never fail the action.
-/// Resolve the consent event's `distinct_id` per the policy above. Split out of
-/// `record_consent` so the identity rules are unit-testable without a network
-/// send. NB the `agreed` path calls `install_id()`, which generates + persists
-/// an id if absent — acceptable precisely because the user agreed.
-fn consent_distinct_id(agreed: bool) -> String {
-    if agreed {
-        if let Some(id) = install_id() {
-            return id;
-        }
-    }
-    CONSENT_SENTINEL_ID.to_string()
-}
-
 pub(crate) async fn record_consent(agreed: bool) {
     let distinct_id = consent_distinct_id(agreed);
     let payload = build_payload(

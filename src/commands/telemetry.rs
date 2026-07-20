@@ -1,6 +1,7 @@
-//! `orx telemetry status | on | off` — inspect and control anonymous usage
-//! analytics. The discoverable, persistent opt-out, also toggleable from the
-//! `orx up` onboarding step.
+//! `orx telemetry status | on | off | context` — inspect and control anonymous
+//! usage analytics. The discoverable, persistent opt-out (also toggleable from
+//! the `orx up` onboarding step), plus the machine-context tag used by fleet
+//! provisioning to mark automated installs.
 
 use crate::error::{anyhow, Result};
 use crate::telemetry;
