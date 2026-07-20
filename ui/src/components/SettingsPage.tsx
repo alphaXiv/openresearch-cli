@@ -195,12 +195,12 @@ function HarnessesTab() {
 // --- compute (kubernetes) -------------------------------------------------------
 
 function K8sHealthBadge({ s }: { s: K8sSettings }) {
-  if (!s.configured) return <span className="badge">not configured</span>;
+  if (!s.configured) return <span className="badge">Not configured</span>;
   const p = s.preflight;
   if (!p.kubectlFound) return <span className="badge err">kubectl not found</span>;
-  if (!p.reachable) return <span className="badge err">cluster unreachable</span>;
-  if (!p.canCreateJobs) return <span className="badge err">no job-create permission</span>;
-  return <span className="badge ok">connected</span>;
+  if (!p.reachable) return <span className="badge err">Cluster unreachable</span>;
+  if (!p.canCreateJobs) return <span className="badge err">No job-create permission</span>;
+  return <span className="badge ok">Connected</span>;
 }
 
 function K8sSection() {
@@ -332,12 +332,12 @@ const MODAL_TOKEN_LABELS: Record<ModalTokenSource, string> = {
 };
 
 function ModalBadge({ s }: { s: ModalSettings }) {
-  if (s.ready) return <span className="badge ok">connected</span>;
-  if (!s.tokenConfigured && !s.modalImportable) return <span className="badge">not set up</span>;
+  if (s.ready) return <span className="badge ok">Connected</span>;
+  if (!s.tokenConfigured && !s.modalImportable) return <span className="badge">Not set up</span>;
   if (!s.modalImportable)
-    return <span className="badge err">{s.envProvisioned ? "env broken" : "env not built"}</span>;
-  if (!s.tokenConfigured) return <span className="badge err">no token</span>;
-  return <span className="badge">unknown</span>;
+    return <span className="badge err">{s.envProvisioned ? "Env broken" : "Env not built"}</span>;
+  if (!s.tokenConfigured) return <span className="badge err">No token</span>;
+  return <span className="badge">Unknown</span>;
 }
 
 function ModalSection() {
@@ -388,14 +388,14 @@ function ModalSection() {
             <span className="k">Environment</span>
             <span className="v">
               {s.modalImportable
-                ? "ready"
+                ? "Ready"
                 : s.envProvisioned
-                  ? "provisioned (modal import failing)"
-                  : "not built yet"}
+                  ? "Provisioned (modal import failing)"
+                  : "Not built yet"}
             </span>
             <span className="k">Token</span>
             <span className="v">
-              {s.tokenSource ? MODAL_TOKEN_LABELS[s.tokenSource] : "not configured"}
+              {s.tokenSource ? MODAL_TOKEN_LABELS[s.tokenSource] : "Not configured"}
             </span>
           </div>
           {!s.tokenConfigured && (
@@ -430,11 +430,11 @@ function HostTestCell({ test }: { test: HostTest | undefined }) {
   if (test === undefined) return <span className="muted">never tested</span>;
   if (test === "testing") return <span className="spinner" />;
   const badge = !test.reachable ? (
-    <span className="badge err" title={test.error ?? undefined}>unreachable</span>
+    <span className="badge err" title={test.error ?? undefined}>Unreachable</span>
   ) : !test.gitFound ? (
-    <span className="badge err">no git</span>
+    <span className="badge err">No git</span>
   ) : (
-    <span className="badge ok">ready</span>
+    <span className="badge ok">Ready</span>
   );
   return (
     <>
@@ -537,12 +537,12 @@ function SlurmTestBadge({ test }: { test: "testing" | SlurmPreflight | null }) {
   if (!test.reachable)
     return (
       <span className="badge err" title={test.error ?? undefined}>
-        unreachable
+        Unreachable
       </span>
     );
-  if (!test.slurmFound) return <span className="badge err">no slurm CLI</span>;
-  if (!test.gitFound) return <span className="badge err">no git</span>;
-  return <span className="badge ok">ready</span>;
+  if (!test.slurmFound) return <span className="badge err">No Slurm CLI</span>;
+  if (!test.gitFound) return <span className="badge err">No git</span>;
+  return <span className="badge ok">Ready</span>;
 }
 
 function SlurmSection() {
@@ -818,18 +818,18 @@ function OpenResearchSection() {
           <div className="kv">
             <span className="k">Status</span>
             <span className="v">
-              <span className="badge ok">signed in</span>
+              <span className="badge ok">Signed in</span>
             </span>
             <span className="k">Orgs</span>
             <span className="v">{s.orgs.length > 0 ? s.orgs.join(", ") : "—"}</span>
             <span className="k">SSH key</span>
             <span className="v">
               {s.sshKeyRegistered === true ? (
-                <span className="badge ok">registered</span>
+                <span className="badge ok">Registered</span>
               ) : s.sshKeyRegistered === false ? (
-                <span className="badge err">none registered</span>
+                <span className="badge err">None registered</span>
               ) : (
-                <span className="badge">unknown</span>
+                <span className="badge">Unknown</span>
               )}
             </span>
           </div>
@@ -882,10 +882,10 @@ const FLAVOR_SUGGESTIONS: Partial<Record<ComputeTargetId, string[]>> = {
 };
 
 function TargetStatusBadge({ t, isDefault }: { t: ComputeTargetSummary; isDefault: boolean }) {
-  if (t.id === "local") return <span className="badge ok">ready</span>;
-  if (!t.configured && isDefault) return <span className="badge warn">not configured</span>;
-  if (!t.configured) return <span className="badge">not set up</span>;
-  return <span className="badge ok">configured</span>;
+  if (t.id === "local") return <span className="badge ok">Ready</span>;
+  if (!t.configured && isDefault) return <span className="badge warn">Not configured</span>;
+  if (!t.configured) return <span className="badge">Not set up</span>;
+  return <span className="badge ok">Configured</span>;
 }
 
 /** The default row's inline flavor editor (flavored backends only). */
@@ -1168,18 +1168,18 @@ const SOURCE_LABELS: Record<HfTokenSource, string> = {
 };
 
 function HfStatusBadge({ settings }: { settings: HfSettings }) {
-  if (!settings.configured) return <span className="badge">not configured</span>;
-  if (!settings.valid) return <span className="badge err">invalid token</span>;
-  return <span className="badge ok">connected</span>;
+  if (!settings.configured) return <span className="badge">Not configured</span>;
+  if (!settings.valid) return <span className="badge err">Invalid token</span>;
+  return <span className="badge ok">Connected</span>;
 }
 
 /** Jobs-permission detail only — configured/valid state is HfStatusBadge's job. */
 function HfJobsBadge({ settings }: { settings: HfSettings }) {
   if (!settings.configured || !settings.valid) return null;
-  if (settings.jobsWrite === true) return <span className="badge ok">jobs: write OK</span>;
+  if (settings.jobsWrite === true) return <span className="badge ok">Jobs: write OK</span>;
   if (settings.jobsWrite === false)
-    return <span className="badge err">no job.write permission</span>;
-  return <span className="badge">jobs permission unknown</span>;
+    return <span className="badge err">No job.write permission</span>;
+  return <span className="badge">Jobs permission unknown</span>;
 }
 
 function HfSection() {
@@ -1247,7 +1247,7 @@ function HfSection() {
             <span className="v">{settings.maskedToken ?? "—"}</span>
             <span className="k">Source</span>
             <span className="v">
-              {settings.source ? SOURCE_LABELS[settings.source] : "not configured"}
+              {settings.source ? SOURCE_LABELS[settings.source] : "Not configured"}
             </span>
             <span className="k">Jobs</span>
             <span className="v">
@@ -1371,7 +1371,7 @@ function EnvRow({
           {entry ? (
             <>
               {entry.maskedValue}
-              {entry.inProcessEnv && <span className="badge">overridden by env</span>}
+              {entry.inProcessEnv && <span className="badge">Overridden by env</span>}
             </>
           ) : (
             <input
@@ -1860,7 +1860,7 @@ function StorageTab() {
           <div className="settings-card-head">
             <h3>Data directory</h3>
             <div className="spacer" style={{ flex: 1 }} />
-            <span className="badge">{settings.isDefault ? "default" : "custom"}</span>
+            <span className="badge">{settings.isDefault ? "Default" : "Custom"}</span>
           </div>
           <div className="kv">
             <span className="k">Current</span>
@@ -2016,7 +2016,7 @@ function InstancesTable({ instances, emptyLabel }: { instances: Instance[]; empt
                   <StatusBadge status={inst.status} />
                 </td>
                 <td>{timeAgo(inst.createdAt)}</td>
-                <td className="mono">{runtimeLabel(inst)}</td>
+                <td>{runtimeLabel(inst)}</td>
               </tr>
             );
           })}

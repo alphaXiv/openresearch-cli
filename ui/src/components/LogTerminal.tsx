@@ -28,9 +28,13 @@ export function LogTerminal({ runId }: { runId: string }) {
       convertEol: true,
       disableStdin: true,
       fontSize: 12,
-      fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
+      // xterm needs a resolved font string, so read --mono off the root element.
+      fontFamily:
+        getComputedStyle(document.documentElement).getPropertyValue("--mono").trim() ||
+        "ui-monospace, Menlo, Consolas, monospace",
       scrollback: 20000,
       theme: {
+        // Matches --term-bg in styles.css (terminal stays dark in both themes).
         background: "#1a1a1a",
         foreground: "#e6e1e0",
         cursor: "#1a1a1a",

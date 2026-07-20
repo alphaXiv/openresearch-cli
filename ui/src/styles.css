@@ -40,6 +40,38 @@
 
   --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+
+  /* Type scale. Sizes are px steps; anything smaller than --fs-2xs is banned. */
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-base: 14px;
+  --fs-lg: 15px;
+  --fs-xl: 16px;
+  --fs-2xl: 18px;
+  --fs-3xl: 22px;
+  --fs-4xl: 28px;
+  --fs-5xl: 34px;
+
+  /* Weight scale. Display weight is for hero headings only; the brand
+     wordmark keeps a literal 800. */
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-display: 700;
+
+  /* Radius scale. True circles stay literal 50%. */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-full: 999px;
+
+  /* xterm surface — deliberately dark in both themes; keep in sync with the
+     terminal theme in LogTerminal.tsx. */
+  --term-bg: #1a1a1a;
   /* Readable column cap shared by the chat header/thread/composer (which must
      stay in lockstep or the chat column misaligns) and the settings/doc views. */
   --readable-col: 760px;
@@ -108,7 +140,7 @@ body {
   background: var(--base);
   color: var(--text);
   font-family: var(--sans);
-  font-size: 14px;
+  font-size: var(--fs-base);
   line-height: 1.45;
   overflow: hidden;
 }
@@ -133,7 +165,7 @@ select {
   color: var(--text);
   background: var(--base);
   border: 1px solid var(--border);
-  border-radius: 0;
+  border-radius: var(--radius-md);
   padding: 6px 10px;
   outline: none;
 }
@@ -156,7 +188,7 @@ textarea::placeholder {
 }
 ::-webkit-scrollbar-thumb {
   background: var(--border);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   border: 2px solid transparent;
   background-clip: padding-box;
 }
@@ -208,14 +240,24 @@ textarea::placeholder {
   margin: 0 auto;
   padding: 48px 24px 64px;
 }
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  color: var(--text);
+}
+.wordmark svg {
+  width: 1em;
+  height: 1em;
+  flex-shrink: 0;
+}
+
 .home-brand {
-  font-weight: 800;
-  font-size: 28px;
+  /* Matches the openresearch.sh landing wordmark (font-bold = 700). */
+  font-weight: var(--fw-display);
+  font-size: var(--fs-4xl);
   letter-spacing: -0.02em;
   margin-bottom: 36px;
-}
-.home-brand span {
-  color: var(--primary);
 }
 .home-head {
   display: flex;
@@ -226,7 +268,7 @@ textarea::placeholder {
 }
 .home-head h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: var(--fs-2xl);
   letter-spacing: -0.01em;
 }
 .home-list {
@@ -243,7 +285,7 @@ textarea::placeholder {
   padding: 14px 16px;
   background: var(--base);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   cursor: pointer;
   transition:
     border-color 120ms ease,
@@ -259,7 +301,7 @@ textarea::placeholder {
   right: 10px;
   display: none;
   padding: 5px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--muted);
   line-height: 0;
 }
@@ -271,18 +313,18 @@ textarea::placeholder {
   background: var(--overlay, rgba(0, 0, 0, 0.05));
 }
 .project-card .name {
-  font-weight: 600;
-  font-size: 14px;
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-base);
 }
 .project-card .repo {
-  color: var(--subtext);
+  color: var(--text);
 }
 .project-card .paper {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
 }
 .project-card .time {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
 }
 
@@ -306,11 +348,11 @@ textarea::placeholder {
   gap: 8px;
   flex: 1;
   min-width: 0;
-  font-weight: 600;
-  font-size: 13px;
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-md);
   color: var(--text);
   padding: 4px 6px 4px 0;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .rail-brand .brand:hover {
   color: var(--subtext);
@@ -352,11 +394,11 @@ textarea::placeholder {
   right: -4px;
   background: var(--text);
   color: var(--base);
-  font-size: 11px;
-  font-weight: 500;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
   line-height: 1;
   padding: 5px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   white-space: nowrap;
   opacity: 0;
   visibility: hidden;
@@ -381,10 +423,10 @@ textarea::placeholder {
   justify-content: center;
   gap: 6px;
   padding: 6px 14px;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--base);
   color: var(--text);
   white-space: nowrap;
@@ -427,7 +469,7 @@ textarea::placeholder {
 }
 .btn.ghost {
   border-color: transparent;
-  color: var(--subtext);
+  color: var(--text);
 }
 .btn.ghost:hover:not(:disabled) {
   color: var(--text);
@@ -435,8 +477,8 @@ textarea::placeholder {
 }
 .btn.sm {
   padding: 3px 9px;
-  font-size: 11px;
-  border-radius: 6px;
+  font-size: var(--fs-xs);
+  border-radius: var(--radius-sm);
 }
 
 /* ---- status badge (colored dot + quiet label; live statuses pulse) ---- */
@@ -445,10 +487,9 @@ textarea::placeholder {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--subtext);
-  text-transform: capitalize;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text);
   white-space: nowrap;
 }
 .status-badge .dot {
@@ -491,7 +532,7 @@ textarea::placeholder {
    per-panel. */
 .floating-panel {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow:
     0 6px 24px color-mix(in oklab, var(--text) 5%, transparent),
     0 1px 4px color-mix(in oklab, var(--text) 4%, transparent);
@@ -523,26 +564,24 @@ textarea::placeholder {
   align-items: center;
   gap: 10px;
   padding: 7px 10px;
-  font-size: 12.5px;
-  color: var(--subtext);
-  border-radius: 8px;
+  font-size: var(--fs-md);
+  color: var(--text);
+  border-radius: var(--radius-md);
   text-align: left;
 }
 .rail-nav-item:hover {
   background: var(--surface);
-  color: var(--text);
 }
 .rail-nav-item.active {
   background: var(--panel);
-  color: var(--text);
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
 }
 
 .rail-section-label {
   padding: 10px 10px 6px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--subtext);
 }
 /* "Recents" label + the session filter button on one line. */
 .rail-section-head {
@@ -559,11 +598,11 @@ textarea::placeholder {
 .rail-filter-btn {
   width: 24px;
   height: 24px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .rail-empty {
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .session-rail .rail-body {
@@ -676,7 +715,7 @@ textarea::placeholder {
   justify-content: center;
   width: 16px;
   height: 16px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   color: var(--muted);
   flex-shrink: 0;
 }
@@ -691,26 +730,16 @@ textarea::placeholder {
   align-items: center;
   gap: 6px;
   padding: 5px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--subtext);
-  border-radius: 6px;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  border-radius: var(--radius-sm);
   white-space: nowrap;
   flex-shrink: 0;
 }
-.tab:hover {
-  color: var(--text);
-}
 .tab.active {
-  color: var(--text);
   background: var(--surface);
 }
-.tab .tab-count {
-  font-family: var(--mono);
-  font-weight: 400;
-  color: var(--muted);
-}
-
 .tab-body {
   flex: 1;
   min-height: 0;
@@ -751,22 +780,21 @@ textarea::placeholder {
   align-items: center;
   gap: 2px;
   padding: 3px;
-  border-radius: 9px;
+  border-radius: var(--radius-md);
   background: color-mix(in oklab, var(--text) 10%, transparent);
 }
 .seg button {
   padding: 3px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--subtext);
-  border-radius: 6px;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  border-radius: var(--radius-sm);
 }
 .seg button:hover {
   color: var(--text);
 }
 .seg button.active {
   background: var(--base);
-  color: var(--text);
   box-shadow: 0 1px 3px color-mix(in oklab, var(--text) 25%, transparent);
 }
 
@@ -812,8 +840,8 @@ textarea::placeholder {
 
 
 .chat-header .title {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
   color: var(--text);
   flex: 1;
   min-width: 0;
@@ -830,20 +858,18 @@ textarea::placeholder {
   width: 100%;
   text-align: left;
   padding: 7px 10px;
-  border-radius: 8px;
-  font-size: 12.5px;
-  color: var(--subtext);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-md);
+  color: var(--text);
   cursor: pointer;
   user-select: none;
 }
 .session-row:hover {
   background: var(--surface);
-  color: var(--text);
 }
 .session-row.active {
-  color: var(--text);
   background: var(--surface);
-  font-weight: 500;
+  font-weight: var(--fw-medium);
 }
 /* Reserved status column so titles align whether or not a busy dot shows. */
 .session-row .session-dot {
@@ -861,8 +887,7 @@ textarea::placeholder {
   white-space: nowrap;
 }
 .session-row .session-time {
-  font-size: 10px;
-  font-family: var(--mono);
+  font-size: var(--fs-2xs);
   color: var(--muted);
   flex-shrink: 0;
 }
@@ -874,7 +899,7 @@ textarea::placeholder {
   width: 18px;
   height: 18px;
   margin: -2px 0;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   color: var(--muted);
   flex-shrink: 0;
 }
@@ -918,7 +943,7 @@ textarea::placeholder {
   color: var(--text);
   background: var(--base);
   border: 1px solid var(--primary);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   outline: none;
 }
 .session-row.editing {
@@ -954,39 +979,36 @@ textarea::placeholder {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: var(--subtext);
+  color: var(--text);
   padding: 20px;
   text-align: center;
 }
 .chat-empty h2 {
   margin: 0;
-  font-size: 34px;
-  font-weight: 700;
+  font-size: var(--fs-5xl);
+  font-weight: var(--fw-display);
   letter-spacing: -0.02em;
   color: var(--text);
 }
-.chat-empty h2 span {
-  color: var(--primary);
-}
 .chat-empty .chat-empty-hint {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
   max-width: 340px;
   text-align: center;
 }
 .chat-empty p {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-md);
   max-width: 320px;
 }
 /* one-click /reproduce-paper prefill for paper-born projects */
 .chat-empty .chat-suggest {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   padding: 6px 14px;
   cursor: pointer;
   transition: border-color 120ms ease;
@@ -1000,9 +1022,9 @@ textarea::placeholder {
   align-self: flex-end;
   max-width: 88%;
   background: var(--surface);
-  border-radius: 16px;
+  border-radius: 16px; /* chat bubble — deliberate outsized radius */
   padding: 10px 15px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -1016,12 +1038,12 @@ textarea::placeholder {
   max-width: 220px;
   max-height: 160px;
   border: 1px solid var(--border-variant);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   display: block;
 }
 
 .msg-assistant {
-  font-size: 14px;
+  font-size: var(--fs-base);
   line-height: 1.62;
   color: var(--text);
   min-width: 0;
@@ -1029,14 +1051,14 @@ textarea::placeholder {
 
 .reasoning {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   margin: 2px 0;
 }
 .reasoning summary {
   cursor: pointer;
   list-style: none;
   user-select: none;
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
 }
 .reasoning[open] {
   white-space: pre-wrap;
@@ -1055,9 +1077,9 @@ textarea::placeholder {
   padding: 3px 2px;
   cursor: pointer;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   text-align: left;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .tool-group-summary:hover {
   color: var(--subtext);
@@ -1095,7 +1117,7 @@ textarea::placeholder {
   list-style: none;
   user-select: none;
   min-width: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
 }
 .tool-row summary:hover {
   background: var(--surface);
@@ -1109,12 +1131,12 @@ textarea::placeholder {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   color: var(--subtext);
 }
 .tool-open {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--primary);
 }
 .tool-open:hover {
@@ -1140,10 +1162,10 @@ textarea::placeholder {
 .tool-cmd-full {
   padding: 6px 10px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--text);
   background: var(--surface);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -1151,7 +1173,7 @@ textarea::placeholder {
   margin-top: 3px;
   padding: 6px 10px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--subtext);
   white-space: pre-wrap;
   word-break: break-word;
@@ -1159,14 +1181,14 @@ textarea::placeholder {
   overflow-y: auto;
   background: var(--base);
   border: 1px solid var(--border-variant);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
 }
 .working {
   display: flex;
   align-items: center;
   gap: 8px;
   color: var(--subtext);
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   padding: 2px 0 8px;
 }
 /* Turn held open on an unanswered card: waiting on the user, not the model. */
@@ -1212,7 +1234,7 @@ textarea::placeholder {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--base);
 }
 .composer textarea {
@@ -1220,7 +1242,7 @@ textarea::placeholder {
   background: none;
   resize: none;
   padding: 10px 12px 4px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   min-height: 42px;
   max-height: 180px;
 }
@@ -1239,7 +1261,7 @@ textarea::placeholder {
   height: 52px;
   object-fit: cover;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   display: block;
 }
 .attachment-thumb button {
@@ -1275,7 +1297,7 @@ textarea::placeholder {
   justify-content: center;
   width: 32px;
   height: 32px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--primary);
   color: var(--base);
   transition:
@@ -1316,24 +1338,25 @@ textarea::placeholder {
 }
 .md strong {
   color: var(--text);
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
 }
 .md pre {
   background: var(--surface);
   border: 1px solid color-mix(in oklab, var(--border) 50%, transparent);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 8px 12px;
   overflow-x: auto;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text);
 }
 .md code {
   font-family: var(--mono);
   font-size: 0.9em;
-  font-weight: 500;
+  font-weight: var(--fw-medium);
   color: var(--primary);
   background: var(--panel);
   border: 1px solid var(--border-variant);
+  border-radius: var(--radius-xs);
   padding: 1px 5px;
 }
 /* File mention chip — reads as clickable inline code (thin border, panel
@@ -1348,10 +1371,11 @@ textarea::placeholder {
   vertical-align: baseline;
   font-family: var(--mono);
   font-size: 0.9em;
-  font-weight: 500;
+  font-weight: var(--fw-medium);
   color: var(--text);
   background: var(--panel);
   border: 1px solid var(--border-variant);
+  border-radius: var(--radius-xs);
   cursor: pointer;
 }
 .md .file-chip:hover:not(:disabled) {
@@ -1373,7 +1397,7 @@ textarea::placeholder {
   border: none;
   color: inherit;
   padding: 0;
-  font-weight: 400;
+  font-weight: var(--fw-regular);
 }
 
 .md-code {
@@ -1395,7 +1419,7 @@ textarea::placeholder {
   color: var(--muted);
   background: var(--base);
   border: 1px solid var(--border-variant);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   opacity: 0;
   transition: opacity 0.12s ease, color 0.12s ease;
 }
@@ -1413,7 +1437,7 @@ textarea::placeholder {
 .md h4 {
   color: var(--text);
   font-size: 1.05em;
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
   margin: 12px 0 6px;
 }
 .md ul,
@@ -1430,10 +1454,10 @@ textarea::placeholder {
 .md table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 13px;
+  font-size: var(--fs-md);
   margin: 10px 0;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 .md th,
@@ -1448,8 +1472,8 @@ textarea::placeholder {
 }
 .md thead th {
   background: var(--surface);
-  font-weight: 500;
-  color: var(--subtext);
+  font-weight: var(--fw-medium);
+  color: var(--text);
   border-bottom: 1px solid var(--border);
 }
 .md tbody tr:hover td {
@@ -1478,10 +1502,11 @@ textarea::placeholder {
   /* Keep in sync with NODE_W in TreeView.tsx (layout math uses it). */
   width: 264px;
   border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   background: var(--base);
   padding: 10px 12px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   transition: box-shadow 120ms ease;
 }
 .exp-node:hover {
@@ -1497,11 +1522,8 @@ textarea::placeholder {
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 6px;
-  font-family: var(--mono);
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
   color: var(--muted);
 }
 .exp-node .node-head {
@@ -1518,8 +1540,8 @@ textarea::placeholder {
 }
 .exp-node .node-slug {
   font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 700;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
   color: var(--text);
   flex: 1;
   min-width: 0;
@@ -1529,8 +1551,8 @@ textarea::placeholder {
 }
 .exp-node .node-title {
   margin-top: 4px;
-  color: var(--subtext);
-  font-size: 11.5px;
+  color: var(--text);
+  font-size: var(--fs-sm);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -1541,21 +1563,8 @@ textarea::placeholder {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   color: var(--muted);
-  font-family: var(--mono);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-.exp-node .baseline-chip {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
-  border: 1px solid var(--border);
-  padding: 0 4px;
-  flex-shrink: 0;
 }
 /* Direct view shortcuts (Changes / Logs) at the card's foot. */
 .exp-node .node-actions {
@@ -1572,10 +1581,10 @@ textarea::placeholder {
   gap: 5px;
   /* Tight: Changes + Logs + Code + the GitHub icon share one fixed-width row. */
   padding: 3px 6px;
-  font-size: 10.5px;
-  font-weight: 700;
-  color: var(--subtext);
-  border-radius: 6px;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+  border-radius: var(--radius-sm);
   /* The GitHub shortcut is an <a> among sibling <button>s. */
   text-decoration: none;
 }
@@ -1635,19 +1644,17 @@ textarea::placeholder {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   background: var(--base);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
 }
 .runs-table th {
   text-align: left;
-  color: var(--muted);
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-weight: 600;
+  color: var(--text);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -1671,7 +1678,7 @@ textarea::placeholder {
 }
 .mono {
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 
 /* Instances tab: Running / Past section headers. */
@@ -1680,11 +1687,9 @@ textarea::placeholder {
   align-items: center;
   gap: 8px;
   margin: 22px 0 10px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
 }
 .instances-section-title .count-badge {
   display: inline-flex;
@@ -1693,12 +1698,11 @@ textarea::placeholder {
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
-  border-radius: 9px;
+  border-radius: var(--radius-md);
   background: var(--canvas);
   border: 1px solid var(--border);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
   color: var(--text);
 }
 /* Normal-flow wrapper: the shared .runs-table-wrap is position:absolute (it
@@ -1713,10 +1717,10 @@ textarea::placeholder {
   margin: 0;
   padding: 14px 16px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: var(--base);
   color: var(--subtext);
-  font-size: 12.5px;
+  font-size: var(--fs-md);
 }
 
 /* Badge plus the optional job-page link (HF only — Modal stores no URL). */
@@ -1741,30 +1745,13 @@ textarea::placeholder {
   display: block;
 }
 .backend-badge .backend-name {
-  font-weight: 500;
+  font-weight: var(--fw-medium);
 }
 .backend-badge .backend-detail {
   color: var(--muted);
 }
 .backend-badge.muted {
   color: var(--muted);
-}
-
-/* legacy chip — StatusBadge supersedes this */
-.status-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  font-family: var(--mono);
-}
-.status-chip .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
 }
 
 /* ---- detail drawer ---- */
@@ -1796,25 +1783,23 @@ textarea::placeholder {
 
 .drawer-section h3 {
   margin: 0 0 10px;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-weight: 700;
-  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
 }
 
 .kv {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 3px 14px;
-  font-size: 12.5px;
+  font-size: var(--fs-md);
 }
 .kv .k {
-  color: var(--muted);
+  color: var(--subtext);
 }
 .kv .v {
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   word-break: break-all;
 }
 
@@ -1838,15 +1823,15 @@ textarea::placeholder {
 }
 .term-title {
   min-width: 0;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .term-bar .error {
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--accent-red);
 }
 .term-bar .btn {
@@ -1857,7 +1842,7 @@ textarea::placeholder {
 .term-fill {
   flex: 1;
   min-height: 0;
-  background: #1a1a1a;
+  background: var(--term-bg);
   padding: 4px 0 4px 6px;
 }
 .term-empty {
@@ -1867,7 +1852,7 @@ textarea::placeholder {
   justify-content: center;
   padding: 24px;
   text-align: center;
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   color: var(--muted);
 }
 
@@ -1882,7 +1867,7 @@ textarea::placeholder {
   gap: 8px;
   padding: 4px 6px 4px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--base);
   color: var(--text);
 }
@@ -1890,8 +1875,8 @@ textarea::placeholder {
   background: var(--surface);
 }
 .run-picker .run-label {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
 }
 .run-picker-chev {
   color: var(--muted);
@@ -1906,7 +1891,7 @@ textarea::placeholder {
   overflow-y: auto;
   background: var(--base);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
   padding: 5px;
   z-index: 50;
@@ -1918,8 +1903,8 @@ textarea::placeholder {
   width: 100%;
   text-align: left;
   padding: 6px 8px;
-  font-size: 12px;
-  border-radius: 6px;
+  font-size: var(--fs-sm);
+  border-radius: var(--radius-sm);
 }
 .history-item:hover {
   background: var(--surface);
@@ -1928,11 +1913,11 @@ textarea::placeholder {
   background: var(--surface);
 }
 .history-item .run-label {
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
 }
 .history-item .when {
   margin-left: auto;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
 }
 
@@ -1952,18 +1937,15 @@ textarea::placeholder {
  * two adjacent unlabeled monospace pickers are indistinguishable. */
 .ctl-label {
   flex-shrink: 0;
-  font-family: var(--mono);
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+  color: var(--subtext);
 }
 .commit-picker select {
   flex: 1;
   min-width: 0;
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 .uncommitted-dot {
   display: inline-block;
@@ -1974,7 +1956,7 @@ textarea::placeholder {
   flex-shrink: 0;
 }
 .changes-note {
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 
@@ -1993,7 +1975,7 @@ textarea::placeholder {
 .empty-state p {
   max-width: 46ch;
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-md);
   line-height: 1.5;
   text-wrap: balance;
 }
@@ -2001,12 +1983,12 @@ textarea::placeholder {
   gap: 6px;
 }
 .empty-state p.empty-state-title {
-  font-size: 18px;
-  font-weight: 400;
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-regular);
   color: var(--text);
 }
 .empty-state p.empty-state-hint {
-  font-size: 15px;
+  font-size: var(--fs-lg);
   color: var(--subtext);
 }
 
@@ -2017,25 +1999,19 @@ textarea::placeholder {
   padding-top: 96px;
 }
 .onb-eyebrow {
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
   color: var(--muted);
   margin-bottom: 14px;
 }
-.onb-eyebrow span {
-  color: var(--primary);
-}
 .onb-title {
   margin: 0 0 6px;
-  font-size: 22px;
+  font-size: var(--fs-3xl);
   letter-spacing: -0.01em;
 }
 .onb-sub {
-  color: var(--subtext);
-  font-size: 13.5px;
+  color: var(--text);
+  font-size: var(--fs-base);
   line-height: 1.55;
   margin: 0 0 22px;
   max-width: 480px;
@@ -2051,7 +2027,7 @@ textarea::placeholder {
   gap: 5px;
   background: var(--base);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 18px 20px;
 }
 .onb-card-head {
@@ -2061,19 +2037,19 @@ textarea::placeholder {
   gap: 12px;
 }
 .onb-card-name {
-  font-weight: 600;
-  font-size: 14px;
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-base);
 }
 .onb-card-detail {
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .onb-card-meta {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--subtext);
 }
 .onb-card-meta code {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .onb-card-row {
   display: grid;
@@ -2087,7 +2063,7 @@ textarea::placeholder {
   align-items: center;
   gap: 8px;
   color: var(--subtext);
-  font-size: 13px;
+  font-size: var(--fs-md);
   padding: 8px 0;
 }
 .onb-gh-options {
@@ -2104,11 +2080,9 @@ textarea::placeholder {
   gap: 8px;
 }
 .onb-gh-option-label {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--subtext);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
 }
 .onb-gh-option-body {
   display: flex;
@@ -2118,28 +2092,26 @@ textarea::placeholder {
 }
 .onb-gh-cmd {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   background: var(--panel);
   border: 1px solid var(--border-variant);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   padding: 3px 8px;
 }
 .onb-gh-hint {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--subtext);
 }
 .onb-gh-hint code {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .onb-gh-or {
   display: flex;
   align-items: center;
   gap: 10px;
   color: var(--muted);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  font-size: var(--fs-xs);
 }
 .onb-gh-or::before,
 .onb-gh-or::after {
@@ -2164,17 +2136,17 @@ textarea::placeholder {
   flex: 1;
   min-width: 220px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .onb-token-form a {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--subtext);
   white-space: nowrap;
 }
 .onb-token-form .error {
   flex-basis: 100%;
   color: var(--accent-red);
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   white-space: pre-wrap;
 }
 .onb-actions {
@@ -2196,10 +2168,8 @@ textarea::placeholder {
 /* repo parse feedback under the new-project repository input */
 .form .repo-hint {
   font-family: var(--mono);
-  font-weight: 400;
-  text-transform: none;
-  letter-spacing: normal;
-  font-size: 11px;
+  font-weight: var(--fw-regular);
+  font-size: var(--fs-xs);
   color: var(--muted);
 }
 .form .repo-hint.ok {
@@ -2211,7 +2181,7 @@ textarea::placeholder {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   max-height: 240px;
   overflow-y: auto;
 }
@@ -2236,13 +2206,13 @@ textarea::placeholder {
   background: var(--surface);
 }
 .form .paper-results .title {
-  font-size: 12.5px;
-  font-weight: 500;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
 }
 .form .paper-results .id,
 .form .paper-pick .id {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
 }
 .form .paper-pick {
@@ -2252,15 +2222,15 @@ textarea::placeholder {
   gap: 10px;
   padding: 10px 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--surface);
 }
 .form .paper-pick .meta {
   min-width: 0;
 }
 .form .paper-pick .title {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
 }
 
 /* ---- forms / modal ---- */
@@ -2274,11 +2244,9 @@ textarea::placeholder {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 11px;
-  color: var(--subtext);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  font-size: var(--fs-xs);
+  color: var(--text);
+  font-weight: var(--fw-medium);
 }
 .form .row2 {
   display: grid;
@@ -2294,9 +2262,8 @@ textarea::placeholder {
 .form .error,
 .settings-card > .error {
   color: var(--accent-red);
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   white-space: pre-wrap;
-  text-transform: none;
 }
 
 .modal-backdrop {
@@ -2315,19 +2282,13 @@ textarea::placeholder {
   overflow-y: auto;
   background: var(--base);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.22);
   padding: 24px;
 }
 .modal h2 {
   margin: 0 0 14px;
-  font-size: 16px;
-}
-
-/* Soft idiom inside modals/cards/home: rounded inputs (buttons are already
-   the quiet flat style globally). */
-:is(.modal, .home) :is(input, select, textarea) {
-  border-radius: 8px;
+  font-size: var(--fs-xl);
 }
 
 /* ---- settings ---- */
@@ -2340,11 +2301,9 @@ textarea::placeholder {
 
 .settings-section h3 {
   margin: 0 0 8px;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-weight: 700;
-  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
 }
 
 .settings-loading {
@@ -2352,18 +2311,19 @@ textarea::placeholder {
   align-items: center;
   gap: 8px;
   color: var(--subtext);
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   padding: 4px 0;
 }
 
 .settings-note {
   margin: 10px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 8px 10px;
-  border: 2px solid var(--accent-amber);
+  border: 1px solid var(--accent-amber);
+  border-radius: var(--radius-md);
   background: var(--accent-amber-subtle);
   color: var(--accent-amber);
-  font-weight: 600;
+  font-weight: var(--fw-medium);
 }
 
 /* Determinate progress bar (data-dir move). */
@@ -2372,7 +2332,7 @@ textarea::placeholder {
 }
 .progress-track {
   height: 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--surface);
   border: 1px solid var(--border);
   overflow: hidden;
@@ -2380,14 +2340,14 @@ textarea::placeholder {
 .progress-fill {
   height: 100%;
   background: var(--accent);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   transition: width 0.2s ease;
 }
 .progress-caption {
   display: flex;
   justify-content: space-between;
   margin-top: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 
@@ -2400,14 +2360,14 @@ textarea::placeholder {
 .badge {
   display: inline-flex;
   align-items: center;
-  font-size: 10px;
-  font-weight: 700;
-  font-family: var(--mono);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  /* Explicit sans so badges nested in mono contexts (.kv .v) don't inherit. */
+  font-family: var(--sans);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
   padding: 1px 7px;
   border: 1px solid var(--border);
-  color: var(--muted);
+  border-radius: var(--radius-sm);
+  color: var(--text);
 }
 .badge.ok {
   color: var(--accent-green);
@@ -2440,7 +2400,7 @@ textarea::placeholder {
   gap: 8px;
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 7px 11px;
   background: var(--base);
   color: var(--text);
@@ -2448,7 +2408,7 @@ textarea::placeholder {
 }
 .files-pill code {
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2500,7 +2460,7 @@ a.files-pill:hover {
   align-items: center;
   gap: 6px;
   padding: 5px 8px;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 .ft-row:hover {
@@ -2529,8 +2489,8 @@ a.files-pill:hover {
 .ft-title {
   flex: 1;
   min-width: 0;
-  font-size: 12.5px;
-  font-weight: 500;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2540,7 +2500,7 @@ a.files-pill:hover {
   flex: 1;
   min-width: 0;
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2552,16 +2512,14 @@ a.files-pill:hover {
   width: 18px;
   height: 18px;
   object-fit: cover;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   border: 1px solid var(--border-variant);
   flex-shrink: 0;
 }
 .ft-divider {
   padding: 12px 8px 4px;
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
   color: var(--muted);
 }
 /* The files-dir path — demoted from header pills to a quiet footer. */
@@ -2580,7 +2538,7 @@ a.files-pill:hover {
   direction: rtl;
   text-align: left;
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2604,7 +2562,7 @@ a.files-pill:hover {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   color: var(--muted);
 }
 .fpreview-head {
@@ -2619,7 +2577,7 @@ a.files-pill:hover {
 }
 .fpreview-path {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text);
   flex: 1;
   min-width: 0;
@@ -2629,13 +2587,10 @@ a.files-pill:hover {
 }
 .fpreview-date,
 .fpreview-size {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   white-space: nowrap;
   flex-shrink: 0;
-}
-.fpreview-size {
-  font-family: var(--mono);
 }
 .fpreview-body {
   flex: 1;
@@ -2660,7 +2615,7 @@ a.files-pill:hover {
   max-width: 100%;
   height: auto;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .fpreview-pdf {
   display: block;
@@ -2683,14 +2638,14 @@ a.files-pill:hover {
 }
 .files-empty-state h3 {
   margin: 6px 0 0;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: var(--fs-base);
+  font-weight: var(--fw-semibold);
   color: var(--text);
 }
 .files-empty-state p {
   margin: 0;
   max-width: 420px;
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   line-height: 1.55;
   color: var(--subtext);
 }
@@ -2698,7 +2653,7 @@ a.files-pill:hover {
   margin-top: 10px;
   max-width: 100%;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 6px 10px;
   background: var(--base);
 }
@@ -2708,13 +2663,13 @@ a.files-pill:hover {
 .files-truncated {
   margin: 0;
   padding: 8px 14px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
 }
 /* Reports are long-form documents, so preserve their Markdown hierarchy.
    The shared .md rules intentionally keep chat headings compact. */
 .report-md {
-  font-size: 15px;
+  font-size: var(--fs-lg);
 }
 .report-md h1 {
   font-size: 2em;
@@ -2751,12 +2706,13 @@ a.files-pill:hover {
   max-width: 100%;
   height: auto;
   border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
 }
 .report-md .report-img-caption {
   display: block;
   margin-top: 4px;
   text-align: center;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--subtext);
 }
 
@@ -2770,7 +2726,7 @@ a.files-pill:hover {
 
 .diff-file-card {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--base);
 }
 /* The header owns the card's rounded top outline (overlaid on the card
@@ -2807,11 +2763,11 @@ a.files-pill:hover {
   z-index: -1;
   background: var(--canvas);
   border: 1px solid var(--border);
-  border-radius: 8px 8px 0 0;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
 }
 .diff-file-header .chev {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   flex-shrink: 0;
   width: 12px;
 }
@@ -2829,8 +2785,8 @@ a.files-pill:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--mono);
-  font-size: 0.7rem;
-  font-weight: 700;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
   color: var(--text);
 }
 .diff-file-header .stats {
@@ -2839,8 +2795,8 @@ a.files-pill:hover {
   gap: 8px;
   flex-shrink: 0;
   font-family: var(--mono);
-  font-size: 0.65rem;
-  font-weight: 700;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
   font-variant-numeric: tabular-nums;
 }
 .diff-stat-add {
@@ -2852,18 +2808,19 @@ a.files-pill:hover {
 .diff-empty {
   padding: 8px 12px;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--fs-md);
 }
 
 .truncated-notice {
-  border: 2px solid var(--accent-amber);
+  border: 1px solid var(--accent-amber);
+  border-radius: var(--radius-md);
   background: var(--accent-amber-subtle);
   padding: 12px 14px;
-  font-size: 12.5px;
+  font-size: var(--fs-md);
 }
 .truncated-notice h4 {
   margin: 0 0 4px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--accent-amber);
 }
 .truncated-notice p {
@@ -2943,7 +2900,7 @@ a.files-pill:hover {
   --diff-omit-gutter-line-color: var(--openresearch-diff-omit-gutter-line-color);
 
   width: 100%;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
 }
 
@@ -3057,7 +3014,7 @@ a.files-pill:hover {
 }
 .settings-view h1 {
   margin: 0 0 6px;
-  font-size: 22px;
+  font-size: var(--fs-3xl);
 }
 .settings-head-row {
   display: flex;
@@ -3072,30 +3029,27 @@ a.files-pill:hover {
    Instances load error. Mirrors `.form .error`. */
 .settings-view > .error {
   color: var(--accent-red);
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   white-space: pre-wrap;
-  text-transform: none;
   margin: 0 0 12px;
 }
 .settings-sub {
   margin: 0 0 18px;
-  color: var(--subtext);
-  font-size: 13px;
+  color: var(--text);
+  font-size: var(--fs-md);
 }
 .settings-card {
   background: var(--base);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 16px 18px;
   margin-bottom: 16px;
 }
 .settings-card h3 {
   margin: 0 0 10px;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-weight: 700;
-  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
 }
 .settings-card .settings-sub {
   margin-bottom: 12px;
@@ -3111,7 +3065,7 @@ a.files-pill:hover {
 }
 .settings-empty {
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   margin: 4px 0 0;
 }
 .muted {
@@ -3128,7 +3082,7 @@ a.files-pill:hover {
 .compute-row {
   background: var(--base);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
 }
 .compute-row-head {
   display: flex;
@@ -3140,10 +3094,10 @@ a.files-pill:hover {
 }
 .compute-row-head:hover {
   background: var(--surface);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
 }
 .compute-row.open .compute-row-head:hover {
-  border-radius: 10px 10px 0 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 }
 .compute-row-logo {
   display: inline-flex;
@@ -3151,8 +3105,8 @@ a.files-pill:hover {
   flex: none;
 }
 .compute-row-name {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
   color: var(--text);
   flex: none;
 }
@@ -3163,7 +3117,7 @@ a.files-pill:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .compute-row-head .badge,
 .compute-make-default,
@@ -3180,7 +3134,7 @@ a.files-pill:hover {
   display: inline-flex;
   align-items: center;
   padding: 2px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .compute-chevron-btn:hover {
   background: var(--panel);
@@ -3213,7 +3167,7 @@ a.files-pill:hover {
   max-width: 320px;
 }
 .compute-flavor-hint {
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 /* Standing disclosure, not a warning — quiet muted text, no amber callout. */
 .compute-footnote {
@@ -3221,7 +3175,7 @@ a.files-pill:hover {
   align-items: flex-start;
   gap: 6px;
   margin: 2px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .compute-footnote svg {
@@ -3241,9 +3195,9 @@ a.files-pill:hover {
   align-items: center;
   gap: 7px;
   padding: 7px 12px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--subtext);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
 }
@@ -3251,7 +3205,6 @@ a.files-pill:hover {
   color: var(--text);
 }
 .harness-tabs button.active {
-  color: var(--text);
   border-bottom-color: var(--primary);
 }
 .harness-dot {
@@ -3274,7 +3227,7 @@ a.files-pill:hover {
 .env-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   table-layout: fixed;
 }
 .env-table td:first-child {
@@ -3325,14 +3278,14 @@ a.files-pill:hover {
 .flavor-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12.5px;
+  font-size: var(--fs-md);
 }
 .flavor-table th {
   padding: 5px 10px 5px 0;
   border-bottom: 1px solid var(--border);
   text-align: left;
-  font-weight: 500;
-  color: var(--muted);
+  font-weight: var(--fw-medium);
+  color: var(--text);
 }
 .flavor-table td {
   padding: 5px 10px 5px 0;
@@ -3369,7 +3322,7 @@ a.files-pill:hover {
   display: block;
   margin-top: 2px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 @keyframes settings-spin {
@@ -3393,11 +3346,10 @@ a.files-pill:hover {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--subtext);
+  font-size: var(--fs-sm);
+  color: var(--text);
   padding: 5px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .composer-pill:hover {
   background: var(--surface);
@@ -3408,10 +3360,10 @@ a.files-pill:hover {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 11.5px;
-  color: var(--subtext);
+  font-size: var(--fs-sm);
+  color: var(--text);
   padding: 5px 4px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .composer-bare:hover {
   color: var(--text);
@@ -3426,7 +3378,7 @@ a.files-pill:hover {
   flex-direction: column;
   background: var(--base);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
   z-index: 50;
   overflow: hidden;
@@ -3466,7 +3418,7 @@ a.files-pill:hover {
 /* "· Default" note on the pinned default row. */
 .option-default {
   color: var(--muted);
-  font-weight: 400;
+  font-weight: var(--fw-regular);
 }
 /* Separator under the default row. */
 .option-sep {
@@ -3477,7 +3429,7 @@ a.files-pill:hover {
 /* Right-aligned 1-based number hints in the mode menu. */
 .option-num {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
 .model-menu input {
@@ -3485,7 +3437,7 @@ a.files-pill:hover {
   border-bottom: 1px solid var(--border-variant);
   background: none;
   padding: 9px 12px;
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   outline: none;
 }
 .model-menu-list {
@@ -3493,10 +3445,8 @@ a.files-pill:hover {
   padding: 6px;
 }
 .model-group {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
   color: var(--muted);
   padding: 8px 8px 4px;
 }
@@ -3508,8 +3458,8 @@ a.files-pill:hover {
   width: 100%;
   text-align: left;
   padding: 6px 8px;
-  font-size: 12.5px;
-  border-radius: 6px;
+  font-size: var(--fs-md);
+  border-radius: var(--radius-sm);
 }
 .model-item:hover {
   background: var(--surface);
@@ -3517,12 +3467,12 @@ a.files-pill:hover {
 .model-item .model-id {
   display: block;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   color: var(--muted);
 }
 .model-more {
   padding: 4px 8px 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
 }
 /* Mid-session footer: the harness is fixed, so only its models are offered. */
@@ -3531,7 +3481,7 @@ a.files-pill:hover {
   align-items: center;
   gap: 6px;
   padding: 7px 12px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   border-top: 1px solid var(--border-variant);
 }
@@ -3550,7 +3500,7 @@ a.files-pill:hover {
   padding: 6px;
   background: var(--base);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
   z-index: 50;
   overflow: hidden;
@@ -3562,20 +3512,19 @@ a.files-pill:hover {
   width: 100%;
   text-align: left;
   padding: 7px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .skill-item.active {
   background: var(--surface);
 }
 .skill-item .skill-name {
-  font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .skill-item .skill-hint {
   color: var(--muted);
 }
 .skill-item .skill-desc {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--subtext);
 }
 
@@ -3594,12 +3543,12 @@ a.files-pill:hover {
   gap: 8px;
   padding: 4px 12px;
   border-bottom: 1px solid var(--border-variant);
-  color: var(--subtext);
+  color: var(--text);
   flex-shrink: 0;
 }
 .file-view-path {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text);
   flex: 1;
   min-width: 0;
@@ -3612,10 +3561,10 @@ a.files-pill:hover {
    navigation affordance next to the path. */
 .file-view-ref {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   border: 1px solid var(--border-variant);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 1px 6px;
   max-width: 180px;
   overflow: hidden;
@@ -3644,7 +3593,7 @@ a.files-pill:hover {
   padding-top: 14px;
   padding-bottom: 14px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.55;
 }
 .file-view-gutter {
@@ -3668,7 +3617,7 @@ a.files-pill:hover {
 }
 .file-view-note {
   padding: 10px 16px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 
@@ -3678,7 +3627,7 @@ a.files-pill:hover {
   padding: 18px 20px 32px;
 }
 .file-view-md .md {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
 }
 .file-view-md .md h1 {
   font-size: 1.5em;
@@ -3706,7 +3655,7 @@ a.files-pill:hover {
   padding: 12px 14px;
   border: 1px solid var(--border);
   border-left: 3px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--surface);
   display: flex;
   flex-direction: column;
@@ -3729,32 +3678,28 @@ a.files-pill:hover {
 }
 
 .prompt-head {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
 }
 .prompt-head code {
   font-family: var(--mono);
-  font-size: 11.5px;
-  text-transform: none;
+  font-size: var(--fs-sm);
   color: var(--text);
 }
 .prompt-sub {
-  font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--subtext);
   word-break: break-word;
 }
 .prompt-q {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: var(--fs-base);
+  font-weight: var(--fw-semibold);
   line-height: 1.5;
   color: var(--text);
 }
 .prompt-plan {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   line-height: 1.6;
   color: var(--text);
   max-height: 340px;
@@ -3778,7 +3723,7 @@ a.files-pill:hover {
   padding: 8px 11px;
   text-align: left;
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: var(--base);
   color: var(--text);
   cursor: pointer;
@@ -3799,13 +3744,13 @@ a.files-pill:hover {
 }
 .prompt-option-label {
   display: block;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
 }
 .prompt-option-desc {
   display: block;
-  font-size: 12px;
-  font-weight: 400;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-regular);
   line-height: 1.45;
   color: var(--subtext);
 }
@@ -3823,10 +3768,10 @@ a.files-pill:hover {
   gap: 6px;
   padding: 6px 13px;
   font-family: inherit;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition:
     background 80ms ease,
@@ -3859,7 +3804,7 @@ a.files-pill:hover {
    render nothing at all. Same visual family as `.reasoning`. */
 .prompt-collapsed {
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--fs-md);
   margin: 4px 0;
 }
 .prompt-collapsed summary {
@@ -3882,11 +3827,11 @@ a.files-pill:hover {
   transform: rotate(90deg);
 }
 .prompt-collapsed-title {
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
   word-break: break-word;
 }
 .prompt-outcome {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--subtext);
   word-break: break-word;
 }
@@ -3906,7 +3851,7 @@ a.files-pill:hover {
   margin-top: 6px;
   padding-left: 12px;
   border-left: 2px solid var(--border);
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--subtext);
 }
 .prompt-collapsed-options {
@@ -3915,7 +3860,7 @@ a.files-pill:hover {
 }
 .prompt-collapsed-options .sel {
   color: var(--text);
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
 }
 .prompt-collapsed-note {
   margin-top: 6px;
@@ -3937,7 +3882,7 @@ a.files-pill:hover {
   gap: 10px;
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent-blue);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--surface);
   box-shadow: 0 2px 10px rgb(0 0 0 / 6%);
 }
@@ -3953,7 +3898,7 @@ a.files-pill:hover {
   border: none;
   background: none;
   color: var(--accent-blue);
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
@@ -3971,9 +3916,9 @@ a.files-pill:hover {
   width: 100%;
   resize: none;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 9px 11px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-family: inherit;
   background: var(--base);
   color: var(--text);
@@ -3987,8 +3932,8 @@ a.files-pill:hover {
   align-self: center;
 }
 .plan-strip-title {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
   white-space: nowrap;
 }
 /* Button styling comes from the shared `.prompt-actions` rules, but the
@@ -4054,7 +3999,7 @@ a.files-pill:hover {
   min-width: 190px;
   padding: 4px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--surface);
   box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
   z-index: 6;
@@ -4063,10 +4008,10 @@ a.files-pill:hover {
   text-align: left;
   padding: 7px 9px;
   border: none;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text);
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   cursor: pointer;
 }
 .plan-strip-menu button:hover {
@@ -4092,7 +4037,7 @@ a.files-pill:hover {
   border: none;
   background: transparent;
   color: var(--accent-blue);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 0;
   cursor: pointer;
 }
@@ -4124,11 +4069,11 @@ a.files-pill:hover {
    * (whose tallest child is a 28px icon-btn) — the base select rule's
    * 6px/14px would make Code <-> file tab switches jump the divider. */
   padding: 3px 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .code-tab-note {
   padding: 8px 16px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
   border-bottom: 1px solid var(--border-variant);
   flex-shrink: 0;
@@ -4141,7 +4086,7 @@ a.files-pill:hover {
 }
 .code-tree {
   padding: 6px 0;
-  font-size: 12.5px;
+  font-size: var(--fs-md);
 }
 .code-tree-row {
   display: flex;
@@ -4189,13 +4134,13 @@ a.files-pill:hover {
 }
 .tour-spotlight {
   position: absolute;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
   transition: all 300ms ease;
 }
 .tour-ring {
   position: absolute;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   border: 2px solid var(--primary);
   transition: all 300ms ease;
 }
@@ -4205,7 +4150,7 @@ a.files-pill:hover {
   max-width: calc(100vw - 32px);
   background: var(--base);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.22);
   padding: 18px 20px 0;
   transition:
@@ -4220,14 +4165,14 @@ a.files-pill:hover {
 }
 .tour-card h3 {
   margin: 0 24px 6px 0;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: var(--fs-base);
+  font-weight: var(--fw-semibold);
 }
 .tour-card p {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   line-height: 1.5;
-  color: var(--subtext);
+  color: var(--text);
 }
 .tour-card .tour-close {
   position: absolute;
@@ -4249,7 +4194,7 @@ a.files-pill:hover {
   justify-content: flex-end;
 }
 .tour-count {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }

@@ -1,4 +1,5 @@
 import { Plus, Trash2 } from "lucide-react";
+import { Wordmark } from "./Wordmark";
 import { useState } from "react";
 import { deleteProject, timeAgo, type Project } from "../api";
 import { NewProjectForm } from "./NewProjectForm";
@@ -38,7 +39,7 @@ export function ProjectsHome({
     <div className="home">
       <div className="home-inner">
         <div className="home-brand">
-          Open<span>Research</span>
+          <Wordmark />
         </div>
         <div className="home-head">
           <h2>Projects</h2>

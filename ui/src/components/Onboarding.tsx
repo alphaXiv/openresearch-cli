@@ -1,4 +1,5 @@
 import { ArrowLeft, ArrowRight, Check, Copy, RefreshCw } from "lucide-react";
+import { Wordmark } from "./Wordmark";
 import { useEffect, useState } from "react";
 import {
   getDataDir,
@@ -53,7 +54,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         {step === 0 ? (
           <>
             <div className="onb-eyebrow">
-              Open<span>Research</span> · step 1 of 4
+              <Wordmark /> · Step 1 of 4
             </div>
             <h2 className="onb-title">Your coding agents</h2>
             <p className="onb-sub">
@@ -82,7 +83,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         ) : step === 1 ? (
           <>
             <div className="onb-eyebrow">
-              Open<span>Research</span> · step 2 of 4
+              <Wordmark /> · Step 2 of 4
             </div>
             <h2 className="onb-title">Git &amp; GitHub</h2>
             <p className="onb-sub">
@@ -109,7 +110,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         ) : step === 2 ? (
           <>
             <div className="onb-eyebrow">
-              Open<span>Research</span> · step 3 of 4
+              <Wordmark /> · Step 3 of 4
             </div>
             <h2 className="onb-title">Where orx keeps your data</h2>
             <p className="onb-sub">
@@ -133,7 +134,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         ) : (
           <>
             <div className="onb-eyebrow">
-              Open<span>Research</span> · step 4 of 4
+              <Wordmark /> · Step 4 of 4
             </div>
             <h2 className="onb-title">Usage analytics</h2>
             <p className="onb-sub">
@@ -161,9 +162,9 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 }
 
 function agentBadge(h: Harness): { cls: string; label: string } {
-  if (h.agentReady) return { cls: "st-done", label: "connected" };
-  if (h.installed) return { cls: "st-starting", label: "not signed in" };
-  return { cls: "st-idle", label: "not detected" };
+  if (h.agentReady) return { cls: "st-done", label: "Connected" };
+  if (h.installed) return { cls: "st-starting", label: "Not signed in" };
+  return { cls: "st-idle", label: "Not detected" };
 }
 
 function AgentCard({ h }: { h: Harness }) {
@@ -260,10 +261,10 @@ function GitCard({
           {git.githubTokenSource === "env"
             ? "token from GITHUB_TOKEN"
             : git.githubTokenSource === "stored"
-              ? "token saved in orx"
+              ? "Token saved in orx"
               : git.githubTokenSource === "gh"
-                ? "signed in via gh CLI"
-                : "not connected"}
+                ? "Signed in via gh CLI"
+                : "Not connected"}
         </span>
         <span className={`status-badge ${git.githubTokenSource ? "st-done" : "st-starting"}`}>
           {git.githubTokenSource ? <Check size={12} strokeWidth={3} /> : <span className="dot" />}
