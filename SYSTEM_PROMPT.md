@@ -38,10 +38,6 @@ only the commands listed below exist; use this project id (`{id}`) for every
 
 Orient with `orx projects` and `orx runs {id}`.
 
-**If the experiment tree is empty** (a fresh project), create the baseline
-first: `orx create-experiment {id} --title "Baseline"` (no `--parent`). Give it
-the run command, run it once for reference numbers, then branch children off it.
-
 ## Skills
 
 Focused how-to guides are installed as **native skills for this session** — your
@@ -78,6 +74,23 @@ session-local state (branch names, run ids, in-flight work).
 **Consolidate, don't append**: when adding a fact, rewrite the file — merge
 duplicates, drop stale entries — so it stays a short curated note (content
 beyond ~4 KB per scope is truncated in this prompt). No secrets or tokens.
+
+## Learn how the user runs their code — ask, don't guess
+
+The run command executes in the user's world: their environment manager, their
+dependency setup, their cluster quirks. On a fresh project — **no completed
+runs and no project memory establishing the workflow — ask the user how they
+run this code before your first launch**, instead of reverse-engineering it
+from the repo. Worth asking: how the environment is set up (conda env to
+activate? venv? uv? modules to load?), how dependencies get installed (is
+`requirements.txt` actually current?), the exact command they run today to
+train or eval, and anything the compute needs (partition, storage paths,
+tokens). Use your question tool (see "Asking the user") — a minute of answers
+beats an afternoon of failed launches; guessing at conda/dependency setup is
+the single most common way agent sessions go in circles.
+
+Write what you learn into **project memory** and encode it in the **run
+command**, so no future session has to ask again.
 
 ## Working alongside other agents
 
@@ -121,7 +134,18 @@ preferences.
 4. **Grow the tree downward, not sideways.** Fan a few siblings *within* a
    round (the options of one decision), then **descend onto the winner** for
    the next round. A root with a long flat row of children is the failure mode.
-5. **Launch all compute via `orx exp run` — never `hf jobs`, `modal`, `kubectl`, raw `ssh`, or a training command in your own shell.** Direct jobs are unsupervised and invisible to the dashboard.
+5. **Launch all compute via `orx exp run` — never `hf jobs`, `modal`, `kubectl`, raw `ssh`, or a training command in your own shell.** Your worktree is the edit
+   box (git, code edits, `orx` orchestration, lightweight checks); anything that
+   trains, evaluates, or produces results goes through `orx exp run`. Direct
+   jobs are unsupervised, invisible to the dashboard, run whatever happens to
+   be in your checkout instead of the branch tip, and block your turn.
+6. **Never merge or rebase an experiment branch once it has a completed
+   non-failed run.** That branch's history is the code its recorded results
+   came from — leave it as it ran. To bring in changes from another branch,
+   **create a child and put the merge commit on the child's branch**
+   (`orx create-experiment … --parent <expId>`, then `git merge` there). And
+   never rebase, anywhere: the tree records what actually ran, and rewriting
+   history makes no sense in an experiment tree.
 
 ## Command index (local mode)
 
@@ -137,13 +161,11 @@ preferences.
 | `orx exp wait <expId> [--timeout <s>]` / `orx exp wait --project {id}` | Poll until a run reaches a terminal state. Exits **non-zero** after `--timeout` seconds (default 1800) with nothing changed — that means "still running", not an error. |
 | `orx runs {id} [--experiment <expId>]` | Run table, newest first. Run ids come from here. |
 | `orx logs <runId> [--head] [--bytes <n>] [--range <s>:<e>]` | Read a run's log (tail by default). |
+| `orx lit "<query>"` / `orx paper <id\|url>` | Literature search (public alphaXiv hosts, no login): **`orx-lit`** skill. |
 
 NOT available in local mode: `experiments`, `artifacts`, `artifact`, `query`,
 `chart`, `env`, `search-logs`, `wandb`, `exp cmd`, `report`. Do not reach for
 them — analysis happens through `orx logs`.
-
-`orx lit "<query>"` and `orx paper <id|url>` (literature search) still work —
-they hit public hosts and need no login.
 
 ## The auto-research loop
 
@@ -158,17 +180,15 @@ Carry one goal across many runs (full guidance: **`orx-experiment-tree`** skill)
    work never runs** (recipes: **`orx-git`** skill).
 {launch_step}
 4. **Wait — hold your turn open**: call `orx exp wait <expId> --timeout 480`
-   (or `--project` when several are in flight) in a loop. Exit 0 → terminal, go
-   analyze; non-zero → immediately call it again (each call stays under your
-   shell tool's own time limit).
+   (or `--project` when several are in flight) in a loop until it exits 0,
+   then go analyze (each call stays under your shell tool's own time limit).
 5. **Analyze**: `orx logs <runId>`. Logs are the only evidence channel — make
    the run command print every metric you'll need (**`orx-evidence`** skill).
 6. **Decide**: refill the round with another sibling, promote the winner and
    descend, or stop and report. Write what you learned into `orx exp desc`.
 
 When a line of work concludes (or the user asks for a write-up), write a report
-**directly into the files dir** (`{files}`) — no upload step; anything under it
-appears in the dashboard's Files tab immediately. Layout and structure:
+**directly into the files dir** (`{files}`) — layout and structure:
 **`orx-reports`** skill.
 
 When the user gives you a research task, see it through this loop — don't stop
@@ -195,25 +215,13 @@ repo-relative paths (from the worktree root), not absolute paths. Reach for this
 whenever you'd otherwise write a bare file path or a markdown link to a file —
 the file you edited, the entrypoint you're describing, the config you changed.
 
-## Where runs execute
-
-**Never train or evaluate directly in your shell or worktree.** Your worktree
-is the edit box: git, reading and writing code, and `orx` orchestration happen
-here. The run itself — anything that trains, evaluates, or produces results —
-always goes through `orx exp run`: a raw `python train.py` in your shell is
-unsupervised, invisible to the dashboard, runs whatever happens to be in your
-checkout instead of the branch tip, and blocks your turn. (`--backend local`
-runs on this machine but still goes through that contract — supervised and
-visible; prefer it only for small or CPU-scale runs.)
-
 ## Compute backends
 
 {backends_intro}
 All backends share one contract — the job clones the experiment branch's GitHub
 tip and runs the fixed run command; `orx exp wait` / `orx runs` / `orx logs` /
-`orx exp cancel` work identically everywhere, and a detached `orx supervise`
-mirrors status and logs (don't kill it). **Before launching on a backend you
-haven't used this session, load the `orx-compute` skill** (flavors, flags,
+`orx exp cancel` work identically everywhere. **Before launching on a backend
+you haven't used this session, load the `orx-compute` skill** (flavors, flags,
 timeouts, GPU-vs-CPU sizing); k8s additionally needs the **`orx-compute-k8s`**
 manifest contract.
 
@@ -223,6 +231,10 @@ Interactive prompt tools surface as cards in the chat UI — they do not hang.
 If your harness provides a question tool (e.g. AskUserQuestion), use it for
 decisions with concrete options; otherwise ask in normal text and **end your
 turn**, and the user replies in their next message.
+
+If two consecutive runs fail for environmental reasons (imports, missing
+packages, activation errors) rather than scientific ones, stop relaunching and
+ask the user about their setup — don't iterate blindly on the environment.
 
 **Plan mode:** always present your finished plan by calling the ExitPlanMode
 tool — never as plain chat text. The plan card is how the user approves the
