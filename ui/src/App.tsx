@@ -33,6 +33,7 @@ import { ProjectsHome } from "./components/ProjectsHome";
 import { RunsTable } from "./components/RunsTable";
 import { Md } from "./components/Md";
 import { SettingsView, type SettingsTab } from "./components/SettingsPage";
+import { Tour, TOUR_DONE_KEY } from "./components/Tour";
 import { TreeView } from "./components/TreeView";
 import { useOrxEvents } from "./events";
 
@@ -194,6 +195,38 @@ export default function App() {
       return true; // storage unavailable — don't loop the walkthrough
     }
   });
+  // The spotlight tour of the workspace (Tour.tsx). Starting it normalizes
+  // the layout so every tour target exists; those are the defaults, so
+  // nothing needs restoring on finish/skip.
+  const [tourOpen, setTourOpen] = useState(false);
+  const startTour = useCallback(() => {
+    setMainView("chat");
+    setRailOpen(true);
+    setPanelOpen(true);
+    setPanelMax(false);
+    setTourOpen(true);
+  }, []);
+  const closeTour = useCallback(() => {
+    try {
+      localStorage.setItem(TOUR_DONE_KEY, "1");
+    } catch {
+      // private mode etc. — the tour just replays next boot
+    }
+    setTourOpen(false);
+  }, []);
+
+  // Auto-start the tour the first time the workspace is actually on screen:
+  // first-run walkthrough done, a project open, projects home closed. With
+  // zero projects this waits until the first one is created and opened.
+  useEffect(() => {
+    if (!projectId || homeOpen || !onboarded) return;
+    try {
+      if (localStorage.getItem(TOUR_DONE_KEY) === "1") return;
+    } catch {
+      return; // storage unavailable — don't loop the tour
+    }
+    startTour();
+  }, [projectId, homeOpen, onboarded, startTour]);
 
   const projectIdRef = useRef(projectId);
   projectIdRef.current = projectId;
@@ -494,6 +527,7 @@ export default function App() {
             }}
             onOpenFile={openFileTab}
             onOpenPlan={openPlanTab}
+            onStartTour={startTour}
           >
             {mainView === "files" ? (
               (() => {
@@ -519,6 +553,7 @@ export default function App() {
         <aside
           className={`right-pane floating-panel ${panelMax ? "max" : ""}`}
           style={panelMax ? undefined : { width: panelWidth }}
+          data-onboarding="experiments"
         >
           {!panelMax && <div className="panel-resizer" onPointerDown={resizePanel} />}
           <div className="tabs">
@@ -703,6 +738,7 @@ export default function App() {
         )}
       </div>
       )}
+      {tourOpen && !homeOpen && projectId && <Tour onClose={closeTour} />}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import {
   CornerDownLeft,
   FlaskConical,
   FolderOpen,
+  HelpCircle,
   MoreHorizontal,
   PanelLeft,
   Plus,
@@ -830,6 +831,7 @@ export function ChatPanel({
   onTogglePanel,
   onOpenFile,
   onOpenPlan,
+  onStartTour,
   children,
 }: {
   projectId: string;
@@ -853,6 +855,8 @@ export function ChatPanel({
   onOpenFile?: (path: string, sessionId?: string) => void;
   /** Open a plan's markdown as a right-pane tab (plan strip / plan cards). */
   onOpenPlan?: (plan: string, sessionId: string, promptId: string) => void;
+  /** Replay the onboarding tour (chat header help button). */
+  onStartTour?: () => void;
   /** Middle-pane content when a settings section is active (the SettingsView). */
   children?: React.ReactNode;
 }) {
@@ -1343,6 +1347,7 @@ export function ChatPanel({
       <nav className="rail-nav">
         <button
           className="rail-nav-item"
+          data-onboarding="new-session"
           onClick={() => {
             setActiveId(null);
             onSelectMainView("chat");
@@ -1353,6 +1358,7 @@ export function ChatPanel({
         </button>
         <button
           className={`rail-nav-item ${mainView === "files" ? "active" : ""}`}
+          data-onboarding="nav-files"
           onClick={() => onSelectMainView("files")}
         >
           <FolderOpen size={15} />
@@ -1362,6 +1368,7 @@ export function ChatPanel({
           <button
             key={item.id}
             className={`rail-nav-item ${mainView === item.id ? "active" : ""}`}
+            data-onboarding={item.id === "compute" ? "nav-compute" : undefined}
             onClick={() => onSelectMainView(item.id)}
           >
             {item.icon}
@@ -1451,6 +1458,16 @@ export function ChatPanel({
         >
           {activeSession ? activeSession.title?.trim() || "Untitled" : "New session"}
         </div>
+        {onStartTour && (
+          <button
+            className="icon-btn"
+            title="Replay tour"
+            aria-label="Replay tour"
+            onClick={onStartTour}
+          >
+            <HelpCircle size={15} />
+          </button>
+        )}
         <button
           className={`icon-btn ${panelOpen ? "active" : ""}`}
           title="Experiments"
@@ -1553,7 +1570,7 @@ export function ChatPanel({
             }}
           />
         )}
-        <div className="composer-box">
+        <div className="composer-box" data-onboarding="composer">
           {skillMenuOpen && (
             <SkillMenu
               skills={skillMatches}
