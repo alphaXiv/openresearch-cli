@@ -758,6 +758,26 @@ impl ChatHost {
         overrides: TurnOverrides,
         images: Vec<ImageAttachment>,
     ) -> Result<()> {
+        self.send_message_showing(session_id, text, None, overrides, images)
+            .await
+    }
+
+    /// [`Self::send_message`] with the transcript/model split: `transcript_text`
+    /// is what the stored transcript (and the UI) shows as the user message,
+    /// while `text` is what the harness receives. `None` keeps them identical
+    /// (every ordinary send); an empty override records no user message at all.
+    /// Same precedent as slash-skills (transcript keeps the `/name` the user
+    /// typed, the harness gets the expanded prompt) — used by prompt-card
+    /// resumes, whose scaffolding text ("Implement the plan.") the user never
+    /// typed.
+    async fn send_message_showing(
+        self: &Arc<Self>,
+        session_id: &str,
+        text: String,
+        transcript_text: Option<String>,
+        overrides: TurnOverrides,
+        images: Vec<ImageAttachment>,
+    ) -> Result<()> {
         // Atomically claim the session's turn slot: the busy-check and the
         // reservation happen under one lock so two concurrent sends (or a
         // send racing a /respond resume) can't both spawn a turn against the
@@ -812,8 +832,9 @@ impl ChatHost {
             session.archived = false;
         }
         let saved_images = save_images(&images)?;
+        let display_text = transcript_text.as_deref().unwrap_or(&text);
         if session.title.is_none() {
-            let first_line = text.lines().next().unwrap_or("").trim();
+            let first_line = display_text.lines().next().unwrap_or("").trim();
             let mut title: String = first_line.chars().take(64).collect();
             if first_line.chars().count() > 64 {
                 title = title.trim_end().to_string();
@@ -829,29 +850,34 @@ impl ChatHost {
         }
 
         let mut parts = Vec::new();
-        if !text.is_empty() {
-            parts.push(WirePart::text("p0", text.clone()));
+        if !display_text.is_empty() {
+            parts.push(WirePart::text("p0", display_text.to_string()));
         }
         for (i, (name, _)) in saved_images.iter().enumerate() {
             parts.push(WirePart::image(format!("img{i}"), name.clone()));
         }
-        let user_msg = WireMessage {
-            id: format!("msg_{}", uuid::Uuid::new_v4()),
-            role: "user".into(),
-            parts,
-            created_at: now_ms(),
-        };
-        store.upsert_chat_message(&StoredChatMessage {
-            id: user_msg.id.clone(),
-            session_id: session.id.clone(),
-            role: "user".into(),
-            parts_json: serde_json::to_string(&user_msg.parts)?,
-            created_at: user_msg.created_at,
-        })?;
+        // A resume whose transcript text is empty (e.g. a note-less plan
+        // approval) records no user message: the resolved card already tells
+        // that part of the story, and an empty bubble would just be noise.
+        if !parts.is_empty() {
+            let user_msg = WireMessage {
+                id: format!("msg_{}", uuid::Uuid::new_v4()),
+                role: "user".into(),
+                parts,
+                created_at: now_ms(),
+            };
+            store.upsert_chat_message(&StoredChatMessage {
+                id: user_msg.id.clone(),
+                session_id: session.id.clone(),
+                role: "user".into(),
+                parts_json: serde_json::to_string(&user_msg.parts)?,
+                created_at: user_msg.created_at,
+            })?;
+            self.emit("chat.message", message_json(&user_msg, &session.id));
+        }
         store.touch_chat_session(&session.id)?;
         let session = store.get_chat_session(&session.id)?.unwrap_or(session);
 
-        self.emit("chat.message", message_json(&user_msg, &session.id));
         self.emit(
             "chat.session",
             json!({ "session": session_json(&session, true) }),
@@ -1069,7 +1095,16 @@ impl ChatHost {
                     permission_mode: mode.map(|m| m.id().to_string()),
                     reasoning_level: None,
                 };
-                self.send_message(&req.session_id, text, overrides, Vec::new())
+                // Plan/permission resumes are scaffolding the user never typed
+                // ("Implement the plan.", "The user approved that action…") —
+                // the transcript shows only their own note (usually nothing;
+                // the resolved card tells the rest). A question resume's text
+                // IS the user's answer, so it stays a normal bubble.
+                let transcript = match prompt.kind.as_str() {
+                    "plan" | "permission" => Some(req.note.clone().unwrap_or_default()),
+                    _ => None,
+                };
+                self.send_message_showing(&req.session_id, text, transcript, overrides, Vec::new())
                     .await?;
                 self.resolve_prompt_card(&req);
                 Ok(())
