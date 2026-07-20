@@ -10,7 +10,38 @@ pub async fn run(args: crate::TelemetryArgs) -> Result<()> {
         crate::TelemetryCommand::Status => status(),
         crate::TelemetryCommand::On => set_enabled(true).await,
         crate::TelemetryCommand::Off => set_enabled(false).await,
+        crate::TelemetryCommand::Context { value, clear } => context(value, clear),
     }
+}
+
+/// Show or set the machine context tag (`install_kind` on every event). Values
+/// are coarse machine-class labels ("cloud-agent"), never anything identifying.
+fn context(value: Option<String>, clear: bool) -> Result<()> {
+    if clear {
+        telemetry::set_machine_context(None)
+            .map_err(|e| anyhow!("Could not clear machine context: {e}"))?;
+        println!("\u{2713} Machine context cleared (this install now counts as human).");
+        return Ok(());
+    }
+    let Some(value) = value else {
+        match telemetry::machine_context() {
+            Some(c) => println!("Machine context: {c}"),
+            None => println!("Machine context: (none — this install counts as human)"),
+        }
+        return Ok(());
+    };
+    let value = value.trim();
+    if value.is_empty() || value.len() > 64 || value.chars().any(|c| c.is_whitespace()) {
+        return Err(anyhow!(
+            "context must be a single label of at most 64 characters (e.g. cloud-agent)"
+        ));
+    }
+    telemetry::set_machine_context(Some(value.to_string()))
+        .map_err(|e| anyhow!("Could not save machine context: {e}"))?;
+    println!(
+        "\u{2713} Machine context set to \"{value}\" (events are tagged install_kind={value})."
+    );
+    Ok(())
 }
 
 fn status() -> Result<()> {
@@ -29,6 +60,9 @@ fn status() -> Result<()> {
     match telemetry::load_settings().and_then(|s| s.install_id) {
         Some(id) => println!("  Anonymous install id: {id}"),
         None => println!("  Anonymous install id: (not yet generated)"),
+    }
+    if let Some(context) = telemetry::machine_context() {
+        println!("  Machine context: {context} (events tagged install_kind={context})");
     }
     println!();
     println!("Turn off with `orx telemetry off`; back on with `orx telemetry on`.");

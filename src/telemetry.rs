@@ -83,6 +83,14 @@ pub(crate) struct Settings {
     /// Set by `orx telemetry off`. `Some(true)` = user opted out persistently.
     #[serde(default)]
     pub telemetry_disabled: Option<bool>,
+    /// Machine context tag (e.g. `"cloud-agent"` on OpenResearch cloud boxes),
+    /// set once by `orx telemetry context <value>` during box provisioning.
+    /// Stamped on every event as the `install_kind` property so first-party
+    /// automation can be excluded from human usage metrics centrally (the
+    /// PostHog internal/test-users filter) instead of per-insight. Absent = a
+    /// human install (`install_kind: "human"`).
+    #[serde(default)]
+    pub machine_context: Option<String>,
     /// User-chosen data directory (Storage settings). Absent = fall back to the
     /// env/XDG/default chain in `store::data_dir()`. Persisted here — in the one
     /// `settings.json` — so a write can't clobber `install_id`/`telemetry_disabled`
@@ -365,6 +373,39 @@ pub(crate) fn set_persisted_disabled(disabled: bool) -> std::io::Result<()> {
     })
 }
 
+/// The effective machine context: the `ORX_TELEMETRY_CONTEXT` env var when set
+/// and non-empty (so a fleet can re-tag per-process without touching disk),
+/// else the persisted `machine_context`. `None` = a human install.
+pub(crate) fn machine_context() -> Option<String> {
+    if let Ok(v) = std::env::var("ORX_TELEMETRY_CONTEXT") {
+        let v = v.trim();
+        if !v.is_empty() {
+            return Some(v.to_string());
+        }
+    }
+    load_settings()
+        .and_then(|s| s.machine_context)
+        .filter(|v| !v.is_empty())
+}
+
+/// Persist (or clear, with `None`) the machine context, preserving every other
+/// settings field via the locked RMW. Used by `orx telemetry context`.
+pub(crate) fn set_machine_context(context: Option<String>) -> std::io::Result<()> {
+    mutate_settings(|s| {
+        s.machine_context = context
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+    })
+}
+
+/// The value stamped as every event's `install_kind` property: the machine
+/// context when one is set, else `"human"`. This is the delineation axis for
+/// "installs by humans" vs first-party automation (cloud agent boxes) — kept
+/// separate from `ci`, which flags *third-party* automation (a user's own CI).
+fn install_kind() -> String {
+    machine_context().unwrap_or_else(|| "human".to_string())
+}
+
 /// Process-global capture of the `--no-telemetry` flag, set once in `main`
 /// before any command runs. Command modules fire events without having to
 /// thread the global flag through their `run(args)` signatures — they read it
@@ -397,9 +438,10 @@ fn is_ci() -> bool {
 }
 
 /// Builds the PostHog capture payload for an event. Every event carries the
-/// same base context (source, version, os, arch, ci) plus `$process_person_
-/// profile: false` to keep it anonymous. `extra` supplies event-specific
-/// properties — callers MUST keep these free of PII (coarse enums only).
+/// same base context (source, version, os, arch, ci, install_kind) plus
+/// `$process_person_profile: false` to keep it anonymous. `extra` supplies
+/// event-specific properties — callers MUST keep these free of PII (coarse
+/// enums only).
 fn build_payload(event: &str, distinct_id: &str, extra: serde_json::Value) -> serde_json::Value {
     let mut props = json!({
         // Anonymous: don't build a person profile for this distinct_id.
@@ -409,6 +451,10 @@ fn build_payload(event: &str, distinct_id: &str, extra: serde_json::Value) -> se
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "ci": is_ci(),
+        // Human install vs first-party automation (e.g. "cloud-agent" boxes).
+        // Fed into PostHog's internal-users filter so human-facing metrics
+        // exclude our own fleet by default, without per-insight filters.
+        "install_kind": install_kind(),
     });
     // Merge event-specific props FIRST so the invariant base context above can
     // never be silently overwritten by a caller's `extra` (defense in depth —
@@ -518,22 +564,48 @@ fn capture(event: impl Into<String>, extra: serde_json::Value) {
     }
 }
 
+/// Shared `distinct_id` for consent events that must not touch the install id
+/// (declines, and agrees whose id could not be persisted). A FIXED sentinel, not
+/// a per-event UUID: a fresh UUID per event minted a brand-new PostHog person
+/// every time (67 phantom "users" in the launch week alone), silently inflating
+/// any unique-user metric that included the consent event. With one shared
+/// sentinel, all such events collapse into a single well-known person that is
+/// trivially excluded — while still writing nothing to disk and remaining
+/// unlinkable to any real install.
+const CONSENT_SENTINEL_ID: &str = "cli-consent-anonymous";
+
 /// Record a telemetry consent decision — `cli_telemetry_consent` with
 /// `{ agreed: bool }`. This is the ONE event that fires UNCONDITIONALLY: it must
 /// land even when the user chose to disable telemetry, otherwise every rejection
 /// would be invisible and the agree/reject ratio would be hopelessly skewed
-/// toward "agree". So it deliberately bypasses the opt-out check (`is_enabled`)
-/// and the persisted `install_id` (we neither read nor create one — a user
-/// opting out should not get a persisted anonymous id as a side effect). It
-/// carries a fresh throwaway `distinct_id` per call, so it's uncorrelated with
-/// any other event and can't be used to re-identify.
+/// toward "agree".
+///
+/// Identity policy (phantom-free by construction):
+/// - `agreed` → the persistent install id. The user just consented to
+///   analytics, so tying the consent to the same id their other events use is
+///   fine — and it makes opt-ins joinable with the active-install population.
+/// - declined (or the id couldn't be persisted) → [`CONSENT_SENTINEL_ID`]. A
+///   user opting out must not get a persisted anonymous id as a side effect,
+///   and must not mint a phantom person either.
 ///
 /// Awaited with a bounded timeout so a caller (the `orx up` settings handler or
 /// the `orx telemetry on/off` command) can fire-and-confirm without hanging.
 /// Errors are swallowed — recording consent must never fail the action.
+/// Resolve the consent event's `distinct_id` per the policy above. Split out of
+/// `record_consent` so the identity rules are unit-testable without a network
+/// send. NB the `agreed` path calls `install_id()`, which generates + persists
+/// an id if absent — acceptable precisely because the user agreed.
+fn consent_distinct_id(agreed: bool) -> String {
+    if agreed {
+        if let Some(id) = install_id() {
+            return id;
+        }
+    }
+    CONSENT_SENTINEL_ID.to_string()
+}
+
 pub(crate) async fn record_consent(agreed: bool) {
-    // Anonymous, non-persistent id: this event stands alone by design.
-    let distinct_id = uuid::Uuid::new_v4().to_string();
+    let distinct_id = consent_distinct_id(agreed);
     let payload = build_payload(
         "telemetry_consent",
         &distinct_id,
@@ -680,7 +752,7 @@ mod tests {
         }
     }
 
-    const OPT_VARS: &[&str] = &["XDG_CONFIG_HOME"];
+    const OPT_VARS: &[&str] = &["XDG_CONFIG_HOME", "ORX_TELEMETRY_CONTEXT"];
 
     #[test]
     fn opt_out_precedence() {
@@ -856,6 +928,10 @@ mod tests {
 
     #[test]
     fn payload_shape_is_anonymous_and_pii_free() {
+        // build_payload reads the machine context (env + settings), so isolate.
+        let _g = EnvGuard::new(OPT_VARS);
+        let dir = std::env::temp_dir().join(format!("orx-tel-shape-{}", uuid::Uuid::new_v4()));
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
         let payload = build_payload(
             "experiment_started",
             "test-distinct-id",
@@ -876,6 +952,8 @@ mod tests {
         assert!(props["os"].is_string());
         assert!(props["arch"].is_string());
         assert!(props["ci"].is_boolean());
+        // No context configured → a human install.
+        assert_eq!(props["install_kind"], "human");
         // Event-specific coarse props.
         assert_eq!(props["kind"], "run");
         assert_eq!(props["target"], "modal");
@@ -893,25 +971,100 @@ mod tests {
                 "payload leaked a `{banned}` field: {text}"
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn extra_cannot_overwrite_base_context() {
+        let _g = EnvGuard::new(OPT_VARS);
+        let dir = std::env::temp_dir().join(format!("orx-tel-extra-{}", uuid::Uuid::new_v4()));
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
         // A caller passing base keys in `extra` must not corrupt identity/context.
         let payload = build_payload(
             "command",
             "did",
-            json!({ "source": "EVIL", "ci": "EVIL", "command": "login" }),
+            json!({ "source": "EVIL", "ci": "EVIL", "install_kind": "EVIL", "command": "login" }),
         );
         let props = &payload["properties"];
         assert_eq!(props["source"], "cli", "base source must win");
         assert!(props["ci"].is_boolean(), "base ci must win");
+        assert_eq!(props["install_kind"], "human", "base install_kind must win");
         // Non-colliding extra keys still land.
         assert_eq!(props["command"], "login");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_kind_resolution_env_over_persisted_over_default() {
+        let _g = EnvGuard::new(OPT_VARS);
+        let dir = std::env::temp_dir().join(format!("orx-tel-kind-{}", uuid::Uuid::new_v4()));
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+
+        // Nothing configured → human.
+        assert_eq!(install_kind(), "human");
+
+        // Persisted context wins over the default and survives sibling writes.
+        set_machine_context(Some("cloud-agent".into())).unwrap();
+        assert_eq!(install_kind(), "cloud-agent");
+        set_persisted_disabled(true).unwrap();
+        let s = load_settings().expect("settings present");
+        assert_eq!(
+            s.machine_context.as_deref(),
+            Some("cloud-agent"),
+            "context survived a sibling mutation"
+        );
+        assert_eq!(s.telemetry_disabled, Some(true));
+        set_persisted_disabled(false).unwrap();
+
+        // Env var wins over the persisted value; whitespace-only is ignored.
+        std::env::set_var("ORX_TELEMETRY_CONTEXT", "ci-fleet");
+        assert_eq!(install_kind(), "ci-fleet");
+        std::env::set_var("ORX_TELEMETRY_CONTEXT", "   ");
+        assert_eq!(install_kind(), "cloud-agent");
+        std::env::remove_var("ORX_TELEMETRY_CONTEXT");
+
+        // Clearing restores the default; empty string means clear.
+        set_machine_context(None).unwrap();
+        assert_eq!(install_kind(), "human");
+        set_machine_context(Some("  ".into())).unwrap();
+        assert!(load_settings().unwrap().machine_context.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn consent_identity_is_phantom_free() {
+        let _g = EnvGuard::new(OPT_VARS);
+        let dir = std::env::temp_dir().join(format!("orx-tel-cid-{}", uuid::Uuid::new_v4()));
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+
+        // Decline: the fixed sentinel, never a fresh UUID, and no persisted id.
+        assert_eq!(consent_distinct_id(false), CONSENT_SENTINEL_ID);
+        assert_eq!(consent_distinct_id(false), CONSENT_SENTINEL_ID);
+        assert!(
+            load_settings().and_then(|s| s.install_id).is_none(),
+            "a decline must not generate a persisted install id"
+        );
+
+        // Agree: the real (now persisted) install id, stable across calls, so
+        // opt-ins join the active-install population instead of minting a
+        // one-off person.
+        let agreed_id = consent_distinct_id(true);
+        assert_eq!(
+            load_settings().and_then(|s| s.install_id).as_deref(),
+            Some(agreed_id.as_str()),
+            "an agree ties consent to the persisted install id"
+        );
+        assert_eq!(consent_distinct_id(true), agreed_id);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn every_event_name_is_cli_prefixed() {
+        let _g = EnvGuard::new(OPT_VARS);
+        let dir = std::env::temp_dir().join(format!("orx-tel-prefix-{}", uuid::Uuid::new_v4()));
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
         // This PostHog project is shared with the website; CLI events must be
         // separable by name alone. `build_payload` prefixes unconditionally, so
         // the two base names map to their prefixed wire names and nothing can
@@ -924,15 +1077,20 @@ mod tests {
             let p = build_payload(bare, "did", json!({}));
             assert_eq!(p["event"], wire, "`{bare}` must serialize as `{wire}`");
         }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn consent_payload_carries_agreed_flag() {
+        let _g = EnvGuard::new(OPT_VARS);
+        let dir = std::env::temp_dir().join(format!("orx-tel-agreed-{}", uuid::Uuid::new_v4()));
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
         for agreed in [true, false] {
             let p = build_payload("telemetry_consent", "did", json!({ "agreed": agreed }));
             assert_eq!(p["event"], "cli_telemetry_consent");
             assert_eq!(p["properties"]["agreed"], agreed);
         }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
