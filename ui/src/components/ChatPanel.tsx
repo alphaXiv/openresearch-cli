@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { Wordmark } from "./Wordmark";
 import {
   chatAttachmentUrl,
   createChatSession,
@@ -1481,7 +1482,7 @@ export function ChatPanel({
       {!threadMounted ? (
         <div className="chat-empty">
           <h2>
-            Open<span>Research</span>
+            <Wordmark />
           </h2>
           <p>
             Ask the agent to explore your codebase, create and run your baseline experiment, and

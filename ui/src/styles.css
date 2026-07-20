@@ -240,14 +240,23 @@ textarea::placeholder {
   margin: 0 auto;
   padding: 48px 24px 64px;
 }
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  color: var(--text);
+}
+.wordmark svg {
+  width: 1em;
+  height: 1em;
+  flex-shrink: 0;
+}
+
 .home-brand {
   font-weight: 800; /* brand wordmark — deliberately heavier than --fw-display */
   font-size: var(--fs-4xl);
   letter-spacing: -0.02em;
   margin-bottom: 36px;
-}
-.home-brand span {
-  color: var(--primary);
 }
 .home-head {
   display: flex;
@@ -979,9 +988,6 @@ textarea::placeholder {
   font-weight: var(--fw-display);
   letter-spacing: -0.02em;
   color: var(--text);
-}
-.chat-empty h2 span {
-  color: var(--primary);
 }
 .chat-empty .chat-empty-hint {
   font-size: var(--fs-sm);
@@ -1996,9 +2002,6 @@ textarea::placeholder {
   font-weight: var(--fw-semibold);
   color: var(--muted);
   margin-bottom: 14px;
-}
-.onb-eyebrow span {
-  color: var(--primary);
 }
 .onb-title {
   margin: 0 0 6px;
