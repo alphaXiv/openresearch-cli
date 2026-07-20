@@ -2852,8 +2852,8 @@ fn mime_for(path: &str) -> &'static str {
 fn asset_response(path: &str, file: rust_embed::EmbeddedFile) -> Response {
     // index.html must revalidate every load or browsers heuristically cache it
     // and keep loading a stale (hashed) bundle; the hashed assets themselves
-    // are immutable by name.
-    let cache = if path == "index.html" {
+    // are immutable by name. favicon.svg is likewise served under a fixed name.
+    let cache = if path == "index.html" || path == "favicon.svg" {
         "no-cache"
     } else {
         "public, max-age=31536000, immutable"
