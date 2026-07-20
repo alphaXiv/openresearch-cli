@@ -339,6 +339,40 @@ textarea::placeholder {
   background: var(--surface);
 }
 
+/* CSS-only tooltip for icon-only controls: `data-tip` holds the label.
+   Inverted bubble (text-on-base swap) so it reads in both themes. Default
+   below the control; `.tip-up` flips above (for footer rows). */
+[data-tip] {
+  position: relative;
+}
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 6px);
+  right: -4px;
+  background: var(--text);
+  color: var(--base);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  padding: 5px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.1s ease 0.3s, visibility 0s linear 0.4s;
+  z-index: 60;
+}
+[data-tip]:hover::after {
+  opacity: 1;
+  visibility: visible;
+}
+.tip-up[data-tip]::after {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
 /* ---- buttons (quiet: 1px border, rounded, flat) ---- */
 
 .btn {
@@ -2258,7 +2292,6 @@ textarea::placeholder {
   margin-top: 6px;
 }
 .form .error,
-.report-view .error,
 .settings-card > .error {
   color: var(--accent-red);
   font-size: 12.5px;
@@ -2394,22 +2427,12 @@ textarea::placeholder {
 
 /* ---- files tab ---- */
 
+/* ---- Files tab: split explorer — tree on the left, inline preview right ---- */
 .files-tab {
   height: 100%;
-  overflow-y: auto;
-  padding: 20px 24px 48px;
-}
-.files-col {
-  max-width: var(--readable-col);
-  margin: 0 auto;
+  min-height: 0;
   display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.files-meta {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+  background: var(--base);
 }
 .files-pill {
   display: inline-flex;
@@ -2438,213 +2461,255 @@ textarea::placeholder {
 a.files-pill:hover {
   border-color: var(--muted);
 }
-.files-pill-dir {
-  flex: 1;
-  min-width: 240px;
-}
-.files-pill-dir code {
-  flex: 1;
-  color: var(--subtext);
-}
-.files-pill-dir .icon-btn {
-  width: 22px;
-  height: 22px;
-  margin: -4px -6px -4px 0;
-}
-/* "Change storage location →" — a pill-shaped button, not a path pill. */
-button.files-pill-link {
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  color: var(--muted);
-  white-space: nowrap;
-}
-button.files-pill-link:hover {
-  border-color: var(--muted);
-  color: var(--text);
-}
-.files-hint {
-  margin: 0;
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--muted);
-}
-.files-hint code {
-  font-family: var(--mono);
-  font-size: 10.5px;
-}
-.files-card {
-  border: 1px solid var(--border);
-  border-radius: 10px;
+
+/* Left pane: the file tree, with the dir-path footer pinned under it.
+   Shares the preview's base background — one surface, split by a hairline —
+   so it reads as a file browser, not a stray colored strip. */
+.ftree-pane {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--border-variant);
+  border-right: 1px solid var(--border-variant);
   background: var(--base);
-  overflow: hidden;
-  margin-top: 4px;
 }
-.files-card > * + * {
-  border-top: 1px solid var(--border-variant);
+/* Invisible grab strip straddling the tree/preview divider. */
+.ftree-resizer {
+  position: absolute;
+  right: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 30;
 }
-.ftree-row {
+.ftree-resizer:hover,
+.ftree-resizer:active {
+  background: color-mix(in oklab, var(--text) 12%, transparent);
+}
+.ftree-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 8px;
+}
+.ft-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
-}
-.ftree-row.clickable {
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 7px;
   cursor: pointer;
 }
-.ftree-row:hover {
+.ft-row:hover {
   background: var(--surface);
 }
-.ftree-children {
-  background: var(--canvas);
-  border-top: 1px solid var(--border-variant);
-}
-.ftree-children .ftree-row:hover {
+.ft-row.selected,
+.ft-row.selected:hover {
   background: var(--panel);
 }
-.ftree-chevron {
+.ft-chevron {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   flex-shrink: 0;
   color: var(--muted);
   transition: transform 0.12s ease;
 }
-.ftree-chevron.open {
+.ft-chevron.open {
   transform: rotate(90deg);
 }
-.ftree-chevron.spacer {
+.ft-chevron.spacer {
   visibility: hidden;
 }
-.ftree-dirname {
+.ft-title {
   flex: 1;
   min-width: 0;
-  font-family: var(--mono);
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.ftree-title {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ftree-tag {
-  flex-shrink: 0;
-  font-size: 11px;
-  color: var(--primary);
-}
-.ftree-status {
-  flex-shrink: 0;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--subtext);
-}
-.ftree-link {
+.ft-dirname,
+.ft-name {
   flex: 1;
   min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text);
-  text-decoration: none;
-}
-.ftree-link:hover .ftree-name {
-  text-decoration: underline;
-}
-.ftree-name {
-  min-width: 0;
-  font-size: 12.5px;
+  font-family: var(--mono);
+  font-size: 11.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ftree-thumb {
-  width: 22px;
-  height: 22px;
+.ft-dirname {
+  color: var(--text);
+}
+.ft-thumb {
+  width: 18px;
+  height: 18px;
   object-fit: cover;
   border-radius: 4px;
   border: 1px solid var(--border-variant);
   flex-shrink: 0;
 }
-.ftree-del {
-  width: 22px;
-  height: 22px;
-  visibility: hidden;
-}
-.ftree-row:hover .ftree-del {
-  visibility: visible;
-}
-.ftree-del:hover {
-  color: var(--accent-red);
-}
-.ftree-date,
-.ftree-size {
-  flex-shrink: 0;
-}
-.ftree-size {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--muted);
-  white-space: nowrap;
-}
-.ftree-divider {
-  padding: 10px 14px 4px;
+.ft-divider {
+  padding: 12px 8px 4px;
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted);
 }
-.files-empty {
+/* The files-dir path — demoted from header pills to a quiet footer. */
+.ftree-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 8px;
+  border-top: 1px solid var(--border-variant);
+}
+.ftree-footer code {
+  flex: 1;
+  min-width: 0;
+  /* RTL ellipsis trick: keep the tail of the path visible, elide the front. */
+  direction: rtl;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ftree-footer .icon-btn {
+  width: 22px;
+  height: 22px;
+}
+
+/* Right pane: the selected entry, rendered inline. */
+.fpreview {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--base);
+}
+.fpreview-none {
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.fpreview-head {
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border-variant);
+  color: var(--subtext);
+  flex-shrink: 0;
+}
+.fpreview-path {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fpreview-date,
+.fpreview-size {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.fpreview-size {
+  font-family: var(--mono);
+}
+.fpreview-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+/* Documents (reports, markdown) read as a centered readable column. */
+.fpreview-body.doc {
+  padding: 18px 28px 48px;
+}
+.fpreview-body.doc .report-md {
+  max-width: var(--readable-col);
+  margin: 0 auto;
+}
+.fpreview-image {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 24px;
+}
+.fpreview-image img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.fpreview-pdf {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+/* Whole-tab empty state: what this tab is for, plus the drop-in path. */
+.files-empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+}
+.files-empty-state h3 {
+  margin: 6px 0 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.files-empty-state p {
+  margin: 0;
+  max-width: 420px;
   font-size: 12.5px;
   line-height: 1.55;
   color: var(--subtext);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--base);
-  padding: 18px;
-  margin: 4px 0 0;
 }
-.files-empty code {
-  font-family: var(--mono);
-  font-size: 11.5px;
+.files-empty-state .ftree-footer {
+  margin-top: 10px;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: var(--base);
+}
+.files-empty-state .ftree-footer code {
+  max-width: 380px;
 }
 .files-truncated {
   margin: 0;
   padding: 8px 14px;
   font-size: 11px;
   color: var(--muted);
-}
-.report-date,
-.ftree-date {
-  font-size: 11px;
-  color: var(--muted);
-  white-space: nowrap;
-}
-.report-view {
-  height: 100%;
-  overflow-y: auto;
-  padding: 16px 24px 48px;
-}
-.report-view-col {
-  max-width: var(--readable-col);
-  margin: 0 auto;
-}
-.report-view-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 16px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--border-variant);
 }
 /* Reports are long-form documents, so preserve their Markdown hierarchy.
    The shared .md rules intentionally keep chat headings compact. */
@@ -2977,20 +3042,6 @@ button.files-pill-link:hover {
 
 /* ---- settings sections (shown in the middle pane, picked from the rail) ---- */
 
-.report-back {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--subtext);
-  padding: 4px 8px;
-  border-radius: 6px;
-}
-.report-back:hover {
-  color: var(--text);
-  background: var(--surface);
-}
 /* Like .chat-thread: the scroller spans the pane so its scrollbar sits at the
    pane's right edge, and .settings-view re-applies the readable width. */
 .settings-view-scroll {

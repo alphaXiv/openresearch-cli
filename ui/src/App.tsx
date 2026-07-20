@@ -500,6 +500,9 @@ export default function App() {
                 const project = projects.find((p) => p.id === projectId);
                 return project ? (
                   <FilesTab
+                    // Remount per project: selection, collapsed-folder state,
+                    // and the auto-select latch must not leak across projects.
+                    key={project.id}
                     project={project}
                     files={files}
                     onChanged={refreshFiles}

@@ -4,15 +4,10 @@
 // a right-pane tab from chat tool rows or the code browser.
 
 import { Code, FileText, RotateCw } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { getProjectFile, type ProjectFile } from "../api";
-import { detectSyntaxLanguageFromFilePath } from "../syntaxLanguage";
-import { highlight } from "../syntaxHighlight";
+import { CodeView } from "./CodeView";
 import { Md } from "./Md";
-
-function highlightFile(content: string, path: string) {
-  return highlight(content, detectSyntaxLanguageFromFilePath(path));
-}
 
 export function FileViewer({
   projectId,
@@ -59,18 +54,6 @@ export function FileViewer({
     };
   }, [projectId, path, sessionId, gitRef, nonce]);
 
-  const rendered = useMemo(
-    () => (data && !data.notFound ? highlightFile(data.content, path) : null),
-    [data, path],
-  );
-
-  // One number per source line; a trailing newline ends a line, it doesn't
-  // start an empty one.
-  const lineCount =
-    data && !data.notFound && data.content
-      ? data.content.split("\n").length - (data.content.endsWith("\n") ? 1 : 0)
-      : 0;
-
   const notFoundCopy = (d: ProjectFile) => {
     if (gitRef) return `File not found on branch ${gitRef}.`;
     if (sessionId && d.root === "clone")
@@ -93,8 +76,8 @@ export function FileViewer({
         {isMarkdown && (
           <button
             className={`icon-btn ${showSource ? "active" : ""}`}
-            title={showSource ? "Rendered view" : "Source view"}
-            aria-label={showSource ? "Rendered view" : "Source view"}
+            data-tip={showSource ? "Rendered view" : "View source"}
+            aria-label={showSource ? "Rendered view" : "View source"}
             onClick={() => setShowSource((s) => !s)}
           >
             <Code size={13} />
@@ -102,7 +85,7 @@ export function FileViewer({
         )}
         <button
           className="icon-btn"
-          title="Reload file"
+          data-tip="Reload file"
           aria-label="Reload file"
           onClick={() => setNonce((n) => n + 1)}
         >
@@ -131,18 +114,7 @@ export function FileViewer({
                 />
               </div>
             ) : (
-              <div className="file-view-codewrap">
-                {/* No numbers for an empty file — an empty gutter is just a
-                    stray bordered strip. */}
-                {lineCount > 0 && (
-                  <pre className="file-view-gutter" aria-hidden="true">
-                    {Array.from({ length: lineCount }, (_, i) => i + 1).join("\n")}
-                  </pre>
-                )}
-                <pre className="file-view-code">
-                  <code>{rendered}</code>
-                </pre>
-              </div>
+              <CodeView text={data.content} path={path} />
             )}
             {data.truncated && (
               <div className="file-view-note">File truncated — showing the first 512 KB.</div>
