@@ -4146,13 +4146,13 @@ a.files-pill:hover {
 }
 .tour-card {
   position: absolute;
-  width: 340px;
+  width: 390px;
   max-width: calc(100vw - 32px);
   background: var(--base);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.22);
-  padding: 18px 20px 0;
+  padding: 21px 23px 0;
   transition:
     left 200ms ease,
     top 200ms ease;
@@ -4164,27 +4164,27 @@ a.files-pill:hover {
   transition: none;
 }
 .tour-card h3 {
-  margin: 0 24px 6px 0;
-  font-size: var(--fs-base);
+  margin: 0 26px 7px 0;
+  font-size: var(--fs-lg);
   font-weight: var(--fw-semibold);
 }
 .tour-card p {
   margin: 0;
-  font-size: var(--fs-md);
-  line-height: 1.5;
+  font-size: var(--fs-base);
+  line-height: 1.55;
   color: var(--text);
 }
 .tour-card .tour-close {
   position: absolute;
-  top: 10px;
-  right: 10px;
+  top: 12px;
+  right: 12px;
 }
 .tour-footer {
   display: flex;
   align-items: center;
   border-top: 1px solid var(--border-variant);
-  margin-top: 14px;
-  padding: 10px 0;
+  margin-top: 16px;
+  padding: 11px 0;
 }
 .tour-footer-side {
   flex: 1;
@@ -4194,7 +4194,7 @@ a.files-pill:hover {
   justify-content: flex-end;
 }
 .tour-count {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }

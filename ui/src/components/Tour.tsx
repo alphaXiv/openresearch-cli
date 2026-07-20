@@ -32,16 +32,16 @@ const STEPS: TourStep[] = [
     anchor: null,
     title: "Welcome to OpenResearch",
     description:
-      "This is your research workspace: agents on the left, conversation in the middle, " +
-      "experiments on the right. Here's a quick look around — about thirty seconds.",
+      "OpenResearch is your home for autoresearch. Spawn and coordinate research agents " +
+      "in one workspace.",
   },
   {
     focus: ["composer"],
     anchor: "above",
     title: "Talk to your research agent",
     description:
-      "This is how you communicate with research agents: describe the experiment you want, " +
-      "and the agent plans it, writes the code, and runs it. Type / for skills like " +
+      "Prompt your research agents to replicate a paper, create a baseline experiment, " +
+      "run an eval, or investigate any research question. Type / for skills like " +
       "/reproduce-paper.",
   },
   {
@@ -49,15 +49,15 @@ const STEPS: TourStep[] = [
     anchor: "above",
     title: "Pick your model",
     description:
-      "Choose a model from any harness you've connected — Claude Code, Codex, or OpenCode. " +
-      "New sessions start with whatever you pick here; each session keeps its harness for life.",
+      "Choose a model from any harness you've connected: Claude Code, Codex, or OpenCode. " +
+      "New sessions start with whatever you pick here, and each session keeps its harness.",
   },
   {
     focus: ["nav-files"],
     anchor: "right",
     title: "Reports and outputs",
     description:
-      "The agent writes its reports, figures, and other outputs here — and anything you drop " +
+      "The agent writes its reports, figures, and other outputs here, and anything you drop " +
       "in is visible to it too. Check Files after a run to see what came back.",
   },
   {
@@ -66,14 +66,14 @@ const STEPS: TourStep[] = [
     title: "Configure compute",
     description:
       "This is where compute is configured. Point runs at this machine, Modal, SSH boxes, " +
-      "Kubernetes, or Slurm — set it up once and agents pick the right hardware per run.",
+      "Kubernetes, or Slurm. Set it up once and agents pick the right hardware per run.",
   },
   {
     focus: ["experiments"],
     anchor: "left",
     title: "Follow every experiment",
     description:
-      "Runs land here as a tree of experiments — branch variants off a baseline, compare " +
+      "Runs land here as a tree of experiments. Branch variants off a baseline, compare " +
       "results, and open any run's terminal or code changes in a tab.",
   },
   {
@@ -81,9 +81,8 @@ const STEPS: TourStep[] = [
     anchor: "right",
     title: "Start a session",
     description:
-      "Each session is its own agent working in its own branch, so you can run several lines " +
-      "of inquiry in parallel. That's the tour — ask for your first experiment whenever " +
-      "you're ready.",
+      "Each session is its own agent working in its own worktree, so you can run several " +
+      "agents in parallel. Ask for your first experiment whenever you're ready.",
   },
 ];
 
@@ -196,7 +195,7 @@ function TourCard({
       <div className="tour-footer">
         <div className="tour-footer-side">
           {index > 0 && (
-            <button className="btn ghost sm" onClick={onBack}>
+            <button className="btn ghost" onClick={onBack}>
               Back
             </button>
           )}
@@ -205,7 +204,7 @@ function TourCard({
           {index + 1} / {STEPS.length}
         </span>
         <div className="tour-footer-side end">
-          <button className="btn primary sm" onClick={onNext}>
+          <button className="btn primary" onClick={onNext}>
             {last ? "Done" : "Next"}
           </button>
         </div>
