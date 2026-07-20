@@ -2356,6 +2356,8 @@ textarea::placeholder {
 .badge {
   display: inline-flex;
   align-items: center;
+  /* Explicit sans so badges nested in mono contexts (.kv .v) don't inherit. */
+  font-family: var(--sans);
   font-size: var(--fs-xs);
   font-weight: var(--fw-medium);
   padding: 1px 7px;

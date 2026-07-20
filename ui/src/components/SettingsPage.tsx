@@ -2016,7 +2016,7 @@ function InstancesTable({ instances, emptyLabel }: { instances: Instance[]; empt
                   <StatusBadge status={inst.status} />
                 </td>
                 <td>{timeAgo(inst.createdAt)}</td>
-                <td className="mono">{runtimeLabel(inst)}</td>
+                <td>{runtimeLabel(inst)}</td>
               </tr>
             );
           })}
