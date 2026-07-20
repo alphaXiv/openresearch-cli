@@ -11,6 +11,11 @@
 //! kept out of the experiment-slug space by `experiments::unique_slug`),
 //! including `project/memory.md` — the agent's persisted project memory,
 //! inlined into the playbook (see `memory.rs`).
+//!
+//! Serving is contained to the files dir: requested paths are relative
+//! (`is_safe_rel_path`) and must still resolve inside it once symlinks are
+//! followed (`resolve_contained`), so nothing outside can be listed, read,
+//! or deleted through the API.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -81,10 +86,33 @@ fn resolves_inside(canonical_base: &Path, path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Metadata for a listed entry: an escaping symlink yields `None` (skip), a
+/// contained symlink its *followed* target metadata (`DirEntry::metadata`
+/// never follows links). Shared by the tree walk and the fingerprint so both
+/// see exactly the same entries.
+fn followed_metadata(
+    canonical_base: &Path,
+    entry: &std::fs::DirEntry,
+) -> Option<std::fs::Metadata> {
+    let ft = entry.file_type().ok()?;
+    if ft.is_symlink() {
+        if !resolves_inside(canonical_base, &entry.path()) {
+            return None;
+        }
+        std::fs::metadata(entry.path()).ok()
+    } else {
+        entry.metadata().ok()
+    }
+}
+
 /// Join `rel_path` onto `base` and resolve it, requiring the result to stay
 /// inside `base` once every symlink is followed. `is_safe_rel_path` already
 /// blocks lexical escapes (`..`); this closes the remaining hole — a symlink
 /// inside the dir pointing outside it. Internal symlinks still work.
+///
+/// Check and use are separate syscalls, so a link swapped in between could
+/// still escape — accepted: the API is localhost-only and the files dir is
+/// written by the same user it would expose.
 fn resolve_contained(base: &Path, rel_path: &str) -> Result<PathBuf> {
     if !is_safe_rel_path(rel_path) {
         return Err(anyhow!("invalid file path: {rel_path}"));
@@ -227,20 +255,8 @@ fn collect_tree(
         if is_ignored(&name) {
             continue;
         }
-        let Ok(ft) = entry.file_type() else { continue };
-        // DirEntry::metadata never follows symlinks; a contained symlink is
-        // listed as its target (followed metadata), an escaping one skipped.
-        let md = if ft.is_symlink() {
-            if !resolves_inside(canonical_base, &entry.path()) {
-                continue;
-            }
-            let Ok(md) = std::fs::metadata(entry.path()) else {
-                continue;
-            };
-            md
-        } else {
-            let Ok(md) = entry.metadata() else { continue };
-            md
+        let Some(md) = followed_metadata(canonical_base, &entry) else {
+            continue;
         };
         *seen += 1;
         let rel = if rel_prefix.is_empty() {
@@ -319,9 +335,6 @@ pub fn list(
 
 /// A report folder's `report.md` body, by dir-relative folder path.
 pub fn read_report_markdown(project: &LocalProject, folder: &str) -> Result<String> {
-    if !is_safe_rel_path(folder) {
-        return Err(anyhow!("invalid report path: {folder}"));
-    }
     let path = resolve_contained(&files_dir(project), &format!("{folder}/report.md"))?;
     std::fs::read_to_string(&path).map_err(|e| anyhow!("Could not read {}: {}", path.display(), e))
 }
@@ -384,20 +397,8 @@ fn hash_dir(base: &Path, dir: &Path, hasher: &mut DefaultHasher, seen: &mut usiz
         if is_ignored(&name) {
             continue;
         }
-        let Ok(ft) = entry.file_type() else { continue };
-        // Mirror collect_tree: contained symlinks hash as their target,
-        // escaping ones are invisible.
-        let md = if ft.is_symlink() {
-            if !resolves_inside(base, &entry.path()) {
-                continue;
-            }
-            let Ok(md) = std::fs::metadata(entry.path()) else {
-                continue;
-            };
-            md
-        } else {
-            let Ok(md) = entry.metadata() else { continue };
-            md
+        let Some(md) = followed_metadata(base, &entry) else {
+            continue;
         };
         *seen += 1;
         if let Ok(rel) = entry.path().strip_prefix(base) {
