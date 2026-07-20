@@ -284,8 +284,14 @@ impl Store {
         //    `options()` must never appear in it, or picking that mode
         //    silently degrades to `auto` on the next request (exactly what
         //    happened to `plan` between #75 and this fix).
-        //  * Codex offers only `auto`/`bypass`; `ask`/`accept-edits`/`plan`
-        //    all retired.
+        //  * Codex KEEPS `plan` — it's a real mode now too (native
+        //    collaboration mode over the app-server: the plan.md template,
+        //    `request_user_input` question cards, and the streamed plan item
+        //    make read-mostly planning and plan approval work). Only
+        //    `ask`/`accept-edits` stay retired (never grantable). Same rule as
+        //    Claude's `plan` above: a mode offered by `options()` must NEVER
+        //    appear in this list, or picking it silently degrades to `auto` on
+        //    the next request.
         //  * OpenCode dropped its hollow `ask` (its default is permissive, so a
         //    dedicated ask mode almost never fired) — but KEEPS `plan` (its real
         //    plan agent), so that one is left untouched.
@@ -294,7 +300,7 @@ impl Store {
              WHERE (harness = 'claude-code'
                     AND permission_mode IN ('ask', 'accept-edits'))
                 OR (harness = 'codex'
-                    AND permission_mode IN ('ask', 'accept-edits', 'plan'))
+                    AND permission_mode IN ('ask', 'accept-edits'))
                 OR (harness = 'opencode'
                     AND permission_mode IN ('ask', 'accept-edits'))",
             [],

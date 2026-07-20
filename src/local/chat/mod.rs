@@ -62,8 +62,11 @@ pub struct WireQuestionOption {
 /// The three kinds (`plan` / `permission` / `question`) originated with Claude
 /// Code's ExitPlanMode / permission_denials / AskUserQuestion, but `permission`
 /// and `question` are now shared: OpenCode emits them from its serve
-/// `permission.asked` / `question.asked` events (see `harness/opencode.rs`).
-/// `plan` remains Claude-only.
+/// `permission.asked` / `question.asked` events (see `harness/opencode.rs`),
+/// and Codex emits `question` from `item/tool/requestUserInput`. `plan` is
+/// Claude + Codex, each via its own mechanism (ExitPlanMode vs the end-turn
+/// card synthesized from a collaboration-mode `plan` item — see
+/// `harness/codex.rs`).
 ///
 /// How the answer flows back is per-harness (see [`crate::local::harness::ResumeAction`]):
 /// Claude ends its turn and resumes with a new message; OpenCode is paused
@@ -755,6 +758,26 @@ impl ChatHost {
         overrides: TurnOverrides,
         images: Vec<ImageAttachment>,
     ) -> Result<()> {
+        self.send_message_showing(session_id, text, None, overrides, images)
+            .await
+    }
+
+    /// [`Self::send_message`] with the transcript/model split: `transcript_text`
+    /// is what the stored transcript (and the UI) shows as the user message,
+    /// while `text` is what the harness receives. `None` keeps them identical
+    /// (every ordinary send); an empty override records no user message at all.
+    /// Same precedent as slash-skills (transcript keeps the `/name` the user
+    /// typed, the harness gets the expanded prompt) — used by prompt-card
+    /// resumes, whose scaffolding text ("Implement the plan.") the user never
+    /// typed.
+    async fn send_message_showing(
+        self: &Arc<Self>,
+        session_id: &str,
+        text: String,
+        transcript_text: Option<String>,
+        overrides: TurnOverrides,
+        images: Vec<ImageAttachment>,
+    ) -> Result<()> {
         // Atomically claim the session's turn slot: the busy-check and the
         // reservation happen under one lock so two concurrent sends (or a
         // send racing a /respond resume) can't both spawn a turn against the
@@ -779,6 +802,17 @@ impl ChatHost {
                 session.model = Some(model);
             }
         }
+        // Read the session's mode BEFORE the composer override rewrites it: the
+        // codex harness needs to know whether the *previous* turn ran under Plan
+        // (the thread may be sticky-planned) to decide whether this turn must
+        // attach a `default` collaborationMode mask to un-stick it. Captured
+        // here because the override below is the last moment the pre-turn value
+        // is visible. Persists across restarts (it's the DB row), so a resume
+        // after `orx up` bounced still un-sticks.
+        let prev_permission_mode = session
+            .permission_mode
+            .as_deref()
+            .and_then(crate::local::harness::PermissionMode::from_id);
         if let Some(mode) = overrides.permission_mode.filter(|m| !m.is_empty()) {
             if session.permission_mode.as_deref() != Some(mode.as_str()) {
                 store.set_chat_session_permission_mode(&session.id, &mode)?;
@@ -798,8 +832,9 @@ impl ChatHost {
             session.archived = false;
         }
         let saved_images = save_images(&images)?;
+        let display_text = transcript_text.as_deref().unwrap_or(&text);
         if session.title.is_none() {
-            let first_line = text.lines().next().unwrap_or("").trim();
+            let first_line = display_text.lines().next().unwrap_or("").trim();
             let mut title: String = first_line.chars().take(64).collect();
             if first_line.chars().count() > 64 {
                 title = title.trim_end().to_string();
@@ -815,29 +850,34 @@ impl ChatHost {
         }
 
         let mut parts = Vec::new();
-        if !text.is_empty() {
-            parts.push(WirePart::text("p0", text.clone()));
+        if !display_text.is_empty() {
+            parts.push(WirePart::text("p0", display_text.to_string()));
         }
         for (i, (name, _)) in saved_images.iter().enumerate() {
             parts.push(WirePart::image(format!("img{i}"), name.clone()));
         }
-        let user_msg = WireMessage {
-            id: format!("msg_{}", uuid::Uuid::new_v4()),
-            role: "user".into(),
-            parts,
-            created_at: now_ms(),
-        };
-        store.upsert_chat_message(&StoredChatMessage {
-            id: user_msg.id.clone(),
-            session_id: session.id.clone(),
-            role: "user".into(),
-            parts_json: serde_json::to_string(&user_msg.parts)?,
-            created_at: user_msg.created_at,
-        })?;
+        // A resume whose transcript text is empty (e.g. a note-less plan
+        // approval) records no user message: the resolved card already tells
+        // that part of the story, and an empty bubble would just be noise.
+        if !parts.is_empty() {
+            let user_msg = WireMessage {
+                id: format!("msg_{}", uuid::Uuid::new_v4()),
+                role: "user".into(),
+                parts,
+                created_at: now_ms(),
+            };
+            store.upsert_chat_message(&StoredChatMessage {
+                id: user_msg.id.clone(),
+                session_id: session.id.clone(),
+                role: "user".into(),
+                parts_json: serde_json::to_string(&user_msg.parts)?,
+                created_at: user_msg.created_at,
+            })?;
+            self.emit("chat.message", message_json(&user_msg, &session.id));
+        }
         store.touch_chat_session(&session.id)?;
         let session = store.get_chat_session(&session.id)?.unwrap_or(session);
 
-        self.emit("chat.message", message_json(&user_msg, &session.id));
         self.emit(
             "chat.session",
             json!({ "session": session_json(&session, true) }),
@@ -875,6 +915,7 @@ impl ChatHost {
                 .permission_mode
                 .as_deref()
                 .and_then(crate::local::harness::PermissionMode::from_id),
+            prev_permission_mode,
             reasoning_level: session.reasoning_level.clone(),
             project,
             text: turn_text,
@@ -1054,7 +1095,16 @@ impl ChatHost {
                     permission_mode: mode.map(|m| m.id().to_string()),
                     reasoning_level: None,
                 };
-                self.send_message(&req.session_id, text, overrides, Vec::new())
+                // Plan/permission resumes are scaffolding the user never typed
+                // ("Implement the plan.", "The user approved that action…") —
+                // the transcript shows only their own note (usually nothing;
+                // the resolved card tells the rest). A question resume's text
+                // IS the user's answer, so it stays a normal bubble.
+                let transcript = match prompt.kind.as_str() {
+                    "plan" | "permission" => Some(req.note.clone().unwrap_or_default()),
+                    _ => None,
+                };
+                self.send_message_showing(&req.session_id, text, transcript, overrides, Vec::new())
                     .await?;
                 self.resolve_prompt_card(&req);
                 Ok(())
@@ -1424,6 +1474,13 @@ pub struct TurnCtx {
     /// Effective permission mode for this turn (session value; harness applies
     /// its own default when `None`).
     pub permission_mode: Option<crate::local::harness::PermissionMode>,
+    /// The permission mode the session carried *before* this turn's composer
+    /// override — read pre-override in `send_message`. The codex harness uses it
+    /// to tell "this thread may be sticky-planned" (previous turn was Plan, so a
+    /// non-plan turn must attach a `default` collaborationMode mask to un-stick
+    /// it) from a thread that never entered Plan (attach nothing — a mask always
+    /// injects a template). `None` on the very first turn of a session.
+    pub prev_permission_mode: Option<crate::local::harness::PermissionMode>,
     /// Effective reasoning-level wire id for this turn (harness-owned vocabulary;
     /// the harness interprets it, e.g. Claude → `--effort`). Default when `None`.
     pub reasoning_level: Option<String>,
@@ -1453,6 +1510,7 @@ impl TurnCtx {
             native_session_id: None,
             model: None,
             permission_mode: None,
+            prev_permission_mode: None,
             reasoning_level: None,
             project: crate::local::model::LocalProject {
                 id: "test-project".into(),

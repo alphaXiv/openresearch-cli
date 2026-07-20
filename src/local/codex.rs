@@ -13,7 +13,7 @@
 //! are plain UUIDs persisted as rollout files under `~/.codex/sessions`, so
 //! `thread/resume {threadId}` survives an `orx up` restart.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
@@ -97,15 +97,34 @@ pub fn classify_line(line: &str) -> Line {
     }
 }
 
-/// Whether a server→client request answers with a `{"decision": ...}` reply
-/// (the two approval shapes). Everything else (e.g. item/tool/requestUserInput,
-/// item/permissions/requestApproval) has a different reply schema — answer
-/// with a JSON-RPC error, never a decision it can't parse.
-pub fn is_approval_request(method: &str) -> bool {
-    matches!(
-        method,
-        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
-    )
+/// How a server→client request is answered — the reply schema differs per kind,
+/// and a request settled without a turn (raced abort, interrupt) must get the
+/// shape *its* method can parse or codex stays blocked on us.
+///
+/// * `Approval` — `{"decision": accept|acceptForSession|decline|cancel}` (the two
+///   sandbox-escalation requests).
+/// * `UserInput` — `{"answers": {<qid>: {"answers": [...]}}}`; `{}` is tolerated.
+/// * `Other` — a reply schema we don't speak (e.g.
+///   `item/permissions/requestApproval`, whose reply is a permission-profile
+///   object) → a JSON-RPC method-not-found error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerReqKind {
+    Approval,
+    UserInput,
+    Other,
+}
+
+/// Classify a server→client request by its method — the single source of truth
+/// for both the reply shape (settle paths below) and whether the turn loop
+/// surfaces it as an approval card vs a question card.
+pub fn server_req_kind(method: &str) -> ServerReqKind {
+    match method {
+        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+            ServerReqKind::Approval
+        }
+        "item/tool/requestUserInput" => ServerReqKind::UserInput,
+        _ => ServerReqKind::Other,
+    }
 }
 
 /// One event delivered to the session's in-flight turn.
@@ -137,15 +156,28 @@ pub struct CodexClient {
     /// The session's in-flight turn, if any (one per session-child). The
     /// registration guard drops synchronously on task abort, hence sync mutex.
     turn: std::sync::Mutex<Option<mpsc::UnboundedSender<TurnEvent>>>,
-    /// Ids of server→client requests we have not answered yet, as raw JSON
-    /// text (ids are echoed verbatim). Guards `respond` against stale answers.
-    unanswered: std::sync::Mutex<HashSet<String>>,
+    /// Server→client requests we have not answered yet: raw JSON id text (ids
+    /// are echoed verbatim) → the kind that dictates the settle shape. Guards
+    /// `respond` against stale answers and lets every settle path pick the
+    /// reply schema `id`'s method can actually parse.
+    unanswered: std::sync::Mutex<HashMap<String, ServerReqKind>>,
     /// The in-flight turn's id (from the `turn/start` response), for
     /// `turn/interrupt`.
     active_turn: std::sync::Mutex<Option<String>>,
     /// The thread this child has started/resumed — a fresh child (after crash
     /// or restart) must `thread/resume` before its next `turn/start`.
     resumed_thread: std::sync::Mutex<Option<String>>,
+    /// The effective model codex reported for this child's thread (top-level
+    /// `model` in the `thread/start` / `thread/resume` response) — the required
+    /// `settings.model` when attaching a `collaborationMode` mask, and the
+    /// escape path when the session carries no explicit model.
+    thread_model: std::sync::Mutex<Option<String>>,
+    /// The collaboration-mode mask this child last sent on a `turn/start`, in
+    /// memory only (belt-and-braces alongside the DB `prev_permission_mode`
+    /// signal): a `plan` mask leaves the thread sticky-planned, so a later
+    /// non-plan turn must attach `default` to un-stick it. `None` on a fresh
+    /// child (crash/restart replacement) — the DB signal covers that case.
+    last_collab_mode: std::sync::Mutex<Option<&'static str>>,
 }
 
 impl CodexClient {
@@ -186,11 +218,17 @@ impl CodexClient {
         }
     }
 
-    /// Answer a server→client request (approval). Errors if `id` isn't
-    /// pending — the stale-answer guard (child restarted, turn ended).
+    /// Answer a server→client request (approval or userInput). Errors if `id`
+    /// isn't pending — the stale-answer guard (child restarted, turn ended).
     pub async fn respond(&self, id: &Value, result: Value) -> Result<()> {
-        if !self.unanswered.lock().unwrap().remove(&id.to_string()) {
-            return Err(anyhow!("this approval is no longer pending"));
+        if self
+            .unanswered
+            .lock()
+            .unwrap()
+            .remove(&id.to_string())
+            .is_none()
+        {
+            return Err(anyhow!("this request is no longer pending"));
         }
         self.write_line(&json!({ "id": id, "result": result }))
             .await
@@ -206,7 +244,13 @@ impl CodexClient {
     /// `item/tool/requestUserInput`) with a JSON-RPC error — codex fails that
     /// call instead of blocking on an answer that will never come.
     pub async fn respond_method_unsupported(&self, id: &Value) -> Result<()> {
-        if !self.unanswered.lock().unwrap().remove(&id.to_string()) {
+        if self
+            .unanswered
+            .lock()
+            .unwrap()
+            .remove(&id.to_string())
+            .is_none()
+        {
             return Err(anyhow!("this request is no longer pending"));
         }
         self.write_line(&json!({
@@ -216,17 +260,28 @@ impl CodexClient {
         .await
     }
 
-    /// Settle every outstanding server request with `cancel` (deny + interrupt
-    /// that turn). Used on interrupt paths so codex never stays blocked on an
-    /// approval orx is about to abandon.
-    pub async fn cancel_pending_approvals(&self) {
-        let ids: Vec<String> = self.unanswered.lock().unwrap().drain().collect();
-        for id in ids {
-            if let Ok(id) = serde_json::from_str::<Value>(&id) {
-                let _ = self
-                    .write_line(&json!({ "id": id, "result": { "decision": "cancel" } }))
-                    .await;
-            }
+    /// Settle every outstanding server request in the shape its method can
+    /// parse, so codex never stays blocked on a request orx is about to
+    /// abandon. Used on interrupt paths. Approval → `{"decision":"cancel"}`
+    /// (deny + interrupt that turn); UserInput → an empty `{"answers": {}}`
+    /// (codex proceeds without answers); Other → a JSON-RPC error. (The old
+    /// blanket `{decision:cancel}` was a latent bug: fired at a userInput id it
+    /// left the request hanging.)
+    pub async fn settle_pending_requests(&self) {
+        let ids: Vec<(String, ServerReqKind)> = self.unanswered.lock().unwrap().drain().collect();
+        for (id, kind) in ids {
+            let Ok(id) = serde_json::from_str::<Value>(&id) else {
+                continue;
+            };
+            let msg = match kind {
+                ServerReqKind::Approval => json!({ "id": id, "result": { "decision": "cancel" } }),
+                ServerReqKind::UserInput => json!({ "id": id, "result": { "answers": {} } }),
+                ServerReqKind::Other => json!({
+                    "id": id,
+                    "error": { "code": -32601, "message": "orx does not handle this request type" },
+                }),
+            };
+            let _ = self.write_line(&msg).await;
         }
     }
 
@@ -262,6 +317,30 @@ impl CodexClient {
         *self.resumed_thread.lock().unwrap() = Some(thread_id.to_string());
     }
 
+    /// The effective model codex reported for this child's thread, if known.
+    pub fn thread_model(&self) -> Option<String> {
+        self.thread_model.lock().unwrap().clone()
+    }
+
+    /// Record the effective model from a `thread/start` / `thread/resume`
+    /// response (the top-level `model` field); ignores absent/empty values so a
+    /// response without one never clobbers a known model.
+    pub fn set_thread_model(&self, model: Option<&str>) {
+        if let Some(model) = model.filter(|m| !m.is_empty()) {
+            *self.thread_model.lock().unwrap() = Some(model.to_string());
+        }
+    }
+
+    /// The collaboration-mode mask this child last sent (`"plan"` / `"default"`),
+    /// if any — the in-memory belt-and-braces un-stick signal.
+    pub fn last_collab_mode(&self) -> Option<&'static str> {
+        *self.last_collab_mode.lock().unwrap()
+    }
+
+    pub fn set_last_collab_mode(&self, mode: &'static str) {
+        *self.last_collab_mode.lock().unwrap() = Some(mode);
+    }
+
     pub fn set_active_turn(&self, turn_id: &str) {
         *self.active_turn.lock().unwrap() = Some(turn_id.to_string());
     }
@@ -270,10 +349,11 @@ impl CodexClient {
     /// on the user-facing interrupt/delete paths, and a wedged child (stdin
     /// full, not answering) must not hold them for the full request timeout.
     pub async fn interrupt_active_turn(&self) {
-        // Settle outstanding approvals first: `cancel` both denies and
-        // interrupts server-side, so codex is never left waiting on a card
-        // whose turn orx is abandoning.
-        self.cancel_pending_approvals().await;
+        // Settle outstanding requests first, each in its own reply shape (an
+        // approval `cancel` both denies and interrupts server-side; a userInput
+        // gets an empty answer set) — so codex is never left waiting on a
+        // request whose turn orx is abandoning.
+        self.settle_pending_requests().await;
         let thread_id = self.resumed_thread();
         let turn_id = self.active_turn.lock().unwrap().clone();
         if let (Some(thread_id), Some(turn_id)) = (thread_id, turn_id) {
@@ -322,8 +402,12 @@ async fn read_loop(client: Arc<CodexClient>, stdout: tokio::process::ChildStdout
                 }
             }
             Line::Request { id, method, params } => {
-                client.unanswered.lock().unwrap().insert(id.to_string());
-                let approval = is_approval_request(&method);
+                let kind = server_req_kind(&method);
+                client
+                    .unanswered
+                    .lock()
+                    .unwrap()
+                    .insert(id.to_string(), kind);
                 let routed = {
                     let turn = client.turn.lock().unwrap();
                     turn.as_ref().is_some_and(|tx| {
@@ -337,12 +421,18 @@ async fn read_loop(client: Arc<CodexClient>, stdout: tokio::process::ChildStdout
                 };
                 if !routed {
                     // No turn is listening (raced an abort). Never leave the
-                    // server hanging on a request nobody will answer — but
-                    // only decision-shaped requests can take a decline.
-                    if approval {
-                        let _ = client.respond_decline(&id).await;
-                    } else {
-                        let _ = client.respond_method_unsupported(&id).await;
+                    // server hanging on a request nobody will answer — each
+                    // kind gets the reply shape its method can parse.
+                    match kind {
+                        ServerReqKind::Approval => {
+                            let _ = client.respond_decline(&id).await;
+                        }
+                        ServerReqKind::UserInput => {
+                            let _ = client.respond(&id, json!({ "answers": {} })).await;
+                        }
+                        ServerReqKind::Other => {
+                            let _ = client.respond_method_unsupported(&id).await;
+                        }
                     }
                 }
             }
@@ -431,9 +521,11 @@ async fn spawn_client() -> Result<Arc<CodexClient>> {
         next_id: AtomicI64::new(1),
         pending: std::sync::Mutex::new(HashMap::new()),
         turn: std::sync::Mutex::new(None),
-        unanswered: std::sync::Mutex::new(HashSet::new()),
+        unanswered: std::sync::Mutex::new(HashMap::new()),
         active_turn: std::sync::Mutex::new(None),
         resumed_thread: std::sync::Mutex::new(None),
+        thread_model: std::sync::Mutex::new(None),
+        last_collab_mode: std::sync::Mutex::new(None),
     });
     tokio::spawn(read_loop(client.clone(), stdout));
     Ok(client)
@@ -444,11 +536,19 @@ async fn spawn_client() -> Result<Arc<CodexClient>> {
 async fn handshake(client: &CodexClient) -> Result<()> {
     let init = client.request(
         "initialize",
-        json!({ "clientInfo": {
-            "name": "orx",
-            "title": "OpenResearch",
-            "version": env!("CARGO_PKG_VERSION"),
-        }}),
+        json!({
+            "clientInfo": {
+                "name": "orx",
+                "title": "OpenResearch",
+                "version": env!("CARGO_PKG_VERSION"),
+            },
+            // Unconditional: `turn/start.collaborationMode` (the plan-mode mask,
+            // see harness/codex.rs) is rejected with -32600 "requires
+            // experimentalApi capability" without this. Harmless when unused —
+            // it only unlocks the experimental surface. Pinned in the 0.144
+            // live spike.
+            "capabilities": { "experimentalApi": true },
+        }),
     );
     match tokio::time::timeout(HANDSHAKE_TIMEOUT, init).await {
         Ok(Ok(_)) => {}
