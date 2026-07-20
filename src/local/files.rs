@@ -11,6 +11,11 @@
 //! kept out of the experiment-slug space by `experiments::unique_slug`),
 //! including `project/memory.md` — the agent's persisted project memory,
 //! inlined into the playbook (see `memory.rs`).
+//!
+//! Serving is contained to the files dir: requested paths are relative
+//! (`is_safe_rel_path`) and must still resolve inside it once symlinks are
+//! followed (`resolve_contained`), so nothing outside can be listed, read,
+//! or deleted through the API.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -62,7 +67,8 @@ pub fn ensure_dir(project: &LocalProject) -> Result<PathBuf> {
 }
 
 /// Relative, no `..`/`.` segments, no backslashes — a requested path can't
-/// escape the files dir.
+/// escape the files dir. Lexical only; symlink containment is enforced by
+/// `resolve_contained`.
 pub fn is_safe_rel_path(p: &str) -> bool {
     !p.is_empty()
         && !p.starts_with('/')
@@ -70,6 +76,58 @@ pub fn is_safe_rel_path(p: &str) -> bool {
         && !p
             .split('/')
             .any(|seg| seg == ".." || seg == "." || seg.is_empty())
+}
+
+/// True when `path` resolves (following symlinks) to a location inside
+/// `canonical_base`. Anything that fails to resolve is treated as outside.
+fn resolves_inside(canonical_base: &Path, path: &Path) -> bool {
+    path.canonicalize()
+        .map(|c| c.starts_with(canonical_base))
+        .unwrap_or(false)
+}
+
+/// Metadata for a listed entry: an escaping symlink yields `None` (skip), a
+/// contained symlink its *followed* target metadata (`DirEntry::metadata`
+/// never follows links). Shared by the tree walk and the fingerprint so both
+/// see exactly the same entries.
+fn followed_metadata(
+    canonical_base: &Path,
+    entry: &std::fs::DirEntry,
+) -> Option<std::fs::Metadata> {
+    let ft = entry.file_type().ok()?;
+    if ft.is_symlink() {
+        if !resolves_inside(canonical_base, &entry.path()) {
+            return None;
+        }
+        std::fs::metadata(entry.path()).ok()
+    } else {
+        entry.metadata().ok()
+    }
+}
+
+/// Join `rel_path` onto `base` and resolve it, requiring the result to stay
+/// inside `base` once every symlink is followed. `is_safe_rel_path` already
+/// blocks lexical escapes (`..`); this closes the remaining hole — a symlink
+/// inside the dir pointing outside it. Internal symlinks still work.
+///
+/// Check and use are separate syscalls, so a link swapped in between could
+/// still escape — accepted: the API is localhost-only and the files dir is
+/// written by the same user it would expose.
+fn resolve_contained(base: &Path, rel_path: &str) -> Result<PathBuf> {
+    if !is_safe_rel_path(rel_path) {
+        return Err(anyhow!("invalid file path: {rel_path}"));
+    }
+    let canonical_base = base
+        .canonicalize()
+        .map_err(|e| anyhow!("Could not resolve {}: {}", base.display(), e))?;
+    let path = canonical_base.join(rel_path);
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| anyhow!("Could not read {}: {}", path.display(), e))?;
+    if !canonical.starts_with(&canonical_base) {
+        return Err(anyhow!("path escapes the files dir: {rel_path}"));
+    }
+    Ok(canonical)
 }
 
 /// Best-effort content type from a file extension (serving files).
@@ -176,8 +234,14 @@ fn report_title(md_path: &Path, fallback: &str) -> String {
 }
 
 /// Recursively build the tree under `dir`, counting nodes against
-/// `MAX_ENTRIES`. Returns (children, hit_cap).
-fn collect_tree(dir: &Path, rel_prefix: &str, seen: &mut usize) -> (Vec<FileEntry>, bool) {
+/// `MAX_ENTRIES`. Returns (children, hit_cap). Symlinks resolving outside
+/// `canonical_base` are skipped — the serve endpoints would refuse them.
+fn collect_tree(
+    canonical_base: &Path,
+    dir: &Path,
+    rel_prefix: &str,
+    seen: &mut usize,
+) -> (Vec<FileEntry>, bool) {
     let mut out = Vec::new();
     let mut truncated = false;
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -191,7 +255,9 @@ fn collect_tree(dir: &Path, rel_prefix: &str, seen: &mut usize) -> (Vec<FileEntr
         if is_ignored(&name) {
             continue;
         }
-        let Ok(md) = entry.metadata() else { continue };
+        let Some(md) = followed_metadata(canonical_base, &entry) else {
+            continue;
+        };
         *seen += 1;
         let rel = if rel_prefix.is_empty() {
             name.clone()
@@ -200,8 +266,9 @@ fn collect_tree(dir: &Path, rel_prefix: &str, seen: &mut usize) -> (Vec<FileEntr
         };
         if md.is_dir() {
             let report_md = entry.path().join("report.md");
-            let report_title = report_md.is_file().then(|| report_title(&report_md, &name));
-            let (children, hit) = collect_tree(&entry.path(), &rel, seen);
+            let report_title = (report_md.is_file() && resolves_inside(canonical_base, &report_md))
+                .then(|| report_title(&report_md, &name));
+            let (children, hit) = collect_tree(canonical_base, &entry.path(), &rel, seen);
             truncated |= hit;
             out.push(FileEntry {
                 name,
@@ -241,8 +308,11 @@ pub fn list(
     latest_status: &HashMap<String, String>,
 ) -> Result<FilesListing> {
     let dir = ensure_dir(project)?;
+    let canonical = dir
+        .canonicalize()
+        .map_err(|e| anyhow!("Could not resolve {}: {}", dir.display(), e))?;
     let mut seen = 0;
-    let (mut entries, truncated) = collect_tree(&dir, "", &mut seen);
+    let (mut entries, truncated) = collect_tree(&canonical, &canonical, "", &mut seen);
     let by_slug: HashMap<&str, &LocalExperiment> =
         experiments.iter().map(|e| (e.slug.as_str(), e)).collect();
     for entry in entries.iter_mut().filter(|e| e.is_dir) {
@@ -265,28 +335,34 @@ pub fn list(
 
 /// A report folder's `report.md` body, by dir-relative folder path.
 pub fn read_report_markdown(project: &LocalProject, folder: &str) -> Result<String> {
-    if !is_safe_rel_path(folder) {
-        return Err(anyhow!("invalid report path: {folder}"));
-    }
-    let path = files_dir(project).join(folder).join("report.md");
+    let path = resolve_contained(&files_dir(project), &format!("{folder}/report.md"))?;
     std::fs::read_to_string(&path).map_err(|e| anyhow!("Could not read {}: {}", path.display(), e))
 }
 
 /// One file in the files dir, by dir-relative path.
 pub fn read_file(project: &LocalProject, rel_path: &str) -> Result<Vec<u8>> {
-    if !is_safe_rel_path(rel_path) {
-        return Err(anyhow!("invalid file path: {rel_path}"));
-    }
-    let path = files_dir(project).join(rel_path);
+    let path = resolve_contained(&files_dir(project), rel_path)?;
     std::fs::read(&path).map_err(|e| anyhow!("Could not read {}: {}", path.display(), e))
 }
 
 /// Delete a file or folder (report) in the files dir.
+///
+/// The final component is deleted literally — a symlink is removed, never
+/// followed — but every parent segment must resolve inside the files dir, or
+/// `a/b` with `a -> /elsewhere` would delete outside it.
 pub fn delete_entry(project: &LocalProject, rel_path: &str) -> Result<()> {
     if !is_safe_rel_path(rel_path) {
         return Err(anyhow!("invalid file path: {rel_path}"));
     }
-    let path = files_dir(project).join(rel_path);
+    let base = files_dir(project);
+    let parent = match rel_path.rsplit_once('/') {
+        Some((parent_rel, _)) => resolve_contained(&base, parent_rel)?,
+        None => base
+            .canonicalize()
+            .map_err(|e| anyhow!("Could not resolve {}: {}", base.display(), e))?,
+    };
+    let name = rel_path.rsplit('/').next().unwrap_or(rel_path);
+    let path = parent.join(name);
     let md = std::fs::symlink_metadata(&path)
         .map_err(|e| anyhow!("Could not stat {}: {}", path.display(), e))?;
     if md.is_dir() {
@@ -300,12 +376,15 @@ pub fn delete_entry(project: &LocalProject, rel_path: &str) -> Result<()> {
 /// Cheap change fingerprint (paths + sizes + mtimes) for the SSE diff loop.
 /// A missing dir hashes to a stable value, so first creation is a change.
 pub fn fingerprint(project: &LocalProject) -> u64 {
-    let dir = files_dir(project);
     let mut hasher = DefaultHasher::new();
-    hash_dir(&dir, &dir, &mut hasher, &mut 0);
+    if let Ok(canonical) = files_dir(project).canonicalize() {
+        hash_dir(&canonical, &canonical, &mut hasher, &mut 0);
+    }
     hasher.finish()
 }
 
+/// Hash the tree under `dir`, skipping (like `collect_tree`) symlinks that
+/// resolve outside `base`, so the fingerprint tracks exactly what's listed.
 fn hash_dir(base: &Path, dir: &Path, hasher: &mut DefaultHasher, seen: &mut usize) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -318,7 +397,9 @@ fn hash_dir(base: &Path, dir: &Path, hasher: &mut DefaultHasher, seen: &mut usiz
         if is_ignored(&name) {
             continue;
         }
-        let Ok(md) = entry.metadata() else { continue };
+        let Some(md) = followed_metadata(base, &entry) else {
+            continue;
+        };
         *seen += 1;
         if let Ok(rel) = entry.path().strip_prefix(base) {
             rel.to_string_lossy().hash(hasher);
@@ -329,5 +410,97 @@ fn hash_dir(base: &Path, dir: &Path, hasher: &mut DefaultHasher, seen: &mut usiz
             md.len().hash(hasher);
             mtime_ms(&md).hash(hasher);
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    /// Fresh scratch dir with a `base/` (the files dir under test) and an
+    /// `outside/` holding a file symlinks will try to escape to.
+    fn scratch() -> (PathBuf, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("orx-files-{}", uuid::Uuid::new_v4()));
+        let base = root.join("base");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "secret").unwrap();
+        (root, base, outside)
+    }
+
+    #[test]
+    fn rejects_lexical_escapes() {
+        let (root, base, _) = scratch();
+        for bad in ["../x", "/etc/passwd", "a/../b", "a/./b", "", "a\\b"] {
+            assert!(resolve_contained(&base, bad).is_err(), "accepted {bad:?}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn blocks_symlink_file_escape() {
+        let (root, base, outside) = scratch();
+        symlink(outside.join("secret.txt"), base.join("link.txt")).unwrap();
+        assert!(resolve_contained(&base, "link.txt").is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn blocks_symlink_dir_escape() {
+        let (root, base, outside) = scratch();
+        symlink(&outside, base.join("sub")).unwrap();
+        assert!(resolve_contained(&base, "sub/secret.txt").is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn allows_internal_symlink() {
+        let (root, base, _) = scratch();
+        std::fs::write(base.join("real.txt"), "data").unwrap();
+        symlink("real.txt", base.join("alias.txt")).unwrap();
+        let resolved = resolve_contained(&base, "alias.txt").unwrap();
+        assert_eq!(std::fs::read_to_string(resolved).unwrap(), "data");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn allows_regular_files() {
+        let (root, base, _) = scratch();
+        std::fs::create_dir(base.join("exp")).unwrap();
+        std::fs::write(base.join("exp/report.md"), "# T").unwrap();
+        assert!(resolve_contained(&base, "exp/report.md").is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn listing_skips_escaping_symlinks_keeps_internal() {
+        let (root, base, outside) = scratch();
+        std::fs::write(base.join("real.txt"), "data").unwrap();
+        symlink("real.txt", base.join("alias.txt")).unwrap();
+        symlink(outside.join("secret.txt"), base.join("leak.txt")).unwrap();
+        symlink(&outside, base.join("leakdir")).unwrap();
+        let canonical = base.canonicalize().unwrap();
+        let (entries, truncated) = collect_tree(&canonical, &canonical, "", &mut 0);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["alias.txt", "real.txt"]);
+        assert!(!truncated);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn listing_hides_report_title_behind_escaping_symlink() {
+        let (root, base, outside) = scratch();
+        std::fs::write(outside.join("report.md"), "# Leaked heading").unwrap();
+        std::fs::create_dir(base.join("exp")).unwrap();
+        symlink(outside.join("report.md"), base.join("exp/report.md")).unwrap();
+        let canonical = base.canonicalize().unwrap();
+        let (entries, _) = collect_tree(&canonical, &canonical, "", &mut 0);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].report_title, None);
+        // The dangling entry itself is skipped too, not just the title.
+        assert!(entries[0].children.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
