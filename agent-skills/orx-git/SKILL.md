@@ -63,6 +63,11 @@ Rules and notes:
 - **Push before you run.** `orx exp run` launches from the branch's pushed tip on
   GitHub — uncommitted or unpushed edits won't be in the run. Commit and push
   first.
+- **Never merge or rebase a branch that has a completed non-failed run** (cardinal
+  rule): its history is the code those results came from. To bring in changes
+  from another branch, create a **child** experiment and put the merge commit on
+  the child's branch. And never rebase, anywhere — the tree records what actually
+  ran, and rewriting history makes no sense in an experiment tree.
 - **Reading another node's code** without disturbing your checkout: that branch is
   already in the clone after a fetch — `git -C "$DIR" show origin/orx/<slug>:<path>`.
 

@@ -18,10 +18,11 @@
 //!   an agent's global skills dir (the dedicated cloud box).
 //!
 //! The two sets share the same public skill *names* so docs and references stay
-//! stable; a few modules swap their **body** between a local-mode form
-//! (logs-only evidence, files-dir reports) and a full/cloud form (artifacts +
-//! query + chart; `orx report` upload). The `orx-` prefix on every dir name
-//! makes them unmistakable in an agent's skill listing.
+//! stable; several modules swap their **body** between a local-mode form
+//! (backend-based launches, logs-only evidence, files-dir reports, worktree
+//! git flow) and a full/cloud form (managed-SKU compute, artifacts + query +
+//! chart, `orx report` upload). The `orx-` prefix on every dir name makes them
+//! unmistakable in an agent's skill listing.
 
 use std::path::Path;
 
@@ -52,9 +53,12 @@ pub enum SkillSet {
 // `SKILL.local.md` siblings are the local-mode body variants under the same
 // public skill name) ----------------------------------------------------------
 
-const COMPUTE: &str = include_str!("../../agent-skills/orx-compute/SKILL.md");
+const COMPUTE_LOCAL: &str = include_str!("../../agent-skills/orx-compute/SKILL.local.md");
+const COMPUTE_CLOUD: &str = include_str!("../../agent-skills/orx-compute/SKILL.md");
 const COMPUTE_K8S: &str = include_str!("../../agent-skills/orx-compute-k8s/SKILL.md");
-const EXPERIMENT_TREE: &str = include_str!("../../agent-skills/orx-experiment-tree/SKILL.md");
+const EXPERIMENT_TREE_LOCAL: &str =
+    include_str!("../../agent-skills/orx-experiment-tree/SKILL.local.md");
+const EXPERIMENT_TREE_CLOUD: &str = include_str!("../../agent-skills/orx-experiment-tree/SKILL.md");
 const GIT_EDITING: &str = include_str!("../../agent-skills/orx-git/SKILL.md");
 const LIT: &str = include_str!("../../agent-skills/orx-lit/SKILL.md");
 const CREATE: &str = include_str!("../../agent-skills/orx-create/SKILL.md");
@@ -69,20 +73,36 @@ const EVIDENCE_CLOUD: &str = include_str!("../../agent-skills/orx-evidence/SKILL
 // works blind). Keep each ≤400 chars — Codex's ambient budget is ~8k across
 // the whole set.
 
-const S_COMPUTE: AgentSkill = AgentSkill {
+// The compute and experiment-tree descriptions are shared by the local and
+// cloud body variants (same public name, same triggers — only the body
+// changes), so they live in one const each.
+const D_COMPUTE: &str = "Launch experiment runs with `orx exp run`: backends (hf, modal, k8s, ssh, slurm, openresearch, local), flavors, timeouts, images, sizing, and `orx exp wait`. Use before launching or re-launching any run, when choosing or switching a backend or GPU flavor, when a job OOMs, stalls, or times out, or when deciding GPU vs CPU.";
+const D_EXPERIMENT_TREE: &str = "The experiment-tree model and the auto-research loop: shape the tree (stacked bushes), branch/launch/wait/promote, and `orx exp desc` notes. Use before creating, planning, or reorganizing experiments, when deciding what to try next, when a round of runs finishes, or whenever you're unsure how work maps onto the tree.";
+
+const S_COMPUTE_LOCAL: AgentSkill = AgentSkill {
     name: "orx-compute",
-    description: "Launch experiment runs with `orx exp run`: backends (hf, modal, k8s, ssh, slurm, openresearch, local), flavors, timeouts, images, sizing, and `orx exp wait`. Use before launching or re-launching any run, when choosing or switching a backend or GPU flavor, when a job OOMs, stalls, or times out, or when deciding GPU vs CPU.",
-    content: COMPUTE,
+    description: D_COMPUTE,
+    content: COMPUTE_LOCAL,
+};
+const S_COMPUTE_CLOUD: AgentSkill = AgentSkill {
+    name: "orx-compute",
+    description: D_COMPUTE,
+    content: COMPUTE_CLOUD,
 };
 const S_COMPUTE_K8S: AgentSkill = AgentSkill {
     name: "orx-compute-k8s",
     description: "Run an experiment on your own Kubernetes cluster (`orx exp run --backend k8s`): the committed-manifest contract orx enforces at submit. Use when the user names k8s, kubernetes, or a cluster, before writing or editing `.orx/k8s.yaml`, for multi-node or Indexed Jobs, or when a k8s submit is rejected.",
     content: COMPUTE_K8S,
 };
-const S_EXPERIMENT_TREE: AgentSkill = AgentSkill {
+const S_EXPERIMENT_TREE_LOCAL: AgentSkill = AgentSkill {
     name: "orx-experiment-tree",
-    description: "The experiment-tree model and the auto-research loop: shape the tree (stacked bushes), branch/launch/wait/promote, and `orx exp desc` notes. Use before creating, planning, or reorganizing experiments, when deciding what to try next, when a round of runs finishes, or whenever you're unsure how work maps onto the tree.",
-    content: EXPERIMENT_TREE,
+    description: D_EXPERIMENT_TREE,
+    content: EXPERIMENT_TREE_LOCAL,
+};
+const S_EXPERIMENT_TREE_CLOUD: AgentSkill = AgentSkill {
+    name: "orx-experiment-tree",
+    description: D_EXPERIMENT_TREE,
+    content: EXPERIMENT_TREE_CLOUD,
 };
 const S_GIT: AgentSkill = AgentSkill {
     name: "orx-git",
@@ -121,13 +141,14 @@ const S_EVIDENCE_CLOUD: AgentSkill = AgentSkill {
 };
 
 /// The modules for a given set, in a stable order. Local and Full share names;
-/// `reports`/`evidence` swap bodies, and `create` is Full-only.
+/// `experiment-tree`/`compute`/`reports`/`evidence` swap bodies, and `create`
+/// is Full-only.
 pub fn skills(set: SkillSet) -> Vec<&'static AgentSkill> {
     match set {
         SkillSet::Local => vec![
-            &S_EXPERIMENT_TREE,
+            &S_EXPERIMENT_TREE_LOCAL,
             &S_GIT,
-            &S_COMPUTE,
+            &S_COMPUTE_LOCAL,
             &S_COMPUTE_K8S,
             &S_EVIDENCE_LOCAL,
             &S_REPORTS_LOCAL,
@@ -135,9 +156,9 @@ pub fn skills(set: SkillSet) -> Vec<&'static AgentSkill> {
         ],
         SkillSet::Full => vec![
             &S_CREATE,
-            &S_EXPERIMENT_TREE,
+            &S_EXPERIMENT_TREE_CLOUD,
             &S_GIT,
-            &S_COMPUTE,
+            &S_COMPUTE_CLOUD,
             &S_COMPUTE_K8S,
             &S_EVIDENCE_CLOUD,
             &S_REPORTS_CLOUD,
