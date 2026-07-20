@@ -3357,7 +3357,7 @@ a.files-pill:hover {
   align-items: center;
   gap: 3px;
   font-size: var(--fs-sm);
-  color: var(--subtext);
+  color: var(--text);
   padding: 5px 4px;
   border-radius: var(--radius-sm);
 }
