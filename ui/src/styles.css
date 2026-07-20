@@ -4172,3 +4172,119 @@ a.files-pill:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ---- onboarding tour ----
+   Spotlight walkthrough of the workspace (Tour.tsx). The overlay sits above
+   the z-100 modal ladder; the dim is a single oversized box-shadow around the
+   spotlight box so there's only one element to morph between steps. */
+.tour-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+}
+.tour-dim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+}
+.tour-spotlight {
+  position: absolute;
+  border-radius: 10px;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+  transition: all 300ms ease;
+}
+.tour-ring {
+  position: absolute;
+  border-radius: 10px;
+  border: 2px solid var(--primary);
+  transition: all 300ms ease;
+}
+.tour-card {
+  position: absolute;
+  width: 340px;
+  max-width: calc(100vw - 32px);
+  background: var(--base);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.22);
+  padding: 18px 20px 0;
+  transition:
+    left 200ms ease,
+    top 200ms ease;
+}
+.tour-card.centered {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  transition: none;
+}
+.tour-card h3 {
+  margin: 0 24px 6px 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.tour-card p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--subtext);
+}
+.tour-card .tour-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+.tour-footer {
+  display: flex;
+  align-items: center;
+  border-top: 1px solid var(--border-variant);
+  margin-top: 14px;
+  padding: 10px 0;
+}
+.tour-footer-side {
+  flex: 1;
+  display: flex;
+}
+.tour-footer-side.end {
+  justify-content: flex-end;
+}
+.tour-count {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+/* Rotated-square pointer on the card edge nearest the spotlight; the two
+   outward borders draw the triangle. Class names follow the card's anchor
+   ("above" = card above the target, so the arrow is on the bottom edge). */
+.tour-arrow {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: var(--base);
+  rotate: 45deg;
+  pointer-events: none;
+}
+.tour-arrow.above {
+  bottom: -6.5px;
+  left: calc(50% - 6px);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.tour-arrow.below {
+  top: -6.5px;
+  left: calc(50% - 6px);
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+}
+.tour-arrow.left {
+  right: -6.5px;
+  top: calc(50% - 6px);
+  border-top: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+.tour-arrow.right {
+  left: -6.5px;
+  top: calc(50% - 6px);
+  border-bottom: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+}
