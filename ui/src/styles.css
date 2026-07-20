@@ -307,7 +307,7 @@ textarea::placeholder {
   font-size: var(--fs-base);
 }
 .project-card .repo {
-  color: var(--subtext);
+  color: var(--text);
 }
 .project-card .paper {
   font-size: var(--fs-xs);
@@ -459,7 +459,7 @@ textarea::placeholder {
 }
 .btn.ghost {
   border-color: transparent;
-  color: var(--subtext);
+  color: var(--text);
 }
 .btn.ghost:hover:not(:disabled) {
   color: var(--text);
@@ -969,7 +969,7 @@ textarea::placeholder {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: var(--subtext);
+  color: var(--text);
   padding: 20px;
   text-align: center;
 }
@@ -1466,7 +1466,7 @@ textarea::placeholder {
 .md thead th {
   background: var(--surface);
   font-weight: var(--fw-medium);
-  color: var(--subtext);
+  color: var(--text);
   border-bottom: 1px solid var(--border);
 }
 .md tbody tr:hover td {
@@ -1645,7 +1645,7 @@ textarea::placeholder {
 }
 .runs-table th {
   text-align: left;
-  color: var(--subtext);
+  color: var(--text);
   font-size: var(--fs-xs);
   font-weight: var(--fw-semibold);
   padding: 8px 12px;
@@ -2006,7 +2006,7 @@ textarea::placeholder {
   letter-spacing: -0.01em;
 }
 .onb-sub {
-  color: var(--subtext);
+  color: var(--text);
   font-size: var(--fs-base);
   line-height: 1.55;
   margin: 0 0 22px;
@@ -3031,7 +3031,7 @@ a.files-pill:hover {
 }
 .settings-sub {
   margin: 0 0 18px;
-  color: var(--subtext);
+  color: var(--text);
   font-size: var(--fs-md);
 }
 .settings-card {
@@ -3281,7 +3281,7 @@ a.files-pill:hover {
   border-bottom: 1px solid var(--border);
   text-align: left;
   font-weight: var(--fw-medium);
-  color: var(--subtext);
+  color: var(--text);
 }
 .flavor-table td {
   padding: 5px 10px 5px 0;
@@ -3343,7 +3343,7 @@ a.files-pill:hover {
   align-items: center;
   gap: 5px;
   font-size: var(--fs-sm);
-  color: var(--subtext);
+  color: var(--text);
   padding: 5px 8px;
   border-radius: var(--radius-sm);
 }
@@ -3539,7 +3539,7 @@ a.files-pill:hover {
   gap: 8px;
   padding: 4px 12px;
   border-bottom: 1px solid var(--border-variant);
-  color: var(--subtext);
+  color: var(--text);
   flex-shrink: 0;
 }
 .file-view-path {
@@ -3676,7 +3676,7 @@ a.files-pill:hover {
 .prompt-head {
   font-size: var(--fs-xs);
   font-weight: var(--fw-semibold);
-  color: var(--subtext);
+  color: var(--text);
 }
 .prompt-head code {
   font-family: var(--mono);
@@ -4112,4 +4112,120 @@ a.files-pill:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ---- onboarding tour ----
+   Spotlight walkthrough of the workspace (Tour.tsx). The overlay sits above
+   the z-100 modal ladder; the dim is a single oversized box-shadow around the
+   spotlight box so there's only one element to morph between steps. */
+.tour-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+}
+.tour-dim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+}
+.tour-spotlight {
+  position: absolute;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+  transition: all 300ms ease;
+}
+.tour-ring {
+  position: absolute;
+  border-radius: var(--radius-lg);
+  border: 2px solid var(--primary);
+  transition: all 300ms ease;
+}
+.tour-card {
+  position: absolute;
+  width: 340px;
+  max-width: calc(100vw - 32px);
+  background: var(--base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.22);
+  padding: 18px 20px 0;
+  transition:
+    left 200ms ease,
+    top 200ms ease;
+}
+.tour-card.centered {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  transition: none;
+}
+.tour-card h3 {
+  margin: 0 24px 6px 0;
+  font-size: var(--fs-base);
+  font-weight: var(--fw-semibold);
+}
+.tour-card p {
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--text);
+}
+.tour-card .tour-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+.tour-footer {
+  display: flex;
+  align-items: center;
+  border-top: 1px solid var(--border-variant);
+  margin-top: 14px;
+  padding: 10px 0;
+}
+.tour-footer-side {
+  flex: 1;
+  display: flex;
+}
+.tour-footer-side.end {
+  justify-content: flex-end;
+}
+.tour-count {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+/* Rotated-square pointer on the card edge nearest the spotlight; the two
+   outward borders draw the triangle. Class names follow the card's anchor
+   ("above" = card above the target, so the arrow is on the bottom edge). */
+.tour-arrow {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: var(--base);
+  rotate: 45deg;
+  pointer-events: none;
+}
+.tour-arrow.above {
+  bottom: -6.5px;
+  left: calc(50% - 6px);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.tour-arrow.below {
+  top: -6.5px;
+  left: calc(50% - 6px);
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+}
+.tour-arrow.left {
+  right: -6.5px;
+  top: calc(50% - 6px);
+  border-top: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+.tour-arrow.right {
+  left: -6.5px;
+  top: calc(50% - 6px);
+  border-bottom: 1px solid var(--border);
+  border-left: 1px solid var(--border);
 }

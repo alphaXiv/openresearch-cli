@@ -137,7 +137,7 @@ export function ModelPicker({
     : "Model";
 
   return (
-    <div className="model-picker" ref={rootRef}>
+    <div className="model-picker" data-onboarding="model-picker" ref={rootRef}>
       <button
         type="button"
         className="composer-pill"
