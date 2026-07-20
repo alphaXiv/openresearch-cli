@@ -702,6 +702,16 @@ pub enum TelemetryCommand {
     On,
     /// Disable anonymous usage analytics on this machine.
     Off,
+    /// Show or set this machine's context tag (e.g. "cloud-agent"), stamped on
+    /// every event as `install_kind` so automated installs are separable from
+    /// humans in analytics. Intended for fleet provisioning, not end users.
+    Context {
+        /// Context value to persist (omit to show the current value).
+        value: Option<String>,
+        /// Clear the persisted context (the machine counts as human again).
+        #[arg(long, conflicts_with = "value")]
+        clear: bool,
+    },
 }
 
 #[derive(Args, Debug)]
