@@ -253,7 +253,8 @@ textarea::placeholder {
 }
 
 .home-brand {
-  font-weight: 800; /* brand wordmark — deliberately heavier than --fw-display */
+  /* Matches the openresearch.sh landing wordmark (font-bold = 700). */
+  font-weight: var(--fw-display);
   font-size: var(--fs-4xl);
   letter-spacing: -0.02em;
   margin-bottom: 36px;
