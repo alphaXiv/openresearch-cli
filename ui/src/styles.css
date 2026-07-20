@@ -4196,8 +4196,7 @@ a.files-pill:hover {
 .tour-ring {
   position: absolute;
   border-radius: 10px;
-  border: 1.5px solid var(--primary);
-  box-shadow: 0 0 24px 2px color-mix(in oklab, var(--primary) 45%, transparent);
+  border: 2px solid var(--primary);
   transition: all 300ms ease;
 }
 .tour-card {

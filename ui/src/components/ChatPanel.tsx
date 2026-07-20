@@ -1461,7 +1461,7 @@ export function ChatPanel({
         {onStartTour && (
           <button
             className="icon-btn"
-            title="Replay tour"
+            data-tip="Replay tour"
             aria-label="Replay tour"
             onClick={onStartTour}
           >
