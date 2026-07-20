@@ -224,9 +224,12 @@ function toolLine(part: ChatPart): string {
       return typeof input.pattern === "string" ? `Searched “${input.pattern}”` : "Searched";
     case "Glob":
       return typeof input.pattern === "string" ? `Found ${input.pattern}` : "Listed files";
-    case "WebFetch":
     case "WebSearch":
+      if (typeof input.query === "string") return `Searched the web: “${input.query}”`;
       return desc ?? "Searched the web";
+    case "WebFetch":
+      if (typeof input.url === "string") return `Fetched ${input.url}`;
+      return desc ?? "Fetched a page";
     case "Task":
       return desc ?? "Ran a subagent";
     case "error":
