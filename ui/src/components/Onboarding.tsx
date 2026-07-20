@@ -161,9 +161,9 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 }
 
 function agentBadge(h: Harness): { cls: string; label: string } {
-  if (h.agentReady) return { cls: "st-done", label: "connected" };
-  if (h.installed) return { cls: "st-starting", label: "not signed in" };
-  return { cls: "st-idle", label: "not detected" };
+  if (h.agentReady) return { cls: "st-done", label: "Connected" };
+  if (h.installed) return { cls: "st-starting", label: "Not signed in" };
+  return { cls: "st-idle", label: "Not detected" };
 }
 
 function AgentCard({ h }: { h: Harness }) {
@@ -260,10 +260,10 @@ function GitCard({
           {git.githubTokenSource === "env"
             ? "token from GITHUB_TOKEN"
             : git.githubTokenSource === "stored"
-              ? "token saved in orx"
+              ? "Token saved in orx"
               : git.githubTokenSource === "gh"
-                ? "signed in via gh CLI"
-                : "not connected"}
+                ? "Signed in via gh CLI"
+                : "Not connected"}
         </span>
         <span className={`status-badge ${git.githubTokenSource ? "st-done" : "st-starting"}`}>
           {git.githubTokenSource ? <Check size={12} strokeWidth={3} /> : <span className="dot" />}

@@ -388,14 +388,14 @@ function ModalSection() {
             <span className="k">Environment</span>
             <span className="v">
               {s.modalImportable
-                ? "ready"
+                ? "Ready"
                 : s.envProvisioned
-                  ? "provisioned (modal import failing)"
-                  : "not built yet"}
+                  ? "Provisioned (modal import failing)"
+                  : "Not built yet"}
             </span>
             <span className="k">Token</span>
             <span className="v">
-              {s.tokenSource ? MODAL_TOKEN_LABELS[s.tokenSource] : "not configured"}
+              {s.tokenSource ? MODAL_TOKEN_LABELS[s.tokenSource] : "Not configured"}
             </span>
           </div>
           {!s.tokenConfigured && (
@@ -1247,7 +1247,7 @@ function HfSection() {
             <span className="v">{settings.maskedToken ?? "—"}</span>
             <span className="k">Source</span>
             <span className="v">
-              {settings.source ? SOURCE_LABELS[settings.source] : "not configured"}
+              {settings.source ? SOURCE_LABELS[settings.source] : "Not configured"}
             </span>
             <span className="k">Jobs</span>
             <span className="v">

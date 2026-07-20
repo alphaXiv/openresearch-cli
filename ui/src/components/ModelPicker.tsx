@@ -220,7 +220,7 @@ export function OptionPicker({
   /** The harness's default id — pinned at top of the menu and used when
    * `value` is null. */
   defaultId?: string | null;
-  /** Uppercase group header (e.g. "Mode"). */
+  /** Group header (e.g. "Mode"). */
   header?: string;
   align?: "left" | "right";
   /** `pill` = boxed (permission mode); `bare` = text-only (reasoning). */
