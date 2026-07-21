@@ -233,6 +233,9 @@ function toolLine(part: ChatPart): string {
       if (typeof input.pattern === "string" && input.pattern && url)
         return `Searched “${input.pattern}” in ${url}`;
       if (url) return `Opened ${url}`;
+      // codex reports page visits as an opaque {type:"other"} action —
+      // "searched" would be wrong, all we know is the web tool ran.
+      if (input.type === "other") return "Browsed the web";
       return desc ?? "Searched the web";
     }
     case "WebFetch":
