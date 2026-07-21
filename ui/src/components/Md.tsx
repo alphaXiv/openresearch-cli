@@ -5,9 +5,12 @@
 import { Check, Copy, FileCode } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import { resolveSyntaxLanguage } from "../syntaxLanguage";
 import { highlight } from "../syntaxHighlight";
+import "katex/dist/katex.min.css";
 
 // Chat blocks are short; cap tokenizing well below the file viewer's limit.
 const HIGHLIGHT_MAX_BYTES = 100_000;
@@ -129,6 +132,29 @@ function FileChip({
   );
 }
 
+// Matches regions the math normalizer must not touch: fenced code blocks
+// (tolerating an unclosed fence mid-stream) and inline code spans.
+const CODE_REGIONS = /(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\n]*`)/g;
+
+/** Rewrite `\(...\)` / `\[...\]` math delimiters to remark-math's `$` forms.
+ *
+ * Agents emit LaTeX with backslash delimiters, which plain markdown mangles:
+ * `\(` parses as an escaped paren and `_` as emphasis. remark-math only
+ * recognizes dollar delimiters, so convert before parsing — skipping code
+ * blocks and inline code, where backslashes are literal. */
+export function normalizeMathDelimiters(text: string): string {
+  if (!text.includes("\\(") && !text.includes("\\[")) return text;
+  return text
+    .split(CODE_REGIONS)
+    .map((seg, i) => {
+      if (i % 2 === 1) return seg; // odd segments are code — leave untouched
+      return seg
+        .replace(/\\\[([\s\S]+?)\\\]/g, (_, inner: string) => `$$${inner}$$`)
+        .replace(/\\\(([\s\S]+?)\\\)/g, (_, inner: string) => `$${inner}$`);
+    })
+    .join("");
+}
+
 /** A link target that is a file path rather than a web URL. */
 function isFileHref(href: string): boolean {
   if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return false; // has a scheme
@@ -182,10 +208,11 @@ export function Md({ text, onOpenFile }: { text: string; onOpenFile?: (path: str
   return (
     <div className="md">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkFileMentions]}
+        remarkPlugins={[remarkGfm, remarkMath, remarkFileMentions]}
+        rehypePlugins={[rehypeKatex]}
         components={components as any}
       >
-        {text}
+        {normalizeMathDelimiters(text)}
       </ReactMarkdown>
     </div>
   );
