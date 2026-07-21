@@ -929,7 +929,7 @@ export function ChatPanel({
   // it (text-indent), so long args wrap full-width beneath the chip instead
   // of being squeezed into a narrower column.
   const [pickedSkill, setPickedSkill] = useState<SkillInfo | null>(null);
-  const chipRef = useRef<HTMLButtonElement>(null);
+  const chipRef = useRef<HTMLSpanElement>(null);
   const [chipIndent, setChipIndent] = useState(0);
   useLayoutEffect(() => {
     setChipIndent(pickedSkill && chipRef.current ? chipRef.current.offsetWidth + 8 : 0);
@@ -964,13 +964,10 @@ export function ChatPanel({
     composerRef.current?.focus();
   }
 
-  /** Pop the chip back into editable `/name args` text (Backspace at 0 / click)
-   * so the command is never silently dropped. */
-  function clearSkillChip() {
-    if (!pickedSkill) return;
-    const name = pickedSkill.name;
+  /** Backspace at the start deletes the command outright (Claude-desktop
+   * behavior) — the args stay put; re-type `/` to pick another skill. */
+  function removeSkillChip() {
     setPickedSkill(null);
-    setDraft((cur) => (cur ? `/${name} ${cur}` : `/${name}`));
     composerRef.current?.focus();
   }
 
@@ -1677,20 +1674,11 @@ export function ChatPanel({
           )}
           <div className="composer-input">
             {pickedSkill && (
-              <button
-                type="button"
-                ref={chipRef}
-                className="skill-chip composer-chip"
-                title="Remove command (Backspace)"
-                // mousedown + preventDefault keeps the textarea focused (same
-                // trick as the skill menu rows).
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  clearSkillChip();
-                }}
-              >
+              // Inert like inline text: clicks fall through to the textarea
+              // (pointer-events: none); Backspace at the start removes it.
+              <span ref={chipRef} className="skill-chip composer-chip">
                 /{pickedSkill.name}
-              </button>
+              </span>
             )}
             <textarea
               ref={composerRef}
@@ -1771,7 +1759,7 @@ export function ChatPanel({
                     return;
                   }
                 }
-                // Backspace at the very start pops the chip back into text.
+                // Backspace at the very start deletes the command chip.
                 // (Escape deliberately doesn't touch the chip — it's the
                 // stop-the-turn gesture, see the document listener above.)
                 if (
@@ -1781,7 +1769,7 @@ export function ChatPanel({
                   e.currentTarget.selectionEnd === 0
                 ) {
                   e.preventDefault();
-                  clearSkillChip();
+                  removeSkillChip();
                   return;
                 }
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {

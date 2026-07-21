@@ -9,7 +9,7 @@
 pub struct Skill {
     pub name: &'static str,
     pub description: &'static str,
-    /// Shown greyed-out in the picker after the name (e.g. "<topic>").
+    /// Shown greyed-out in the picker after the name (e.g. "[topic]").
     pub arg_hint: &'static str,
     pub template: &'static str,
     /// Substituted for `{args}` when the user gives none.
@@ -215,28 +215,28 @@ pub const CATALOG: &[Skill] = &[
     Skill {
         name: "lit-review",
         description: "Multi-hop literature review via alphaXiv search",
-        arg_hint: "<topic>",
+        arg_hint: "[topic]",
         template: LIT_REVIEW_TEMPLATE,
         no_args: "(none given — ask the user what topic to review before searching)",
     },
     Skill {
         name: "icml-repro",
         description: "Reproduce an ICML 2026 paper and publish a Trackio logbook",
-        arg_hint: "<paper title> (OpenReview <id>)",
+        arg_hint: "[paper title (OpenReview id)]",
         template: ICML_REPRO_TEMPLATE,
         no_args: "(none given — ask the user which ICML 2026 paper to reproduce: title plus OpenReview ID)",
     },
     Skill {
         name: "reproduce-paper",
         description: "Reproduce a paper claim by claim on compute you specify",
-        arg_hint: "[<paper> on <compute>]",
+        arg_hint: "[paper on compute]",
         template: REPRODUCE_PAPER_TEMPLATE,
         no_args: "(none given — infer the paper from the current repository: read the README, docs, and code, and if the repo clearly corresponds to an identifiable paper, reproduce that one; only ask the user if no paper can be identified. For compute, use the default target configured in orx up Settings → Compute when one is set, per the rules below; otherwise ask before launching.)",
     },
     Skill {
         name: "paper-to-marimo",
         description: "Reproduce a paper and publish an interactive molab tutorial",
-        arg_hint: "<paper> on <compute>",
+        arg_hint: "[paper on compute]",
         template: PAPER_TO_MARIMO_TEMPLATE,
         no_args: "(none given — ask the user which paper to reproduce and what compute to run on)",
     },
