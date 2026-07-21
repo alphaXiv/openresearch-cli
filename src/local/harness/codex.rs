@@ -698,12 +698,23 @@ fn apply_item(ctx: &mut TurnCtx, item: &Value, completed: bool) {
         Some("webSearch") => {
             // No status field on webSearch — it only fails if the whole turn
             // errors. The tool name "WebSearch" matches the UI's case.
+            // `query` is empty for non-search actions (openPage, findInPage);
+            // the `action` union carries the url/pattern, so its fields are
+            // merged into the input for the UI to label the row.
             let query = item.get("query").and_then(Value::as_str).unwrap_or("");
+            let mut input = item
+                .get("action")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            if !query.is_empty() || !input.contains_key("query") {
+                input.insert("query".into(), Value::String(query.to_string()));
+            }
             ctx.upsert_part(tool_part(
                 id,
                 "WebSearch",
                 tool_status(completed, false),
-                Some(serde_json::json!({ "query": query })),
+                Some(Value::Object(input)),
                 None,
             ));
         }
@@ -2011,7 +2022,9 @@ mod tests {
             r#"{"method":"item/completed","params":{"item":{"type":"hookPrompt","id":"h1","fragments":["x"]},"threadId":"t1","turnId":"turn1"}}"#,
             // Web search: query streams empty, then the final query lands.
             r#"{"method":"item/started","params":{"item":{"type":"webSearch","id":"ws1","query":""},"threadId":"t1","turnId":"turn1"}}"#,
-            r#"{"method":"item/completed","params":{"item":{"type":"webSearch","id":"ws1","query":"rotary embeddings"},"threadId":"t1","turnId":"turn1"}}"#,
+            r#"{"method":"item/completed","params":{"item":{"type":"webSearch","id":"ws1","query":"rotary embeddings","action":{"type":"search","query":"rotary embeddings"}},"threadId":"t1","turnId":"turn1"}}"#,
+            // Web-tool openPage action: empty query, url in the action.
+            r#"{"method":"item/completed","params":{"item":{"type":"webSearch","id":"ws2","query":"","action":{"type":"openPage","url":"https://example.com/post"}},"threadId":"t1","turnId":"turn1"}}"#,
             // MCP tool call that succeeds.
             r#"{"method":"item/started","params":{"item":{"type":"mcpToolCall","id":"mcp1","server":"fs","tool":"read","arguments":{"path":"a.txt"},"status":"inProgress"},"threadId":"t1","turnId":"turn1"}}"#,
             r#"{"method":"item/completed","params":{"item":{"type":"mcpToolCall","id":"mcp1","server":"fs","tool":"read","arguments":{"path":"a.txt"},"status":"completed","result":{"text":"file body"}},"threadId":"t1","turnId":"turn1"}}"#,
@@ -2043,8 +2056,8 @@ mod tests {
         assert!(matches!(ended, Some(TurnEnd::Done { interrupted: false })));
 
         let parts = &ctx.assistant.parts;
-        // ws1, mcp1, mcp2, dyn1, ft1, cc1 — the two input echoes drop.
-        assert_eq!(parts.len(), 6, "one part per tool item: {parts:?}");
+        // ws1, ws2, mcp1, mcp2, dyn1, ft1, cc1 — the two input echoes drop.
+        assert_eq!(parts.len(), 7, "one part per tool item: {parts:?}");
         assert!(parts.iter().all(|p| p.kind == "tool"));
 
         // WebSearch: final query wins over the empty streamed one.
@@ -2053,34 +2066,40 @@ mod tests {
         assert_eq!(ws.status, "completed");
         assert_eq!(ws.input.as_ref().unwrap()["query"], "rotary embeddings");
 
+        // openPage action: query stays empty, url merged from the action.
+        assert_eq!(parts[1].tool.as_deref(), Some("WebSearch"));
+        let ws2_input = parts[1].state.as_ref().unwrap().input.as_ref().unwrap();
+        assert_eq!(ws2_input["url"], "https://example.com/post");
+        assert_eq!(ws2_input["query"], "");
+
         // MCP success: tool "server:tool", result in the output.
-        assert_eq!(parts[1].tool.as_deref(), Some("fs:read"));
-        let mcp1 = parts[1].state.as_ref().unwrap();
+        assert_eq!(parts[2].tool.as_deref(), Some("fs:read"));
+        let mcp1 = parts[2].state.as_ref().unwrap();
         assert_eq!(mcp1.status, "completed");
         assert!(mcp1.output.as_ref().unwrap().contains("file body"));
 
         // MCP failure: error status, error text in the output.
-        assert_eq!(parts[2].tool.as_deref(), Some("fs:write"));
-        let mcp2 = parts[2].state.as_ref().unwrap();
+        assert_eq!(parts[3].tool.as_deref(), Some("fs:write"));
+        let mcp2 = parts[3].state.as_ref().unwrap();
         assert_eq!(mcp2.status, "error");
         assert_eq!(mcp2.output.as_deref(), Some("permission denied"));
 
         // Dynamic tool call: success:false → error, name "namespace:tool".
-        assert_eq!(parts[3].tool.as_deref(), Some("web:lookup"));
-        assert_eq!(parts[3].state.as_ref().unwrap().status, "error");
+        assert_eq!(parts[4].tool.as_deref(), Some("web:lookup"));
+        assert_eq!(parts[4].state.as_ref().unwrap().status, "error");
 
         // Unknown type: named after the raw type, running → completed, and the
         // extra field is carried as input without id/type.
-        assert_eq!(parts[4].tool.as_deref(), Some("futureThing"));
-        let ft = parts[4].state.as_ref().unwrap();
+        assert_eq!(parts[5].tool.as_deref(), Some("futureThing"));
+        let ft = parts[5].state.as_ref().unwrap();
         assert_eq!(ft.status, "completed");
         let ft_input = ft.input.as_ref().unwrap();
         assert_eq!(ft_input["payload"], "abc");
         assert!(ft_input.get("id").is_none() && ft_input.get("type").is_none());
 
         // contextCompaction: no residual fields → no input, completed.
-        assert_eq!(parts[5].tool.as_deref(), Some("contextCompaction"));
-        let cc = parts[5].state.as_ref().unwrap();
+        assert_eq!(parts[6].tool.as_deref(), Some("contextCompaction"));
+        let cc = parts[6].state.as_ref().unwrap();
         assert_eq!(cc.status, "completed");
         assert!(cc.input.is_none());
     }

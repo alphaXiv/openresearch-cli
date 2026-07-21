@@ -224,9 +224,17 @@ function toolLine(part: ChatPart): string {
       return typeof input.pattern === "string" ? `Searched “${input.pattern}”` : "Searched";
     case "Glob":
       return typeof input.pattern === "string" ? `Found ${input.pattern}` : "Listed files";
-    case "WebSearch":
-      if (typeof input.query === "string") return `Searched the web: “${input.query}”`;
+    case "WebSearch": {
+      // Codex web-tool actions: search {query}, openPage {url},
+      // findInPage {pattern, url} — query is empty for the latter two.
+      if (typeof input.query === "string" && input.query)
+        return `Searched the web: “${input.query}”`;
+      const url = typeof input.url === "string" ? input.url : null;
+      if (typeof input.pattern === "string" && input.pattern && url)
+        return `Searched “${input.pattern}” in ${url}`;
+      if (url) return `Opened ${url}`;
       return desc ?? "Searched the web";
+    }
     case "WebFetch":
       if (typeof input.url === "string") return `Fetched ${input.url}`;
       return desc ?? "Fetched a page";
