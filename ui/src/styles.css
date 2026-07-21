@@ -3528,6 +3528,35 @@ a.files-pill:hover {
   color: var(--subtext);
 }
 
+/* Command chip — the picked slash-skill, rendered as a unit in the composer
+   (removable) and echoed in sent user bubbles (inert). */
+.skill-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--primary);
+  background: var(--primary-subtle);
+  border: 1px solid var(--border-variant);
+  border-radius: var(--radius-sm);
+}
+.composer-skill {
+  display: flex;
+  padding: 8px 12px 0;
+}
+.composer-skill .skill-chip {
+  cursor: pointer;
+}
+.composer-skill .skill-chip:hover {
+  border-color: var(--primary);
+}
+.msg-user .skill-chip {
+  margin-right: 2px;
+  vertical-align: baseline;
+}
+
 /* --- file viewer (right-pane tab opened from chat tool rows) ------------- */
 
 

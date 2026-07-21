@@ -551,25 +551,39 @@ function Message({
   onOpenFile,
   onRespond,
   onOpenPlan,
+  skills,
 }: {
   message: ChatMessage;
   onOpenFile?: (path: string) => void;
   onRespond?: (answer: PromptAnswer) => void;
   /** Open a plan's full markdown in the right pane (plan cards/strip). */
   onOpenPlan?: (plan: string, promptId: string) => void;
+  /** Known slash-skills, for rendering a leading `/name` as a command chip. */
+  skills?: SkillInfo[];
 }) {
   if (message.role === "user") {
     const text = message.parts
       .filter((p) => p.type === "text")
       .map((p) => p.text ?? "")
       .join("\n");
+    // A leading known `/command` renders as the same chip the composer shows.
+    // Unknown commands (or skills removed since) fall back to plain text.
+    const slash = text.match(/^\/(\S+)([\s\S]*)$/);
+    const command = slash ? skills?.find((s) => s.name === slash[1]) : undefined;
     // Optimistic parts carry a data URL; server parts carry a file name.
     const images = message.parts
       .filter((p) => p.type === "image" && p.text)
       .map((p) => (p.text!.startsWith("data:") ? p.text! : chatAttachmentUrl(p.text!)));
     return (
       <div className="msg-user">
-        {text}
+        {command ? (
+          <>
+            <span className="skill-chip">/{command.name}</span>
+            {slash![2]}
+          </>
+        ) : (
+          text
+        )}
         {images.length > 0 && (
           <div className="msg-images">
             {images.map((src, i) => (
@@ -908,10 +922,17 @@ export function ChatPanel({
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [skillIdx, setSkillIdx] = useState(0);
   const [skillMenuDismissed, setSkillMenuDismissed] = useState(false);
+  // A picked skill renders as a chip above the textarea (Claude-desktop style);
+  // the textarea then holds only the args. send() reassembles `/name args`, so
+  // the wire and transcript keep the plain-text form.
+  const [activeSkill, setActiveSkill] = useState<SkillInfo | null>(null);
+  // IME guard: mid-composition text can transiently look like a full command.
+  const composingRef = useRef(false);
   useEffect(() => {
     getSkills().then(setSkills).catch(() => {});
   }, []);
-  const slashToken = draft.startsWith("/") && !/\s/.test(draft) ? draft.slice(1) : null;
+  const slashToken =
+    !activeSkill && draft.startsWith("/") && !/\s/.test(draft) ? draft.slice(1) : null;
   const skillMatches =
     slashToken !== null && !skillMenuDismissed
       ? skills.filter((s) => s.name.startsWith(slashToken.toLowerCase()))
@@ -921,7 +942,18 @@ export function ChatPanel({
   useEffect(() => setSkillIdx(0), [slashToken]);
 
   function pickSkill(skill: SkillInfo) {
-    setDraft(`/${skill.name} `);
+    setActiveSkill(skill);
+    setDraft("");
+    composerRef.current?.focus();
+  }
+
+  /** Pop the chip back into editable `/name args` text (Backspace at 0 / click)
+   * so the command is never silently dropped. */
+  function clearSkillChip() {
+    if (!activeSkill) return;
+    const name = activeSkill.name;
+    setActiveSkill(null);
+    setDraft((cur) => (cur ? `/${name} ${cur}` : `/${name}`));
     composerRef.current?.focus();
   }
 
@@ -996,6 +1028,7 @@ export function ChatPanel({
     setSessions([]);
     setActiveId(null);
     setDraft("");
+    setActiveSkill(null);
     setAttachments([]);
     dispatch({ type: "reset" });
     loadedSessions.current = new Set();
@@ -1168,15 +1201,21 @@ export function ChatPanel({
   }, [threadMounted]);
 
   async function send() {
-    const text = draft.trim();
+    const args = draft.trim();
+    // Reassemble the picked skill chip into the plain `/name args` wire form —
+    // the backend's slash expansion and the transcript both see only text.
+    const text = activeSkill ? `/${activeSkill.name}${args ? ` ${args}` : ""}` : args;
     const pending = attachments;
     if (!text && pending.length === 0) return;
     // A pending question card owns plain typed text as a custom answer
     // (Claude-desktop behavior). This also works while the turn is HELD on
     // the card — where a new message would be rejected as busy and silently
     // dropped. A failed answer restores the draft so the text isn't lost.
+    // (Chips can't be created while a card is pending; a leftover chip just
+    // serializes into the note text, same as typing it.)
     if (text && pendingQuestion && pending.length === 0) {
       setDraft("");
+      setActiveSkill(null);
       void respond({ promptId: pendingQuestion, answers: [], note: text }).then((ok) => {
         if (!ok) setDraft((cur) => cur || text);
       });
@@ -1188,6 +1227,7 @@ export function ChatPanel({
     const effective = composerSelection;
     if (!effective && !activeId) return; // no harness available at all
     setDraft("");
+    setActiveSkill(null);
     setAttachments([]);
     let sid = activeId;
     try {
@@ -1512,7 +1552,14 @@ export function ChatPanel({
               className="chat-suggest mono"
               title="Prefills the composer — add the compute to run on, then send"
               onClick={() => {
-                setDraft(`/reproduce-paper ${paperId} on `);
+                const skill = skills.find((s) => s.name === "reproduce-paper");
+                if (skill) {
+                  setActiveSkill(skill);
+                  setDraft(`${paperId} on `);
+                } else {
+                  // Skills fetch failed — plain text still expands server-side.
+                  setDraft(`/reproduce-paper ${paperId} on `);
+                }
                 composerRef.current?.focus();
               }}
             >
@@ -1539,6 +1586,7 @@ export function ChatPanel({
                 onOpenFile={onOpenFile && ((p) => onOpenFile(p, activeId ?? undefined))}
                 onRespond={respond}
                 onOpenPlan={openPlan}
+                skills={skills}
               />
             ))}
             {busy &&
@@ -1610,18 +1658,38 @@ export function ChatPanel({
               ))}
             </div>
           )}
+          {activeSkill && (
+            <div className="composer-skill">
+              <button
+                type="button"
+                className="skill-chip"
+                title="Remove command (Backspace)"
+                // mousedown + preventDefault keeps the textarea focused (same
+                // trick as the skill menu rows).
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  clearSkillChip();
+                }}
+              >
+                /{activeSkill.name}
+              </button>
+            </div>
+          )}
           <textarea
             ref={composerRef}
             value={draft}
             placeholder={
               // A pending question card owns typed text (see send()); say so.
+              // With a chip active, the skill's arg hint says what to type.
               // Otherwise follow `composerSelection` so the name tracks the
               // picker for a new session and the open session once one exists.
               pendingQuestion
                 ? "Type a custom answer…"
-                : composerSelection
-                  ? `Message ${HARNESS_LABELS[composerSelection.harness]}… ( / for skills)`
-                  : "Ask the research agent… ( / for skills)"
+                : activeSkill
+                  ? activeSkill.argHint
+                  : composerSelection
+                    ? `Message ${HARNESS_LABELS[composerSelection.harness]}… ( / for skills)`
+                    : "Ask the research agent… ( / for skills)"
             }
             rows={2}
             onPaste={onComposerPaste}
@@ -1634,8 +1702,30 @@ export function ChatPanel({
               addImageFiles(Array.from(e.dataTransfer.files));
             }}
             onChange={(e) => {
-              setDraft(e.target.value);
+              const v = e.target.value;
+              // Auto-convert a typed/pasted full `/name ` into the chip the
+              // moment the space lands. Known names only — unknown `/foo`
+              // stays plain text (server-side pass-through contract). Not
+              // while a question card is pending (its answer is a note, never
+              // skill-expanded) and not mid-IME-composition.
+              if (!activeSkill && !pendingQuestion && !composingRef.current) {
+                const m = v.match(/^\/(\S+)\s([\s\S]*)$/);
+                const hit = m && skills.find((s) => s.name === m[1].toLowerCase());
+                if (hit) {
+                  setActiveSkill(hit);
+                  setDraft(m[2]);
+                  setSkillMenuDismissed(false);
+                  return;
+                }
+              }
+              setDraft(v);
               setSkillMenuDismissed(false);
+            }}
+            onCompositionStart={() => {
+              composingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              composingRef.current = false;
             }}
             onKeyDown={(e) => {
               if (skillMenuOpen) {
@@ -1658,7 +1748,20 @@ export function ChatPanel({
                   return;
                 }
               }
-              if (e.key === "Enter" && !e.shiftKey) {
+              // Backspace at the very start pops the chip back into text.
+              // (Escape deliberately doesn't touch the chip — it's the
+              // stop-the-turn gesture, see the document listener above.)
+              if (
+                activeSkill &&
+                e.key === "Backspace" &&
+                e.currentTarget.selectionStart === 0 &&
+                e.currentTarget.selectionEnd === 0
+              ) {
+                e.preventDefault();
+                clearSkillChip();
+                return;
+              }
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 void send();
               }
@@ -1712,7 +1815,7 @@ export function ChatPanel({
                 title="Send"
                 aria-label="Send"
                 onClick={() => void send()}
-                disabled={!draft.trim() && attachments.length === 0}
+                disabled={!activeSkill && !draft.trim() && attachments.length === 0}
               >
                 <CornerDownLeft size={16} />
               </button>

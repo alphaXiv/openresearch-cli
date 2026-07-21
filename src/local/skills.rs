@@ -38,21 +38,6 @@ Then write the review:
 - End with a short "start here" reading list of the 3-5 most load-bearing papers.
 "#;
 
-const HF_TEMPLATE: &str = r#"Work with the Hugging Face Hub using the `hf` CLI.
-
-Task: {args}
-
-Setup — verify before anything else:
-1. `hf version` — if missing, install with `curl -LsSf https://hf.co/cli/install.sh | sh` (or `pip install -U "huggingface_hub[cli]"`), then re-check.
-2. `hf auth whoami` — HF_TOKEN is usually already in the environment (synced from the orx up settings). If unauthenticated, ask the user to add their token in the orx up settings (Hugging Face section) or run `hf auth login`.
-
-Using the CLI:
-- Discover flags with `hf --help` and `hf <command> --help`; don't guess.
-- Key families: `hf download` / `hf upload` (models, datasets, spaces), `hf jobs` (run compute on HF infra), `hf repo` (create/manage repos), `hf cache` (inspect/clean local cache).
-- Prefer `--repo-type dataset|space` flags over guessing repo id formats.
-- For anything destructive (deleting repos/files, overwriting), confirm with the user first.
-"#;
-
 const ICML_REPRO_TEMPLATE: &str = r#"Reproduce an ICML 2026 paper for the agent reproduction challenge and publish a Trackio logbook.
 
 Paper: {args}
@@ -235,13 +220,6 @@ pub const CATALOG: &[Skill] = &[
         no_args: "(none given — ask the user what topic to review before searching)",
     },
     Skill {
-        name: "hf",
-        description: "Hugging Face Hub via the hf CLI (installs it if missing)",
-        arg_hint: "<task>",
-        template: HF_TEMPLATE,
-        no_args: "(none given — ask the user what they want to do on the Hugging Face Hub)",
-    },
-    Skill {
         name: "icml-repro",
         description: "Reproduce an ICML 2026 paper and publish a Trackio logbook",
         arg_hint: "<paper title> (OpenReview <id>)",
@@ -251,9 +229,9 @@ pub const CATALOG: &[Skill] = &[
     Skill {
         name: "reproduce-paper",
         description: "Reproduce a paper claim by claim on compute you specify",
-        arg_hint: "<paper> on <compute>",
+        arg_hint: "[<paper> on <compute>]",
         template: REPRODUCE_PAPER_TEMPLATE,
-        no_args: "(none given — ask the user which paper to reproduce and what compute to run on)",
+        no_args: "(none given — infer the paper from the current repository: read the README, docs, and code, and if the repo clearly corresponds to an identifiable paper, reproduce that one; only ask the user if no paper can be identified. For compute, use the default target configured in orx up Settings → Compute when one is set, per the rules below; otherwise ask before launching.)",
     },
     Skill {
         name: "paper-to-marimo",
@@ -292,15 +270,6 @@ mod tests {
     fn expands_bare_invocation_to_ask() {
         let out = expand("/lit-review").unwrap();
         assert!(out.contains("ask the user"));
-    }
-
-    #[test]
-    fn expands_hf_skill() {
-        let out = expand("/hf download llama-3 weights").unwrap();
-        assert!(out.contains("Task: download llama-3 weights"));
-        assert!(out.contains("hf version"));
-        let bare = expand("/hf").unwrap();
-        assert!(bare.contains("ask the user"));
     }
 
     #[test]
@@ -345,7 +314,9 @@ mod tests {
         assert!(out.contains("marimo edit <notebook.py>"));
         assert!(out.contains("Never change repository visibility without explicit authorization"));
         assert!(!out.contains("trackio"));
-        assert!(expand("/reproduce-paper").unwrap().contains("ask the user"));
+        let bare = expand("/reproduce-paper").unwrap();
+        assert!(bare.contains("infer the paper from the current repository"));
+        assert!(bare.contains("only ask the user if no paper can be identified"));
     }
 
     #[test]
