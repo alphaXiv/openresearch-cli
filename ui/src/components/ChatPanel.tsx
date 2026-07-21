@@ -1658,11 +1658,11 @@ export function ChatPanel({
               ))}
             </div>
           )}
-          {pickedSkill && (
-            <div className="composer-skill">
+          <div className="composer-input">
+            {pickedSkill && (
               <button
                 type="button"
-                className="skill-chip"
+                className="skill-chip composer-chip"
                 title="Remove command (Backspace)"
                 // mousedown + preventDefault keeps the textarea focused (same
                 // trick as the skill menu rows).
@@ -1673,100 +1673,104 @@ export function ChatPanel({
               >
                 /{pickedSkill.name}
               </button>
-            </div>
-          )}
-          <textarea
-            ref={composerRef}
-            value={draft}
-            placeholder={
-              // A pending question card owns typed text (see send()); say so.
-              // With a chip active, the skill's arg hint says what to type.
-              // Otherwise follow `composerSelection` so the name tracks the
-              // picker for a new session and the open session once one exists.
-              pendingQuestion
-                ? "Type a custom answer…"
-                : pickedSkill
-                  ? pickedSkill.argHint
-                  : composerSelection
-                    ? `Message ${HARNESS_LABELS[composerSelection.harness]}… ( / for skills)`
-                    : "Ask the research agent… ( / for skills)"
-            }
-            rows={2}
-            onPaste={onComposerPaste}
-            onDragOver={(e) => {
-              if (e.dataTransfer.types.includes("Files")) e.preventDefault();
-            }}
-            onDrop={(e) => {
-              if (e.dataTransfer.files.length === 0) return;
-              e.preventDefault();
-              addImageFiles(Array.from(e.dataTransfer.files));
-            }}
-            onChange={(e) => {
-              const v = e.target.value;
-              // Auto-convert a typed/pasted full `/name ` into the chip the
-              // moment the space lands. Known names only — unknown `/foo`
-              // stays plain text (server-side pass-through contract). Not
-              // while a question card is pending (its answer is a note, never
-              // skill-expanded) and not mid-IME-composition.
-              if (!pickedSkill && !pendingQuestion && !composingRef.current) {
-                const m = v.match(/^\/(\S+)\s([\s\S]*)$/);
-                const hit = m && skills.find((s) => s.name === m[1].toLowerCase());
-                if (hit) {
-                  setPickedSkill(hit);
-                  setDraft(m[2]);
-                  setSkillMenuDismissed(false);
-                  return;
-                }
+            )}
+            <textarea
+              ref={composerRef}
+              value={draft}
+              placeholder={
+                // A pending question card owns typed text (see send()); say so.
+                // With a chip active, the skill's arg hint says what to type —
+                // and when the project already has a paper attached,
+                // /reproduce-paper defaults to it, so say the args are optional.
+                // Otherwise follow `composerSelection` so the name tracks the
+                // picker for a new session and the open session once one exists.
+                pendingQuestion
+                  ? "Type a custom answer…"
+                  : pickedSkill
+                    ? pickedSkill.name === "reproduce-paper" && paperId
+                      ? `Optional — defaults to the attached paper (${paperId})`
+                      : pickedSkill.argHint
+                    : composerSelection
+                      ? `Message ${HARNESS_LABELS[composerSelection.harness]}… ( / for skills)`
+                      : "Ask the research agent… ( / for skills)"
               }
-              setDraft(v);
-              setSkillMenuDismissed(false);
-            }}
-            onCompositionStart={() => {
-              composingRef.current = true;
-            }}
-            onCompositionEnd={() => {
-              composingRef.current = false;
-            }}
-            onKeyDown={(e) => {
-              if (skillMenuOpen) {
-                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                  e.preventDefault();
-                  const delta = e.key === "ArrowDown" ? 1 : -1;
-                  setSkillIdx(
-                    (activeSkillIdx + delta + skillMatches.length) % skillMatches.length,
-                  );
-                  return;
-                }
-                if (e.key === "Enter" || e.key === "Tab") {
-                  e.preventDefault();
-                  pickSkill(skillMatches[activeSkillIdx]);
-                  return;
-                }
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setSkillMenuDismissed(true);
-                  return;
-                }
-              }
-              // Backspace at the very start pops the chip back into text.
-              // (Escape deliberately doesn't touch the chip — it's the
-              // stop-the-turn gesture, see the document listener above.)
-              if (
-                pickedSkill &&
-                e.key === "Backspace" &&
-                e.currentTarget.selectionStart === 0 &&
-                e.currentTarget.selectionEnd === 0
-              ) {
+              rows={2}
+              onPaste={onComposerPaste}
+              onDragOver={(e) => {
+                if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+              }}
+              onDrop={(e) => {
+                if (e.dataTransfer.files.length === 0) return;
                 e.preventDefault();
-                clearSkillChip();
-                return;
-              }
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                void send();
-              }
-            }}
-          />
+                addImageFiles(Array.from(e.dataTransfer.files));
+              }}
+              onChange={(e) => {
+                const v = e.target.value;
+                // Auto-convert a typed/pasted full `/name ` into the chip the
+                // moment the space lands. Known names only — unknown `/foo`
+                // stays plain text (server-side pass-through contract). Not
+                // while a question card is pending (its answer is a note, never
+                // skill-expanded) and not mid-IME-composition.
+                if (!pickedSkill && !pendingQuestion && !composingRef.current) {
+                  const m = v.match(/^\/(\S+)\s([\s\S]*)$/);
+                  const hit = m && skills.find((s) => s.name === m[1].toLowerCase());
+                  if (hit) {
+                    setPickedSkill(hit);
+                    setDraft(m[2]);
+                    setSkillMenuDismissed(false);
+                    return;
+                  }
+                }
+                setDraft(v);
+                setSkillMenuDismissed(false);
+              }}
+              onCompositionStart={() => {
+                composingRef.current = true;
+              }}
+              onCompositionEnd={() => {
+                composingRef.current = false;
+              }}
+              onKeyDown={(e) => {
+                if (skillMenuOpen) {
+                  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                    e.preventDefault();
+                    const delta = e.key === "ArrowDown" ? 1 : -1;
+                    setSkillIdx(
+                      (activeSkillIdx + delta + skillMatches.length) % skillMatches.length,
+                    );
+                    return;
+                  }
+                  if (e.key === "Enter" || e.key === "Tab") {
+                    e.preventDefault();
+                    pickSkill(skillMatches[activeSkillIdx]);
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setSkillMenuDismissed(true);
+                    return;
+                  }
+                }
+                // Backspace at the very start pops the chip back into text.
+                // (Escape deliberately doesn't touch the chip — it's the
+                // stop-the-turn gesture, see the document listener above.)
+                if (
+                  pickedSkill &&
+                  e.key === "Backspace" &&
+                  e.currentTarget.selectionStart === 0 &&
+                  e.currentTarget.selectionEnd === 0
+                ) {
+                  e.preventDefault();
+                  clearSkillChip();
+                  return;
+                }
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  void send();
+                }
+              }}
+            />
+          </div>
           <div className="composer-actions">
             {/* Bottom-left: permission mode. */}
             <OptionPicker

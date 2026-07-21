@@ -3542,14 +3542,23 @@ a.files-pill:hover {
   border: 1px solid var(--border-variant);
   border-radius: var(--radius-sm);
 }
-.composer-skill {
+/* Chip + textarea share one row, Claude-desktop style: the chip sits inline
+   at the start of the input line and the args flow beside it. */
+.composer-input {
   display: flex;
-  padding: 8px 12px 0;
+  align-items: flex-start;
 }
-.composer-skill .skill-chip {
+.composer-input textarea {
+  flex: 1;
+}
+.composer-chip {
   cursor: pointer;
+  /* Line the chip up with the textarea's first text line (10px top padding,
+     --fs-md text) despite the chip's smaller --fs-sm body. */
+  margin: 9px 0 0 12px;
+  flex-shrink: 0;
 }
-.composer-skill .skill-chip:hover {
+.composer-chip:hover {
   border-color: var(--primary);
 }
 .msg-user .skill-chip {
