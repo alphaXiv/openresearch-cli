@@ -1359,6 +1359,17 @@ textarea::placeholder {
   border-radius: var(--radius-xs);
   padding: 1px 5px;
 }
+/* KaTeX math — tame the library's 1.21em default so formulas sit at body
+   size, and let wide display equations scroll instead of overflowing. */
+.md .katex {
+  font-size: 1.05em;
+}
+.md .katex-display {
+  margin: 12px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
 /* File mention chip — reads as clickable inline code (thin border, panel
    fill, mono), matching openresearch.sh's FileMention. */
 .md .file-chip {
