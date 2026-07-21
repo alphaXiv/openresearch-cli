@@ -922,10 +922,27 @@ export function ChatPanel({
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [skillIdx, setSkillIdx] = useState(0);
   const [skillMenuDismissed, setSkillMenuDismissed] = useState(false);
-  // A picked skill renders as a chip above the textarea (Claude-desktop style);
-  // the textarea then holds only the args. send() reassembles `/name args`, so
-  // the wire and transcript keep the plain-text form.
+  // A picked skill renders as a chip on the textarea's first line
+  // (Claude-desktop style); the textarea then holds only the args. send()
+  // reassembles `/name args`, so the wire and transcript keep the plain-text
+  // form. The chip overlays the textarea and the first line is indented past
+  // it (text-indent), so long args wrap full-width beneath the chip instead
+  // of being squeezed into a narrower column.
   const [pickedSkill, setPickedSkill] = useState<SkillInfo | null>(null);
+  const chipRef = useRef<HTMLButtonElement>(null);
+  const [chipIndent, setChipIndent] = useState(0);
+  useLayoutEffect(() => {
+    setChipIndent(pickedSkill && chipRef.current ? chipRef.current.offsetWidth + 8 : 0);
+    syncChipScroll();
+  }, [pickedSkill]);
+
+  /** The chip belongs to the first line of *content*, so when the textarea
+   * scrolls it must ride along (and clip at the wrapper) instead of sitting
+   * fixed over whatever line scrolled to the top. */
+  function syncChipScroll() {
+    if (chipRef.current)
+      chipRef.current.style.transform = `translateY(${-(composerRef.current?.scrollTop ?? 0)}px)`;
+  }
   // IME guard: mid-composition text can transiently look like a full command.
   const composingRef = useRef(false);
   useEffect(() => {
@@ -1662,6 +1679,7 @@ export function ChatPanel({
             {pickedSkill && (
               <button
                 type="button"
+                ref={chipRef}
                 className="skill-chip composer-chip"
                 title="Remove command (Backspace)"
                 // mousedown + preventDefault keeps the textarea focused (same
@@ -1677,6 +1695,8 @@ export function ChatPanel({
             <textarea
               ref={composerRef}
               value={draft}
+              style={pickedSkill ? { textIndent: chipIndent } : undefined}
+              onScroll={syncChipScroll}
               placeholder={
                 // A pending question card owns typed text (see send()); say so.
                 // With a chip active, the skill's arg hint says what to type —

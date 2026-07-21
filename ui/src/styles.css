@@ -3542,21 +3542,26 @@ a.files-pill:hover {
   border: 1px solid var(--border-variant);
   border-radius: var(--radius-sm);
 }
-/* Chip + textarea share one row, Claude-desktop style: the chip sits inline
-   at the start of the input line and the args flow beside it. */
+/* The chip overlays the textarea's first line, Claude-desktop style; the
+   textarea's first line is indented past it (inline text-indent, measured
+   from the chip's width), so wrapped args flow full-width beneath the chip. */
 .composer-input {
+  position: relative;
   display: flex;
-  align-items: flex-start;
+  /* Clips the chip once the textarea scrolls it out of the first line. */
+  overflow: hidden;
 }
 .composer-input textarea {
   flex: 1;
 }
 .composer-chip {
   cursor: pointer;
-  /* Line the chip up with the textarea's first text line (10px top padding,
-     --fs-md text) despite the chip's smaller --fs-sm body. */
-  margin: 9px 0 0 12px;
-  flex-shrink: 0;
+  position: absolute;
+  /* Sit on the textarea's first text line (10px top padding, --fs-md text)
+     despite the chip's smaller --fs-sm body. */
+  top: 9px;
+  left: 12px;
+  z-index: 1;
 }
 .composer-chip:hover {
   border-color: var(--primary);
