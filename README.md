@@ -2,11 +2,14 @@
 
 **Run autoresearch on your machine.**
 
-- **Run research agents in parallel** — one per research direction
+- **Run research agents in parallel**. Spins up agents in different worktrees
+  so you can investigate several different directions at once.
 - **Works with Claude Code, Codex, and OpenCode**
-- **Launches experiments on your compute** — or on managed GPUs
-- **Give it a goal** — it proposes, runs, and analyzes experiments
-- **Local and private** — everything runs on your machine
+- **Bring your own compute**. Works with SSH, Slurm, Kubernetes, Modal,
+  HuggingFace and more.
+- **Give it a goal**. Can run the entire autoresearch loop from literature
+  review to experiment analysis.
+- **Local and private**. Your code and your data stays on your machine.
 
 https://github.com/user-attachments/assets/33b62182-0795-490d-9366-0fb0b4bd49fd
 
