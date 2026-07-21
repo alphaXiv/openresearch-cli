@@ -3528,6 +3528,47 @@ a.files-pill:hover {
   color: var(--subtext);
 }
 
+/* Command chip — the picked slash-skill, rendered as a unit in the composer
+   (removable) and echoed in sent user bubbles (inert). */
+.skill-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--primary);
+  background: var(--primary-subtle);
+  border: 1px solid var(--border-variant);
+  border-radius: var(--radius-sm);
+}
+/* The chip overlays the textarea's first line, Claude-desktop style; the
+   textarea's first line is indented past it (inline text-indent, measured
+   from the chip's width), so wrapped args flow full-width beneath the chip. */
+.composer-input {
+  position: relative;
+  display: flex;
+  /* Clips the chip once the textarea scrolls it out of the first line. */
+  overflow: hidden;
+}
+.composer-input textarea {
+  flex: 1;
+}
+.composer-chip {
+  position: absolute;
+  /* Sit on the textarea's first text line (10px top padding, --fs-md text)
+     despite the chip's smaller --fs-sm body. */
+  top: 9px;
+  left: 12px;
+  z-index: 1;
+  /* Inert like inline text — clicks land in the textarea underneath. */
+  pointer-events: none;
+}
+.msg-user .skill-chip {
+  margin-right: 2px;
+  vertical-align: baseline;
+}
+
 /* --- file viewer (right-pane tab opened from chat tool rows) ------------- */
 
 

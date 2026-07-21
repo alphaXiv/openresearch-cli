@@ -9,7 +9,7 @@
 pub struct Skill {
     pub name: &'static str,
     pub description: &'static str,
-    /// Shown greyed-out in the picker after the name (e.g. "<topic>").
+    /// Shown greyed-out in the picker after the name (e.g. "[topic]").
     pub arg_hint: &'static str,
     pub template: &'static str,
     /// Substituted for `{args}` when the user gives none.
@@ -38,21 +38,6 @@ Then write the review:
 - End with a short "start here" reading list of the 3-5 most load-bearing papers.
 "#;
 
-const HF_TEMPLATE: &str = r#"Work with the Hugging Face Hub using the `hf` CLI.
-
-Task: {args}
-
-Setup — verify before anything else:
-1. `hf version` — if missing, install with `curl -LsSf https://hf.co/cli/install.sh | sh` (or `pip install -U "huggingface_hub[cli]"`), then re-check.
-2. `hf auth whoami` — HF_TOKEN is usually already in the environment (synced from the orx up settings). If unauthenticated, ask the user to add their token in the orx up settings (Hugging Face section) or run `hf auth login`.
-
-Using the CLI:
-- Discover flags with `hf --help` and `hf <command> --help`; don't guess.
-- Key families: `hf download` / `hf upload` (models, datasets, spaces), `hf jobs` (run compute on HF infra), `hf repo` (create/manage repos), `hf cache` (inspect/clean local cache).
-- Prefer `--repo-type dataset|space` flags over guessing repo id formats.
-- For anything destructive (deleting repos/files, overwriting), confirm with the user first.
-"#;
-
 const ICML_REPRO_TEMPLATE: &str = r#"Reproduce an ICML 2026 paper for the agent reproduction challenge and publish a Trackio logbook.
 
 Paper: {args}
@@ -76,7 +61,7 @@ Paper and compute: {args}
 
 Before running anything:
 1. Confirm the compute. The user should name where runs execute — an `~/.ssh/config` host alias (`orx exp run --backend ssh --host <alias>`, configurable in orx up Settings → Compute), another `orx` backend (`hf`, `modal`, `k8s` with a `--flavor`), or the local machine. If unspecified, use the default compute target configured in orx up Settings → Compute when one is set (omit `--backend` to launch there); otherwise ask before launching anything.
-2. Read the paper. If it's on alphaXiv, `orx paper <id>` gives a structured report (`--full` for raw text); `orx lit "<query>"` can find it. Otherwise ask the user for a PDF or link.
+2. Read the paper. If the args name no paper, infer it from the current repository — read the README, docs, and code, and if the repo clearly corresponds to an identifiable paper, reproduce that one; only ask the user if none can be identified. If it's on alphaXiv, `orx paper <id>` gives a structured report (`--full` for raw text); `orx lit "<query>"` can find it. Otherwise ask the user for a PDF or link.
 3. Plan to the user's compute window. When the caller supplies an absolute deadline and available accelerator capacity, treat both as authoritative: keep the available GPUs occupied with scientifically useful parallel variants, seeds, ablations, controls, or profiling runs; refill freed capacity after each completion; and stop early when the target claims are adequately evaluated. Interpret capacity by total GPUs across in-flight runs, not by raw run count. Do not invent or maintain a GPU-hour ledger unless the user explicitly asks for one. For vague small-budget language such as "for a little bit," prefer published-checkpoint evaluation and targeted checks. Larger windows may support broader sweeps, added seeds, fine-tuning, or retraining, but they make training eligible, not mandatory.
 4. Optional tracking: if the user wants metrics logged, prefer Weights & Biases — check `wandb login` / `WANDB_API_KEY` and log each run to a project named after the paper. Don't require it.
 
@@ -120,7 +105,7 @@ The final deliverable is:
 Before running anything:
 1. Inspect the project with `orx projects`, `orx runs <project-id>`, `git branch -a`, and relevant `orx exp desc <experiment-id>` entries so you extend existing work instead of duplicating it.
 2. Confirm the compute if the user did not specify it: the default compute target from orx up Settings → Compute when one is set (omit `--backend` to launch there), or an explicit backend — `hf` or `modal` with a flavor, `k8s` with a committed manifest, or `ssh` with a host alias. Formal reproduction runs must use `orx exp run`; molab's GPU is for the notebook's short teaching experiment, not untracked reproduction runs.
-3. Read the paper. For alphaXiv papers use `orx paper <id>` and use `--full` when the structured report omits an important detail. Use `orx lit "<query>"` to locate related work or public implementations.
+3. Read the paper. If the args name no paper, infer it from the current repository — read the README, docs, and code, and if the repo clearly corresponds to an identifiable paper, use that one; only ask the user if none can be identified. For alphaXiv papers use `orx paper <id>` and use `--full` when the structured report omits an important detail. Use `orx lit "<query>"` to locate related work or public implementations.
 4. Enumerate the main empirical claims, prioritizing the headline table or figure. Unless the user asks for broader coverage, select the single claim that makes the clearest illustrative tutorial.
 5. Inspect repository visibility and history before publication. Molab's GitHub opener requires a public repository. If the repository is private and the user has not already authorized a visibility change, explain this requirement, ask permission to make it public, and stop until the user approves. After approval, scan the complete Git history for credentials or private artifacts, change visibility with `gh`, and continue the workflow; do not make the user perform the change manually.
 
@@ -230,37 +215,30 @@ pub const CATALOG: &[Skill] = &[
     Skill {
         name: "lit-review",
         description: "Multi-hop literature review via alphaXiv search",
-        arg_hint: "<topic>",
+        arg_hint: "[topic]",
         template: LIT_REVIEW_TEMPLATE,
         no_args: "(none given — ask the user what topic to review before searching)",
     },
     Skill {
-        name: "hf",
-        description: "Hugging Face Hub via the hf CLI (installs it if missing)",
-        arg_hint: "<task>",
-        template: HF_TEMPLATE,
-        no_args: "(none given — ask the user what they want to do on the Hugging Face Hub)",
-    },
-    Skill {
         name: "icml-repro",
         description: "Reproduce an ICML 2026 paper and publish a Trackio logbook",
-        arg_hint: "<paper title> (OpenReview <id>)",
+        arg_hint: "[paper title (OpenReview id)]",
         template: ICML_REPRO_TEMPLATE,
         no_args: "(none given — ask the user which ICML 2026 paper to reproduce: title plus OpenReview ID)",
     },
     Skill {
         name: "reproduce-paper",
         description: "Reproduce a paper claim by claim on compute you specify",
-        arg_hint: "<paper> on <compute>",
+        arg_hint: "[paper] on [compute]",
         template: REPRODUCE_PAPER_TEMPLATE,
-        no_args: "(none given — ask the user which paper to reproduce and what compute to run on)",
+        no_args: "(none given — infer the paper from the current repository: read the README, docs, and code, and if the repo clearly corresponds to an identifiable paper, reproduce that one; only ask the user if no paper can be identified. For compute, use the default target configured in orx up Settings → Compute when one is set, per the rules below; otherwise ask before launching.)",
     },
     Skill {
         name: "paper-to-marimo",
         description: "Reproduce a paper and publish an interactive molab tutorial",
-        arg_hint: "<paper> on <compute>",
+        arg_hint: "[paper] on [compute]",
         template: PAPER_TO_MARIMO_TEMPLATE,
-        no_args: "(none given — ask the user which paper to reproduce and what compute to run on)",
+        no_args: "(none given — infer the paper from the current repository: read the README, docs, and code, and if the repo clearly corresponds to an identifiable paper, use that one; only ask the user if no paper can be identified. For compute, use the default target configured in orx up Settings → Compute when one is set, per the rules below; otherwise ask before launching.)",
     },
 ];
 
@@ -292,15 +270,6 @@ mod tests {
     fn expands_bare_invocation_to_ask() {
         let out = expand("/lit-review").unwrap();
         assert!(out.contains("ask the user"));
-    }
-
-    #[test]
-    fn expands_hf_skill() {
-        let out = expand("/hf download llama-3 weights").unwrap();
-        assert!(out.contains("Task: download llama-3 weights"));
-        assert!(out.contains("hf version"));
-        let bare = expand("/hf").unwrap();
-        assert!(bare.contains("ask the user"));
     }
 
     #[test]
@@ -345,7 +314,9 @@ mod tests {
         assert!(out.contains("marimo edit <notebook.py>"));
         assert!(out.contains("Never change repository visibility without explicit authorization"));
         assert!(!out.contains("trackio"));
-        assert!(expand("/reproduce-paper").unwrap().contains("ask the user"));
+        let bare = expand("/reproduce-paper").unwrap();
+        assert!(bare.contains("infer the paper from the current repository"));
+        assert!(bare.contains("only ask the user if no paper can be identified"));
     }
 
     #[test]
@@ -372,7 +343,9 @@ mod tests {
         assert!(out.contains("Not run as an experiment (publication surface)"));
         assert!(out.contains("every reader-facing report on `main`"));
         assert!(out.contains("not considered published"));
-        assert!(expand("/paper-to-marimo").unwrap().contains("ask the user"));
+        let bare = expand("/paper-to-marimo").unwrap();
+        assert!(bare.contains("infer the paper from the current repository"));
+        assert!(bare.contains("only ask the user if no paper can be identified"));
     }
 
     #[test]
