@@ -1,11 +1,22 @@
 # OpenResearch CLI (`orx`)
 
-**Run autoresearch on your machine.**
+> [!IMPORTANT]
+> If you are an OpenResearch user or someone who is interested in autoresearch,
+> we'd love to chat with you. Please email
+> [contact@alphaxiv.org](mailto:contact@alphaxiv.org) if interested.
 
-`orx up` starts a local dashboard where you give each research direction its
-own agent. Agents work in parallel in isolated git worktrees, propose and edit
-experiments, launch runs on GPU compute, and analyze the results — using your
-existing tools, accounts, and compute.
+### Run autoresearch on your machine
+
+- **Run research agents in parallel**. Spins up agents in different worktrees
+  so you can investigate several different directions at once.
+- **Works with Claude Code, Codex, and OpenCode**
+- **Bring your own compute**. Works with SSH, Slurm, Kubernetes, Modal,
+  HuggingFace and more.
+- **Give it a goal**. Can run the entire autoresearch loop from literature
+  review to experiment analysis.
+- **Local and private**. Your code and your data stays on your machine.
+
+https://github.com/user-attachments/assets/33b62182-0795-490d-9366-0fb0b4bd49fd
 
 ## Quick start
 
