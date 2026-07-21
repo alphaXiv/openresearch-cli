@@ -1688,15 +1688,17 @@ export function ChatPanel({
               placeholder={
                 // A pending question card owns typed text (see send()); say so.
                 // With a chip active, the skill's arg hint says what to type —
-                // and when the project already has a paper attached,
-                // /reproduce-paper defaults to it, so say the args are optional.
+                // and when the project already has a paper attached, the paper
+                // part of the paper-reproduction skills defaults to it, so mark
+                // just that part optional (compute is still expected).
                 // Otherwise follow `composerSelection` so the name tracks the
                 // picker for a new session and the open session once one exists.
                 pendingQuestion
                   ? "Type a custom answer…"
                   : pickedSkill
-                    ? pickedSkill.name === "reproduce-paper" && paperId
-                      ? `Optional — defaults to the attached paper (${paperId})`
+                    ? ["reproduce-paper", "paper-to-marimo"].includes(pickedSkill.name) &&
+                      paperId
+                      ? `[paper — optional, defaults to ${paperId}] on [compute]`
                       : pickedSkill.argHint
                     : composerSelection
                       ? `Message ${HARNESS_LABELS[composerSelection.harness]}… ( / for skills)`
