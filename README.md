@@ -1,5 +1,10 @@
 # OpenResearch CLI (`orx`)
 
+> [!IMPORTANT]
+> If you are an OpenResearch user or someone who is interested in autoresearch,
+> we'd love to chat with you. Please email
+> [contact@alphaxiv.org](mailto:contact@alphaxiv.org) if interested.
+
 **Run autoresearch on your machine.**
 
 - **Run research agents in parallel**. Spins up agents in different worktrees
