@@ -695,9 +695,121 @@ fn apply_item(ctx: &mut TurnCtx, item: &Value, completed: bool) {
                 ctx.upsert_part(WirePart::text(part_id, text));
             }
         }
-        // userMessage (our own echo), mcpToolCall, webSearch, …: not rendered
-        // (parity with the exec path); unknown types tolerated.
-        _ => {}
+        Some("webSearch") => {
+            // No status field on webSearch — it only fails if the whole turn
+            // errors. The tool name "WebSearch" matches the UI's case.
+            // `query` is empty for non-search actions (openPage, findInPage);
+            // the `action` union carries the url/pattern, so its fields are
+            // merged into the input for the UI to label the row.
+            let query = item.get("query").and_then(Value::as_str).unwrap_or("");
+            let mut input = item
+                .get("action")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            if !query.is_empty() || !input.contains_key("query") {
+                input.insert("query".into(), Value::String(query.to_string()));
+            }
+            ctx.upsert_part(tool_part(
+                id,
+                "WebSearch",
+                tool_status(completed, false),
+                Some(Value::Object(input)),
+                None,
+            ));
+        }
+        Some("mcpToolCall") => {
+            let status = item.get("status").and_then(Value::as_str);
+            let failed = completed && status != Some("completed");
+            let server = item.get("server").and_then(Value::as_str).unwrap_or("");
+            let tool = item.get("tool").and_then(Value::as_str).unwrap_or("");
+            let name = if server.is_empty() && tool.is_empty() {
+                "mcp".to_string()
+            } else {
+                format!("{server}:{tool}")
+            };
+            let input = serde_json::json!({
+                "arguments": item.get("arguments").cloned().unwrap_or(Value::Null),
+            });
+            // Prefer the error (when failed) then the result (when completed).
+            let output = if failed {
+                item.get("error").map(value_to_pretty)
+            } else if completed {
+                item.get("result").map(value_to_pretty)
+            } else {
+                None
+            };
+            ctx.upsert_part(tool_part(
+                id,
+                &name,
+                tool_status(completed, failed),
+                Some(input),
+                output,
+            ));
+        }
+        Some("dynamicToolCall") => {
+            let status = item.get("status").and_then(Value::as_str);
+            let success = item.get("success").and_then(Value::as_bool);
+            let failed = completed && (status != Some("completed") || success == Some(false));
+            let tool = item.get("tool").and_then(Value::as_str).unwrap_or("tool");
+            let name = match item.get("namespace").and_then(Value::as_str) {
+                Some(ns) if !ns.is_empty() => format!("{ns}:{tool}"),
+                _ => tool.to_string(),
+            };
+            let input = serde_json::json!({
+                "arguments": item.get("arguments").cloned().unwrap_or(Value::Null),
+            });
+            let output = item.get("contentItems").map(value_to_pretty);
+            ctx.upsert_part(tool_part(
+                id,
+                &name,
+                tool_status(completed, failed),
+                Some(input),
+                output,
+            ));
+        }
+        // userMessage / hookPrompt echo *input* (the user's own message / the
+        // hook-injected prompt fragments), not model activity — rendering them
+        // would duplicate the user bubble.
+        Some("userMessage") | Some("hookPrompt") => {}
+        // Generic fallback so nothing is silently swallowed: any other item
+        // type (collabAgentToolCall, subAgentActivity, imageView, sleep,
+        // imageGeneration, review mode, contextCompaction, or a future
+        // protocol addition) renders as a tool part named after its raw type.
+        other => {
+            let tool = other.unwrap_or("item");
+            let status = item.get("status").and_then(Value::as_str);
+            // Positive `== failed` (not `!= completed`) so status-less types
+            // like contextCompaction render completed, not error.
+            let failed = status == Some("failed");
+            // Input = the item object minus `id`/`type`; None when nothing left.
+            let input = item
+                .as_object()
+                .map(|obj| {
+                    let mut map = obj.clone();
+                    map.remove("id");
+                    map.remove("type");
+                    map
+                })
+                .filter(|m| !m.is_empty())
+                .map(Value::Object);
+            ctx.upsert_part(tool_part(
+                id,
+                tool,
+                tool_status(completed, failed),
+                input,
+                None,
+            ));
+        }
+    }
+}
+
+/// Pretty-print a wire value: pass strings through verbatim, JSON-pretty the
+/// rest. Used for MCP/dynamic tool results and errors.
+fn value_to_pretty(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        other => serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string()),
     }
 }
 
@@ -1896,6 +2008,100 @@ mod tests {
             parts[2].text.as_deref(),
             Some("Command was not run because the required escalation was rejected.")
         );
+    }
+
+    /// Every tool-flavored ThreadItem — web search, MCP, dynamic tool call —
+    /// plus the generic fallback for unknown types render as tool parts;
+    /// input echoes (userMessage / hookPrompt) render nothing.
+    #[test]
+    fn tool_items_render_as_tool_parts() {
+        let transcript = [
+            r#"{"method":"turn/started","params":{"threadId":"t1","turn":{"id":"turn1","status":"inProgress"}}}"#,
+            // Input echoes — must not produce parts.
+            r#"{"method":"item/started","params":{"item":{"type":"userMessage","id":"u1","content":"hi"},"threadId":"t1","turnId":"turn1"}}"#,
+            r#"{"method":"item/completed","params":{"item":{"type":"hookPrompt","id":"h1","fragments":["x"]},"threadId":"t1","turnId":"turn1"}}"#,
+            // Web search: query streams empty, then the final query lands.
+            r#"{"method":"item/started","params":{"item":{"type":"webSearch","id":"ws1","query":""},"threadId":"t1","turnId":"turn1"}}"#,
+            r#"{"method":"item/completed","params":{"item":{"type":"webSearch","id":"ws1","query":"rotary embeddings","action":{"type":"search","query":"rotary embeddings"}},"threadId":"t1","turnId":"turn1"}}"#,
+            // Web-tool openPage action: empty query, url in the action.
+            r#"{"method":"item/completed","params":{"item":{"type":"webSearch","id":"ws2","query":"","action":{"type":"openPage","url":"https://example.com/post"}},"threadId":"t1","turnId":"turn1"}}"#,
+            // MCP tool call that succeeds.
+            r#"{"method":"item/started","params":{"item":{"type":"mcpToolCall","id":"mcp1","server":"fs","tool":"read","arguments":{"path":"a.txt"},"status":"inProgress"},"threadId":"t1","turnId":"turn1"}}"#,
+            r#"{"method":"item/completed","params":{"item":{"type":"mcpToolCall","id":"mcp1","server":"fs","tool":"read","arguments":{"path":"a.txt"},"status":"completed","result":{"text":"file body"}},"threadId":"t1","turnId":"turn1"}}"#,
+            // MCP tool call that fails.
+            r#"{"method":"item/completed","params":{"item":{"type":"mcpToolCall","id":"mcp2","server":"fs","tool":"write","arguments":{},"status":"failed","error":"permission denied"},"threadId":"t1","turnId":"turn1"}}"#,
+            // Dynamic tool call reporting success:false.
+            r#"{"method":"item/completed","params":{"item":{"type":"dynamicToolCall","id":"dyn1","tool":"lookup","namespace":"web","arguments":{"q":"x"},"status":"completed","success":false},"threadId":"t1","turnId":"turn1"}}"#,
+            // Unknown future type: running → completed, with an extra field.
+            r#"{"method":"item/started","params":{"item":{"type":"futureThing","id":"ft1","status":"inProgress","payload":"abc"},"threadId":"t1","turnId":"turn1"}}"#,
+            r#"{"method":"item/completed","params":{"item":{"type":"futureThing","id":"ft1","status":"completed","payload":"abc"},"threadId":"t1","turnId":"turn1"}}"#,
+            // contextCompaction: no status field, no residual fields.
+            r#"{"method":"item/completed","params":{"item":{"type":"contextCompaction","id":"cc1"},"threadId":"t1","turnId":"turn1"}}"#,
+            r#"{"method":"turn/completed","params":{"threadId":"t1","turn":{"id":"turn1","status":"completed"}}}"#,
+        ];
+
+        let mut ctx = TurnCtx::test_stub();
+        let mut ended = None;
+        for line in transcript {
+            match crate::local::codex::classify_line(line) {
+                crate::local::codex::Line::Notification { method, params } => {
+                    if let Some(end) = apply_notification(&mut ctx, &method, &params) {
+                        ended = Some(end);
+                        break;
+                    }
+                }
+                other => panic!("fixture line classified unexpectedly: {other:?}"),
+            }
+        }
+        assert!(matches!(ended, Some(TurnEnd::Done { interrupted: false })));
+
+        let parts = &ctx.assistant.parts;
+        // ws1, ws2, mcp1, mcp2, dyn1, ft1, cc1 — the two input echoes drop.
+        assert_eq!(parts.len(), 7, "one part per tool item: {parts:?}");
+        assert!(parts.iter().all(|p| p.kind == "tool"));
+
+        // WebSearch: final query wins over the empty streamed one.
+        assert_eq!(parts[0].tool.as_deref(), Some("WebSearch"));
+        let ws = parts[0].state.as_ref().unwrap();
+        assert_eq!(ws.status, "completed");
+        assert_eq!(ws.input.as_ref().unwrap()["query"], "rotary embeddings");
+
+        // openPage action: query stays empty, url merged from the action.
+        assert_eq!(parts[1].tool.as_deref(), Some("WebSearch"));
+        let ws2_input = parts[1].state.as_ref().unwrap().input.as_ref().unwrap();
+        assert_eq!(ws2_input["url"], "https://example.com/post");
+        assert_eq!(ws2_input["query"], "");
+
+        // MCP success: tool "server:tool", result in the output.
+        assert_eq!(parts[2].tool.as_deref(), Some("fs:read"));
+        let mcp1 = parts[2].state.as_ref().unwrap();
+        assert_eq!(mcp1.status, "completed");
+        assert!(mcp1.output.as_ref().unwrap().contains("file body"));
+
+        // MCP failure: error status, error text in the output.
+        assert_eq!(parts[3].tool.as_deref(), Some("fs:write"));
+        let mcp2 = parts[3].state.as_ref().unwrap();
+        assert_eq!(mcp2.status, "error");
+        assert_eq!(mcp2.output.as_deref(), Some("permission denied"));
+
+        // Dynamic tool call: success:false → error, name "namespace:tool".
+        assert_eq!(parts[4].tool.as_deref(), Some("web:lookup"));
+        assert_eq!(parts[4].state.as_ref().unwrap().status, "error");
+
+        // Unknown type: named after the raw type, running → completed, and the
+        // extra field is carried as input without id/type.
+        assert_eq!(parts[5].tool.as_deref(), Some("futureThing"));
+        let ft = parts[5].state.as_ref().unwrap();
+        assert_eq!(ft.status, "completed");
+        let ft_input = ft.input.as_ref().unwrap();
+        assert_eq!(ft_input["payload"], "abc");
+        assert!(ft_input.get("id").is_none() && ft_input.get("type").is_none());
+
+        // contextCompaction: no residual fields → no input, completed.
+        assert_eq!(parts[6].tool.as_deref(), Some("contextCompaction"));
+        let cc = parts[6].state.as_ref().unwrap();
+        assert_eq!(cc.status, "completed");
+        assert!(cc.input.is_none());
     }
 
     /// Foreign-turn tails (an aborted predecessor still streaming) are
