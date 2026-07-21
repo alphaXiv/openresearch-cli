@@ -2,18 +2,11 @@
 
 **Run autoresearch on your machine.**
 
-- **Research agents, in parallel** — `orx up` opens a local dashboard where
-  each research direction gets its own agent, working in an isolated git
-  worktree with your existing tools, accounts, and compute.
-- **Experiments as git branches** — every experiment is a runnable snapshot of
-  your code, measured against its baseline, so lineage stays explicit.
-- **Runs on your compute** — launch on Modal, Hugging Face Jobs, Kubernetes,
-  Slurm, any SSH box, your own machine, or OpenResearch managed GPUs, with
-  live logs, diffs, and W&B runs streaming into the dashboard.
-- **Autoresearch** — describe a goal and let the agent propose, launch, and
-  analyze experiments autonomously until it gets there.
-- **Private by default** — everything binds to loopback; nothing leaves your
-  machine except the compute and paper-search calls you initiate.
+- **Run research agents in parallel** — one per research direction
+- **Works with Claude Code, Codex, and OpenCode**
+- **Launches experiments on your compute** — or on managed GPUs
+- **Give it a goal** — it proposes, runs, and analyzes experiments
+- **Local and private** — everything runs on your machine
 
 https://github.com/user-attachments/assets/33b62182-0795-490d-9366-0fb0b4bd49fd
 
