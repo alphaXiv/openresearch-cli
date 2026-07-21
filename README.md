@@ -15,9 +15,7 @@
 - **Private by default** — everything binds to loopback; nothing leaves your
   machine except the compute and paper-search calls you initiate.
 
-<!-- TODO(video): replace the line below with the user-attachments URL GitHub
-generates when orx-demo-1080p.mp4 is dragged into a comment box on this PR. -->
-VIDEO_PLACEHOLDER_URL
+https://github.com/user-attachments/assets/33b62182-0795-490d-9366-0fb0b4bd49fd
 
 ## Quick start
 
