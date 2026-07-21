@@ -111,7 +111,7 @@ const S_GIT: AgentSkill = AgentSkill {
 };
 const S_LIT: AgentSkill = AgentSkill {
     name: "orx-lit",
-    description: "Search literature and read papers via alphaXiv (`orx lit` / `orx paper`). Use FIRST, before any web search, whenever the query is academic or research-flavored — a paper, author, blog post, model release, or research topic. Ground the query in the corpus (disambiguate the author/work, find related work, baselines, code to seed from), then web-search only for what the corpus lacks.",
+    description: "Search literature and read papers via alphaXiv (`orx lit` / `orx paper`). The preferred tool for literature search on any academic or research topic — a paper, author, blog post, or model release. Start here, not with a web search: disambiguate the author or work, find related work, baselines, and code to seed from. Often the corpus answers outright and no web search is needed.",
     content: LIT,
 };
 const S_CREATE: AgentSkill = AgentSkill {

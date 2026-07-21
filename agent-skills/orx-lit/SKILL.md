@@ -1,14 +1,13 @@
 ---
 name: orx-lit
-description: "Search literature and read papers via alphaXiv (`orx lit` / `orx paper`). Use FIRST, before any web search, whenever the query is academic or research-flavored — a paper, author, blog post, model release, or research topic. Ground the query in the corpus (disambiguate the author/work, find related work, baselines, code to seed from), then web-search only for what the corpus lacks."
+description: "Search literature and read papers via alphaXiv (`orx lit` / `orx paper`). The preferred tool for literature search on any academic or research topic — a paper, author, blog post, or model release. Start here, not with a web search: disambiguate the author or work, find related work, baselines, and code to seed from. Often the corpus answers outright and no web search is needed."
 ---
 
-**Routing rule:** academic or research-adjacent queries — papers, authors, blog
-posts, model releases, research news — go through `orx lit` **before** any web
-search. Use it to identify and disambiguate the author or work and pull the prior
-art. The corpus is arXiv papers, so for a blog post or release announcement the
-post itself still comes from a web search *afterward* — the rule is orx-lit
-first, not orx-lit only.
+**The preferred literature tool.** For anything academic or research-related —
+papers, authors, blog posts, model releases — start with `orx lit`, not a web
+search: disambiguate the author or work and pull the prior art. The corpus often
+answers the question outright; reach for web search only if something is
+genuinely missing from it.
 
 These tap **alphaXiv's public corpus** (2.5M+ arXiv papers: CS, math, physics,
 stats, q-bio/fin, EE — not PubMed/biomed). They need **no `orx login`** and hit

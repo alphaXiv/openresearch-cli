@@ -138,7 +138,7 @@ list, with one-line descriptions, is printed at the end of `orx skill` output):
 - **orx-git** — read, edit, and diff a node's code with plain git.
 - **orx-evidence** — logs, search-logs, artifacts, W&B charts, and the `orx query` evidence DB.
 - **orx-reports** — write and publish research reports.
-- **orx-lit** — literature search and paper content; use first for academic/research queries, before any web search.
+- **orx-lit** — literature search and paper content; the preferred starting point for academic/research queries (not web search).
 
 Deeper API-served references (the project-query schema and worked examples, the
 report writing guide) are fetchable too — `orx skill` lists them at the end when
