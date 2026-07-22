@@ -1462,14 +1462,19 @@ textarea::placeholder {
 .md a {
   color: var(--primary);
 }
+/* Same wide-table treatment as .report-md table: cells keep whole-word
+   min-content widths (see .md td below), so an over-wide table scrolls in
+   place instead of clipping at the pane edge. */
 .md table {
   border-collapse: collapse;
-  width: 100%;
+  display: block;
+  width: max-content;
+  max-width: 100%;
   font-size: var(--fs-md);
   margin: 10px 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  overflow: hidden;
+  overflow-x: auto;
 }
 .md th,
 .md td {
@@ -1477,6 +1482,11 @@ textarea::placeholder {
   padding: 8px 14px;
   text-align: left;
   color: var(--text);
+  /* .md's word-break: break-word shrinks cell min-content width to one
+     character, letting auto table layout split short words mid-word;
+     overflow-wrap keeps full-word min-content and only breaks overflow. */
+  word-break: normal;
+  overflow-wrap: break-word;
 }
 .md tr:last-child td {
   border-bottom: none;
