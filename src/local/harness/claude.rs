@@ -610,6 +610,10 @@ fn apply_event(ctx: &mut TurnCtx, state: &mut TurnState, event: &Value) -> bool 
         // when the complete `assistant` event arrives. Deltas build a part
         // under the same `{mid}-{index}` id that the final event upserts, so
         // the authoritative full text simply overwrites the accumulated one.
+        // That overwrite (and part ordering) leans on two stream-protocol
+        // invariants: the stream's message id equals the final assistant
+        // event's, and a block's `index` is its position in the final content
+        // array, with blocks streamed in ascending order.
         Some("stream_event") => {
             // A subagent's nested stream (parent_tool_use_id set) would
             // interleave its text into the transcript — main loop only.
