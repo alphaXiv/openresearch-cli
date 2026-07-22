@@ -11,7 +11,16 @@ import {
   SlidersHorizontal,
   X,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { Wordmark } from "./Wordmark";
 import {
   chatAttachmentUrl,
@@ -254,7 +263,13 @@ function toolLine(part: ChatPart): string {
 
 /** One expandable tool row inside a group: gray summary line, click to reveal
  * the input + output. */
-function ToolRow({ part, onOpenFile }: { part: ChatPart; onOpenFile?: (path: string) => void }) {
+const ToolRow = memo(function ToolRow({
+  part,
+  onOpenFile,
+}: {
+  part: ChatPart;
+  onOpenFile?: (path: string) => void;
+}) {
   const state = part.state;
   const output = state?.error || state?.output || "";
   const cmd = typeof state?.input?.command === "string" ? state.input.command : null;
@@ -287,12 +302,18 @@ function ToolRow({ part, onOpenFile }: { part: ChatPart; onOpenFile?: (path: str
       )}
     </details>
   );
-}
+});
 
 /** A run of consecutive tool calls, collapsed into one gray line like the
  * Claude desktop app ("Read hello.py" for one, "Used N tools" for several).
  * Clicking expands every row; a still-running tool auto-expands. */
-function ToolGroup({ parts, onOpenFile }: { parts: ChatPart[]; onOpenFile?: (path: string) => void }) {
+const ToolGroup = memo(function ToolGroup({
+  parts,
+  onOpenFile,
+}: {
+  parts: ChatPart[];
+  onOpenFile?: (path: string) => void;
+}) {
   const running = parts.some((p) => p.state?.status === "running");
   const errored = parts.some((p) => p.state?.status === "error");
   const [open, setOpen] = useState(false);
@@ -322,7 +343,7 @@ function ToolGroup({ parts, onOpenFile }: { parts: ChatPart[]; onOpenFile?: (pat
       )}
     </div>
   );
-}
+});
 
 /** Interactive card for a plan / permission / question prompt. Approving (or
  * answering) resumes the session. Once resolved, cards mirror Claude Code:
@@ -546,7 +567,13 @@ function messageHasVisibleContent(m: ChatMessage): boolean {
   });
 }
 
-function Message({
+/** Memoized: streaming re-broadcasts the whole updated message ~7x/sec, and
+ * `upsertMessage` preserves object identity for every untouched message — so
+ * only the message actually being streamed re-renders (and re-parses its
+ * markdown/KaTeX), not the entire transcript. Callback props must stay
+ * referentially stable for this to hold (see the useCallback/useMemo wiring
+ * in ChatPanel). */
+const Message = memo(function Message({
   message,
   onOpenFile,
   onRespond,
@@ -636,7 +663,7 @@ function Message({
   flushTools();
 
   return <div className="msg-assistant">{rendered}</div>;
-}
+});
 
 // --- session rail ------------------------------------------------------------
 
@@ -1174,11 +1201,23 @@ export function ChatPanel({
     if (!stillBusy || replaced) setRevising(null);
   }, [revising, pendingPlan, state.busySessions, activeId]);
 
-  // Plan opens are stamped with the session like file opens are.
-  const openPlan =
-    onOpenPlan && activeId
-      ? (plan: string, promptId: string) => onOpenPlan(plan, activeId, promptId)
-      : undefined;
+  // Plan opens are stamped with the session like file opens are. Memoized
+  // (along with openFileInSession and respond below) so the memoized Message
+  // rows don't all re-render on every streaming tick.
+  const openPlan = useMemo(
+    () =>
+      onOpenPlan && activeId
+        ? (plan: string, promptId: string) => onOpenPlan(plan, activeId, promptId)
+        : undefined,
+    [onOpenPlan, activeId],
+  );
+
+  // File opens resolve against the active session's worktree — the agent runs
+  // there, so that's where its paths point.
+  const openFileInSession = useMemo(
+    () => onOpenFile && ((path: string) => onOpenFile(path, activeId ?? undefined)),
+    [onOpenFile, activeId],
+  );
 
   // Drop any unsent composer tweak when switching sessions, so it never bleeds
   // from one session's pickers onto another's.
@@ -1369,41 +1408,45 @@ export function ChatPanel({
   }
 
   /** Deliver a card answer; resolves `false` when delivery failed (so a
-   * caller can e.g. restore a consumed draft). */
-  function respond(answer: PromptAnswer): Promise<boolean> {
-    if (!activeId) return Promise.resolve(false);
-    const sid = activeId;
-    // The resumed turn streams over SSE; optimistically mark busy.
-    dispatch({ type: "busy", sessionId: sid, busy: true });
-    return respondChat(sid, answer)
-      .then(() => true)
-      .catch(() => false)
-      .finally(() => {
-        // Reconcile with the store: if this tab's copy of the card was stale
-        // (e.g. the held turn timed out and resolved it while our SSE was
-        // dropped), the answer no-ops server-side and nothing re-broadcasts —
-        // without this the card stays actionable forever and every answer
-        // silently dead-ends. Busy is reconciled from the server for THIS
-        // session only (a whole-set replace could stomp another session's
-        // just-started optimistic flag), so the optimistic dispatch above
-        // can't wedge true after a no-op or failure.
-        getChatMessages(sid)
-          .then((messages) => dispatch({ type: "seed", sessionId: sid, messages }))
-          .catch(() => {});
-        listChatSessions(projectId)
-          .then((list) =>
-            dispatch({
-              type: "busy",
-              sessionId: sid,
-              busy: !!list.find((s) => s.id === sid)?.busy,
-            }),
-          )
-          // On a failed fetch keep the optimistic flag: clearing busy while a
-          // Handled resume is still streaming would hide Working…/Stop for
-          // the rest of the turn (nothing re-asserts busy mid-stream).
-          .catch(() => {});
-      });
-  }
+   * caller can e.g. restore a consumed draft). Stable per session so the
+   * memoized Message rows don't re-render on unrelated state changes. */
+  const respond = useCallback(
+    (answer: PromptAnswer): Promise<boolean> => {
+      if (!activeId) return Promise.resolve(false);
+      const sid = activeId;
+      // The resumed turn streams over SSE; optimistically mark busy.
+      dispatch({ type: "busy", sessionId: sid, busy: true });
+      return respondChat(sid, answer)
+        .then(() => true)
+        .catch(() => false)
+        .finally(() => {
+          // Reconcile with the store: if this tab's copy of the card was stale
+          // (e.g. the held turn timed out and resolved it while our SSE was
+          // dropped), the answer no-ops server-side and nothing re-broadcasts —
+          // without this the card stays actionable forever and every answer
+          // silently dead-ends. Busy is reconciled from the server for THIS
+          // session only (a whole-set replace could stomp another session's
+          // just-started optimistic flag), so the optimistic dispatch above
+          // can't wedge true after a no-op or failure.
+          getChatMessages(sid)
+            .then((messages) => dispatch({ type: "seed", sessionId: sid, messages }))
+            .catch(() => {});
+          listChatSessions(projectId)
+            .then((list) =>
+              dispatch({
+                type: "busy",
+                sessionId: sid,
+                busy: !!list.find((s) => s.id === sid)?.busy,
+              }),
+            )
+            // On a failed fetch keep the optimistic flag: clearing busy while a
+            // Handled resume is still streaming would hide Working…/Stop for
+            // the rest of the turn (nothing re-asserts busy mid-stream).
+            .catch(() => {});
+        });
+    },
+    [activeId, projectId],
+  );
 
   const visibleSessions = sessions.filter((s) =>
     sessionFilter === "all" ? true : sessionFilter === "archived" ? s.archived : !s.archived,
@@ -1597,7 +1640,7 @@ export function ChatPanel({
               <Message
                 key={m.id}
                 message={m}
-                onOpenFile={onOpenFile && ((p) => onOpenFile(p, activeId ?? undefined))}
+                onOpenFile={openFileInSession}
                 onRespond={respond}
                 onOpenPlan={openPlan}
                 skills={skills}

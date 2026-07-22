@@ -27,6 +27,49 @@ use crate::store::{now_ms, Store, StoredChatMessage, StoredChatSession};
 /// can update many times a second; the final flush is always unconditional).
 const FLUSH_INTERVAL: Duration = Duration::from_millis(150);
 
+/// Max chars of a tool part's `output`/`error` kept on the wire and in the
+/// store. Every flush re-broadcasts (and re-persists) the FULL assistant
+/// message, so uncapped tool outputs make each 150ms SSE frame O(total tool
+/// output) for the whole turn. The UI never shows more than 20k chars of a
+/// tool output anyway (ToolRow slices); capping below that keeps the
+/// truncation marker visible under the UI's own slice.
+const TOOL_TEXT_CAP: usize = 16_000;
+const TOOL_TEXT_TRUNCATION_MARKER: &str = "\n… [output truncated]";
+
+/// Truncate `text` to [`TOOL_TEXT_CAP`] chars (on a char boundary), marking
+/// the cut. Idempotent — an already-capped string is left alone.
+fn cap_tool_text(text: &mut String) {
+    // Bytes >= chars, so a string within the cap in bytes needs no scan.
+    if text.len() <= TOOL_TEXT_CAP || text.chars().count() <= TOOL_TEXT_CAP {
+        return;
+    }
+    let keep = TOOL_TEXT_CAP - TOOL_TEXT_TRUNCATION_MARKER.chars().count();
+    let cut = text
+        .char_indices()
+        .nth(keep)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
+    text.truncate(cut);
+    text.push_str(TOOL_TEXT_TRUNCATION_MARKER);
+}
+
+/// Cap every tool part's `output`/`error` in place. Applied on each flush —
+/// this covers every adapter (they all land parts on the turn's
+/// `assistant.parts`, some by direct mutation); an adapter that re-upserts a
+/// part with the full output just gets re-capped on the next flush.
+fn cap_tool_parts(parts: &mut [WirePart]) {
+    for part in parts.iter_mut() {
+        if let Some(state) = part.state.as_mut() {
+            if let Some(output) = state.output.as_mut() {
+                cap_tool_text(output);
+            }
+            if let Some(error) = state.error.as_mut() {
+                cap_tool_text(error);
+            }
+        }
+    }
+}
+
 /// How long a bridge approval card may sit unanswered before it's denied and
 /// the turn continues. Kept under the `MCP_TOOL_TIMEOUT` the claude child runs
 /// with (60 min — see `harness::claude`), so orx answers before the CLI gives
@@ -1617,6 +1660,7 @@ impl TurnCtx {
         if self.assistant.parts.is_empty() {
             return Ok(());
         }
+        cap_tool_parts(&mut self.assistant.parts);
         let store = Store::open()?;
         // A prompt card the harness surfaced mid-turn (opencode's inline
         // permission/question) may be answered *while the turn is still running*
@@ -1793,6 +1837,66 @@ pub fn harness_log(name: &str) -> Result<std::fs::File> {
         .append(true)
         .open(&path)
         .map_err(|e| anyhow!("Could not open {}: {}", path.display(), e))
+}
+
+#[cfg(test)]
+mod cap_tests {
+    use super::*;
+
+    #[test]
+    fn cap_tool_text_truncates_and_is_idempotent() {
+        let mut short = "hello".to_string();
+        cap_tool_text(&mut short);
+        assert_eq!(short, "hello");
+
+        let mut long = "x".repeat(TOOL_TEXT_CAP + 1);
+        cap_tool_text(&mut long);
+        assert_eq!(long.chars().count(), TOOL_TEXT_CAP);
+        assert!(long.ends_with(TOOL_TEXT_TRUNCATION_MARKER));
+
+        // Re-capping a capped string must not shave it further.
+        let capped = long.clone();
+        cap_tool_text(&mut long);
+        assert_eq!(long, capped);
+
+        // Multi-byte chars: truncation lands on a char boundary.
+        let mut wide = "é".repeat(TOOL_TEXT_CAP * 2);
+        cap_tool_text(&mut wide);
+        assert_eq!(wide.chars().count(), TOOL_TEXT_CAP);
+        assert!(wide.ends_with(TOOL_TEXT_TRUNCATION_MARKER));
+    }
+
+    /// The per-flush pass caps `output` and `error` on tool parts and leaves
+    /// text parts alone.
+    #[test]
+    fn cap_tool_parts_caps_output_and_error() {
+        let mut parts = vec![
+            WirePart::text("t0", "z".repeat(TOOL_TEXT_CAP * 2)),
+            WirePart {
+                id: "t1".into(),
+                kind: "tool".into(),
+                text: None,
+                tool: Some("Bash".into()),
+                state: Some(WireToolState {
+                    status: "completed".into(),
+                    input: None,
+                    output: Some("y".repeat(1_000_000)),
+                    error: Some("e".repeat(1_000_000)),
+                    title: None,
+                }),
+                prompt: None,
+            },
+        ];
+        cap_tool_parts(&mut parts);
+        // Assistant prose is never capped — only tool payloads.
+        assert_eq!(parts[0].text.as_ref().unwrap().len(), TOOL_TEXT_CAP * 2);
+        let state = parts[1].state.as_ref().unwrap();
+        assert_eq!(
+            state.output.as_ref().unwrap().chars().count(),
+            TOOL_TEXT_CAP
+        );
+        assert_eq!(state.error.as_ref().unwrap().chars().count(), TOOL_TEXT_CAP);
+    }
 }
 
 #[cfg(test)]
