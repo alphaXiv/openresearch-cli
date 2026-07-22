@@ -71,6 +71,7 @@ import {
 import { onDataDirMove } from "../events";
 import { GitTokenForm } from "./GitTokenForm";
 import { BackendBadge, BackendLogo } from "./BackendLogos";
+import { ProgressBar } from "./ProgressBar";
 import { StatusBadge } from "./StatusBadge";
 
 export type SettingsTab =
@@ -1714,26 +1715,6 @@ function GitTab() {
 
 // --- storage (data directory) ------------------------------------------------
 
-/** Determinate progress bar with a percent + optional byte caption. */
-function ProgressBar({ value, max, label }: { value: number; max: number; label?: string }) {
-  const pct = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : 0;
-  return (
-    <div className="progress" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
-      <div className="progress-track">
-        <div className="progress-fill" style={{ width: `${pct}%` }} />
-      </div>
-      <div className="progress-caption">
-        <span>{label ?? `${pct}%`}</span>
-        {max > 0 && (
-          <span className="mono">
-            {fmtBytes(value)} / {fmtBytes(max)}
-          </span>
-        )}
-      </div>
-    </div>
-  );
-}
-
 const DATA_DIR_SOURCE_LABEL: Record<DataDirSettings["source"], string> = {
   env: "ORX_DATA_DIR environment variable",
   config: "your saved setting",
@@ -1916,6 +1897,13 @@ function StorageTab() {
                   value={move.copied}
                   max={move.total}
                   label={`${move.phase.charAt(0).toUpperCase()}${move.phase.slice(1)}…`}
+                  caption={
+                    move.total > 0 ? (
+                      <span className="mono">
+                        {fmtBytes(move.copied)} / {fmtBytes(move.total)}
+                      </span>
+                    ) : undefined
+                  }
                 />
               )}
               {move.kind === "done" && (

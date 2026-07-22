@@ -41,8 +41,8 @@ use super::options::{HarnessOptions, PermissionMode};
 use super::{should_synthesize_plan, synthesize_resume, Harness, ResumeAction};
 use crate::error::{anyhow, Result};
 use crate::local::chat::{
-    prepare_env, PromptAnswer, ResumeCtx, TurnCtx, WirePart, WirePrompt, WireQuestionOption,
-    WireToolState,
+    prepare_env, ContextUsage, PromptAnswer, ResumeCtx, TurnCtx, WirePart, WirePrompt,
+    WireQuestionOption, WireToolState,
 };
 use crate::local::codex::{CodexClient, ServerReqKind, TurnEvent};
 use crate::local::opencode::ensure_playbook;
@@ -51,6 +51,32 @@ use crate::local::opencode::ensure_playbook;
 // ChatGPT-account codex rejects bare `gpt-5.6`. Verified against codex-cli
 // 0.144 via `codex exec -m` (5.6 needs >= 0.143; older CLIs get a 400).
 const CODEX_MODELS: [&str; 4] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"];
+
+/// Codex usage occupying the context window: `input_tokens + output_tokens`
+/// (`cached_input_tokens` is a subset of `input_tokens`, not additive). Returns
+/// `None` when the object is absent, or when the sum is zero (an all-zero
+/// payload isn't real occupancy and must not render "0%").
+fn codex_used_tokens(usage: Option<&Value>) -> Option<u64> {
+    let usage = usage?;
+    let field = |name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0);
+    let total = field("input_tokens") + field("output_tokens");
+    (total > 0).then_some(total)
+}
+
+/// Read a legacy-exec `token_count` `info` object into (occupancy, window).
+/// `last_token_usage` is the most recent request, whose `input_tokens` already
+/// contains the full resent context — that IS the context occupancy (what the
+/// codex TUI shows), and it matches the app-server's per-turn `turn.usage`.
+/// `total_token_usage` is a running sum across every request in the session (it
+/// only grows), so it's the fallback, not the preference.
+fn token_count_usage(info: &Value) -> (Option<u64>, Option<u64>) {
+    let usage = info
+        .get("last_token_usage")
+        .filter(|v| !v.is_null())
+        .or_else(|| info.get("total_token_usage"));
+    let window = info.get("model_context_window").and_then(Value::as_u64);
+    (codex_used_tokens(usage), window)
+}
 
 /// Codex's own reasoning vocabulary (id == the `model_reasoning_effort` config
 /// value) — the common set across CODEX_MODELS (Sol/Terra also take max/ultra;
@@ -538,6 +564,22 @@ fn apply_notification(ctx: &mut TurnCtx, method: &str, params: &Value) -> Option
         }
         "turn/completed" => {
             let turn = params.get("turn").unwrap_or(&Value::Null);
+            // Usage may sit under `turn.usage` or top-level `params.usage`
+            // depending on the app-server version; probe both.
+            let usage = turn
+                .get("usage")
+                .filter(|v| !v.is_null())
+                .or_else(|| params.get("usage"));
+            if let Some(used) = codex_used_tokens(usage) {
+                let context_window = turn
+                    .get("model_context_window")
+                    .or_else(|| params.get("model_context_window"))
+                    .and_then(Value::as_u64);
+                ctx.report_usage(ContextUsage {
+                    used_tokens: used,
+                    context_window,
+                });
+            }
             let status = turn.get("status").and_then(Value::as_str).unwrap_or("");
             if status == "failed" {
                 return Some(TurnEnd::Failed(error_message(turn.get("error"))));
@@ -1846,6 +1888,16 @@ async fn run_turn_exec(ctx: &mut TurnCtx) -> Result<()> {
                     handle_item(ctx, item, &mut next_id);
                 }
             }
+            "token_count" => {
+                let (used, context_window) =
+                    token_count_usage(msg.get("info").unwrap_or(&Value::Null));
+                if let Some(used) = used {
+                    ctx.report_usage(ContextUsage {
+                        used_tokens: used,
+                        context_window,
+                    });
+                }
+            }
             _ => {}
         }
         ctx.maybe_flush();
@@ -2756,6 +2808,73 @@ mod tests {
         assert_eq!(
             server_req_kind("item/permissions/requestApproval"),
             ServerReqKind::Other
+        );
+    }
+
+    #[test]
+    fn turn_completed_reports_input_plus_output_tokens() {
+        // Real shape captured 2026-07-22 from codex 0.144.0 exec, here delivered
+        // over the app-server as `turn/completed` with the usage nested.
+        let mut ctx = TurnCtx::test_stub();
+        ctx.model = Some("gpt-5.6-sol".into());
+        let params = serde_json::json!({
+            "turn": {
+                "status": "completed",
+                "usage": {"input_tokens":21498,"cached_input_tokens":9984,"output_tokens":5,"reasoning_output_tokens":0},
+                "model_context_window": 272000
+            }
+        });
+        let end = apply_notification(&mut ctx, "turn/completed", &params);
+        assert!(matches!(end, Some(TurnEnd::Done { interrupted: false })));
+        let usage = ctx.context_usage.expect("usage reported");
+        // cached_input_tokens is a subset of input_tokens, not additive.
+        assert_eq!(usage.used_tokens, 21498 + 5);
+        assert_eq!(usage.context_window, Some(272000));
+    }
+
+    #[test]
+    fn turn_completed_reads_top_level_usage_when_turn_lacks_it() {
+        let mut ctx = TurnCtx::test_stub();
+        let params = serde_json::json!({
+            "turn": {"status": "completed"},
+            "usage": {"input_tokens":100,"output_tokens":20}
+        });
+        apply_notification(&mut ctx, "turn/completed", &params);
+        assert_eq!(ctx.context_usage.unwrap().used_tokens, 120);
+    }
+
+    #[test]
+    fn legacy_token_count_prefers_last_usage_and_reads_window() {
+        // The `token_count` legacy-exec info the loop's arm folds via
+        // `token_count_usage`: `last_token_usage` (the latest request, whose
+        // input already carries the full context) wins over `total_token_usage`
+        // (a running session-wide sum). model_context_window comes along.
+        let info = serde_json::json!({
+            "total_token_usage": {"input_tokens":999999,"cached_input_tokens":9984,"output_tokens":50,"reasoning_output_tokens":0},
+            "last_token_usage": {"input_tokens":21498,"cached_input_tokens":9984,"output_tokens":5,"reasoning_output_tokens":0},
+            "model_context_window": 272000
+        });
+        // cached_input_tokens is a subset of input_tokens, not additive.
+        assert_eq!(token_count_usage(&info), (Some(21498 + 5), Some(272000)));
+
+        // No last → fall back to total.
+        let total_only = serde_json::json!({
+            "total_token_usage": {"input_tokens":100,"output_tokens":20},
+            "model_context_window": 272000
+        });
+        assert_eq!(token_count_usage(&total_only), (Some(120), Some(272000)));
+    }
+
+    #[test]
+    fn codex_used_tokens_is_none_when_absent_or_all_zero() {
+        assert_eq!(codex_used_tokens(None), None);
+        assert_eq!(codex_used_tokens(Some(&serde_json::json!({}))), None);
+        // An all-zero payload isn't real occupancy — must not render "0%".
+        assert_eq!(
+            codex_used_tokens(Some(
+                &serde_json::json!({"input_tokens":0,"output_tokens":0})
+            )),
+            None
         );
     }
 }

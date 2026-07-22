@@ -3,7 +3,7 @@
 // terminals can subscribe without threading props everywhere.
 
 import { useEffect, useRef } from "react";
-import type { ChatMessage, ChatSession, Experiment, Project, Run } from "./api";
+import type { ChatMessage, ChatSession, ContextUsage, Experiment, Project, Run } from "./api";
 
 export interface RunLogEvent {
   runId: string;
@@ -36,7 +36,8 @@ export type ChatEvent =
   | { type: "session"; session: ChatSession }
   | { type: "sessionDeleted"; sessionId: string }
   | { type: "message"; sessionId: string; message: ChatMessage }
-  | { type: "busy"; sessionId: string; busy: boolean };
+  | { type: "busy"; sessionId: string; busy: boolean }
+  | { type: "usage"; sessionId: string; usage: ContextUsage };
 
 type ChatListener = (ev: ChatEvent) => void;
 const chatListeners = new Set<ChatListener>();
@@ -129,6 +130,10 @@ export function useOrxEvents(handlers: OrxEventHandlers) {
     es.addEventListener("chat.busy", (e) => {
       const d = parse<{ sessionId: string; busy: boolean }>(e as MessageEvent);
       if (d?.sessionId) emitChat({ type: "busy", sessionId: d.sessionId, busy: d.busy });
+    });
+    es.addEventListener("chat.usage", (e) => {
+      const d = parse<{ sessionId: string; usage: ContextUsage }>(e as MessageEvent);
+      if (d?.sessionId && d.usage) emitChat({ type: "usage", sessionId: d.sessionId, usage: d.usage });
     });
     es.addEventListener("datadir.move.progress", (e) => {
       const d = parse<{ phase: string; copiedBytes: number; totalBytes: number }>(

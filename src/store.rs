@@ -218,6 +218,7 @@ impl Store {
                 permission_mode   TEXT,
                 reasoning_level   TEXT,
                 archived          INTEGER NOT NULL DEFAULT 0,
+                context_usage_json TEXT,
                 created_at        INTEGER NOT NULL,
                 updated_at        INTEGER NOT NULL
             );
@@ -247,6 +248,7 @@ impl Store {
             "ALTER TABLE chat_sessions ADD COLUMN permission_mode TEXT",
             "ALTER TABLE chat_sessions ADD COLUMN reasoning_level TEXT",
             "ALTER TABLE chat_sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE chat_sessions ADD COLUMN context_usage_json TEXT",
             "ALTER TABLE local_projects ADD COLUMN paper_id TEXT",
         ] {
             let _ = conn.execute(ddl, []);
@@ -685,6 +687,18 @@ impl Store {
         Ok(())
     }
 
+    /// Persist the latest context-window usage (serialized `ContextUsage`).
+    /// Does not bump `updated_at` — usage is a passive by-product of a turn that
+    /// already bumped it, and re-ordering the session on every token report would
+    /// be noise.
+    pub fn set_chat_session_context_usage(&self, id: &str, json: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE chat_sessions SET context_usage_json = ?2 WHERE id = ?1",
+            params![id, json],
+        )?;
+        Ok(())
+    }
+
     pub fn set_chat_session_permission_mode(&self, id: &str, mode: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE chat_sessions SET permission_mode = ?2, updated_at = ?3 WHERE id = ?1",
@@ -853,6 +867,8 @@ pub struct StoredChatSession {
     pub reasoning_level: Option<String>,
     /// Hidden from the default Recents list, but fully intact and resumable.
     pub archived: bool,
+    /// Serialized `ContextUsage` for the latest turn; None until first reported.
+    pub context_usage_json: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -870,7 +886,7 @@ pub struct StoredChatMessage {
 }
 
 const CHAT_SESSION_COLS: &str = "id, project_id, harness, native_session_id, title, model, \
-     permission_mode, reasoning_level, archived, created_at, updated_at";
+     permission_mode, reasoning_level, archived, context_usage_json, created_at, updated_at";
 
 fn row_to_chat_session(
     row: &rusqlite::Row<'_>,
@@ -885,8 +901,9 @@ fn row_to_chat_session(
         permission_mode: row.get(6)?,
         reasoning_level: row.get(7)?,
         archived: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        context_usage_json: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
     })
 }
 
@@ -927,12 +944,55 @@ pub fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::human_bytes;
+    use super::*;
 
     #[test]
     fn human_bytes_scales() {
         assert_eq!(human_bytes(512), "512 B");
         assert_eq!(human_bytes(2048), "2.0 KB");
         assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    #[test]
+    fn chat_session_context_usage_roundtrips() {
+        let dir = std::env::temp_dir().join(format!("orx-store-ctxusage-{}", uuid::Uuid::new_v4()));
+        let store = Store::open_at(dir.clone()).unwrap();
+        let session = StoredChatSession {
+            id: "chat_1".into(),
+            project_id: "proj_1".into(),
+            harness: "claude-code".into(),
+            native_session_id: None,
+            title: None,
+            model: Some("claude-haiku-4-5".into()),
+            permission_mode: None,
+            reasoning_level: None,
+            archived: false,
+            context_usage_json: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+        store.create_chat_session(&session).unwrap();
+        // Fresh session: no usage yet.
+        assert!(store
+            .get_chat_session("chat_1")
+            .unwrap()
+            .unwrap()
+            .context_usage_json
+            .is_none());
+        // Set, then read it back verbatim.
+        let json = r#"{"usedTokens":27564,"contextWindow":200000}"#;
+        store
+            .set_chat_session_context_usage("chat_1", json)
+            .unwrap();
+        assert_eq!(
+            store
+                .get_chat_session("chat_1")
+                .unwrap()
+                .unwrap()
+                .context_usage_json
+                .as_deref(),
+            Some(json)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

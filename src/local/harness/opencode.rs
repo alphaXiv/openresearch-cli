@@ -33,7 +33,8 @@ use super::options::{HarnessOptions, PermissionMode};
 use super::{Harness, ResumeAction};
 use crate::error::{anyhow, Result};
 use crate::local::chat::{
-    PromptAnswer, ResumeCtx, TurnCtx, WirePart, WirePrompt, WireQuestionOption, WireToolState,
+    ContextUsage, PromptAnswer, ResumeCtx, TurnCtx, WirePart, WirePrompt, WireQuestionOption,
+    WireToolState,
 };
 use crate::local::opencode::find_opencode;
 
@@ -508,6 +509,22 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     }
 }
 
+/// OpenCode assistant `tokens` occupying the context window:
+/// `input + output + reasoning + cache.read + cache.write`. Returns `None` when
+/// the object is absent, and `None` (not `Some(0)`) when every field is zero —
+/// the early `message.updated` events carry an all-zero placeholder.
+fn opencode_used_tokens(tokens: Option<&Value>) -> Option<u64> {
+    let tokens = tokens?;
+    let field = |v: &Value, name: &str| v.get(name).and_then(Value::as_u64).unwrap_or(0);
+    let cache = tokens.get("cache").unwrap_or(&Value::Null);
+    let total = field(tokens, "input")
+        + field(tokens, "output")
+        + field(tokens, "reasoning")
+        + field(cache, "read")
+        + field(cache, "write");
+    (total > 0).then_some(total)
+}
+
 fn handle_event(
     ctx: &mut TurnCtx,
     native_id: &str,
@@ -523,6 +540,16 @@ fn handle_event(
             {
                 if let Some(id) = info.get("id").and_then(Value::as_str) {
                     assistant_msgs.insert(id.to_string());
+                }
+                // Several `message.updated` fire per message; the early ones have
+                // no tokens yet, so skip a report until real numbers land. The
+                // context window isn't in this event (provider config only), so
+                // report the token count without one.
+                if let Some(used) = opencode_used_tokens(info.get("tokens")) {
+                    ctx.report_usage(ContextUsage {
+                        used_tokens: used,
+                        context_window: None,
+                    });
                 }
             }
         }
@@ -728,5 +755,45 @@ mod tests {
         assert!(!question_card(&claude_shaped).unwrap().multi_select);
         // No questions → no card.
         assert!(question_card(&json!({ "id": "que_1" })).is_none());
+    }
+
+    #[test]
+    fn message_updated_reports_summed_tokens_without_window() {
+        let mut ctx = TurnCtx::test_stub();
+        let mut msgs = HashSet::new();
+        let event = json!({
+            "type": "message.updated",
+            "properties": { "info": {
+                "id": "msg_1",
+                "sessionID": "ses_x",
+                "role": "assistant",
+                "tokens": { "input": 1200, "output": 340, "reasoning": 50, "cache": { "read": 8000, "write": 200 } }
+            }}
+        });
+        handle_event(&mut ctx, "ses_x", &event, &mut msgs);
+        let usage = ctx.context_usage.expect("usage reported");
+        assert_eq!(usage.used_tokens, 1200 + 340 + 50 + 8000 + 200);
+        assert_eq!(usage.context_window, None);
+    }
+
+    #[test]
+    fn message_updated_without_tokens_reports_nothing() {
+        let mut ctx = TurnCtx::test_stub();
+        let mut msgs = HashSet::new();
+        // Early message.updated: assistant role, but no tokens yet.
+        let no_tokens = json!({
+            "type": "message.updated",
+            "properties": { "info": { "id": "msg_1", "sessionID": "ses_x", "role": "assistant" }}
+        });
+        handle_event(&mut ctx, "ses_x", &no_tokens, &mut msgs);
+        assert!(ctx.context_usage.is_none());
+        // All-zero placeholder tokens must also be ignored.
+        let zero_tokens = json!({
+            "type": "message.updated",
+            "properties": { "info": { "id": "msg_1", "sessionID": "ses_x", "role": "assistant",
+                "tokens": { "input": 0, "output": 0, "reasoning": 0, "cache": { "read": 0, "write": 0 } }}}
+        });
+        handle_event(&mut ctx, "ses_x", &zero_tokens, &mut msgs);
+        assert!(ctx.context_usage.is_none());
     }
 }

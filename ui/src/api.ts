@@ -774,6 +774,14 @@ export interface ChatMessage {
   createdAt: number;
 }
 
+/** How much of the model's context window a session has used, measured off the
+ * most recent API request (latest wins, not cumulative). `contextWindow` is
+ * absent when the harness doesn't report one. */
+export interface ContextUsage {
+  usedTokens: number;
+  contextWindow?: number;
+}
+
 export interface ChatSession {
   id: string;
   projectId: string;
@@ -787,6 +795,7 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   busy: boolean;
+  contextUsage?: ContextUsage;
 }
 
 export const listChatSessions = (projectId: string) =>
@@ -925,6 +934,19 @@ export function fmtBytes(n: number): string {
     u += 1;
   }
   return u === 0 ? `${n} B` : `${v.toFixed(1)} ${units[u]}`;
+}
+
+/** Compact token count, e.g. 62300 → "62k", 1_200_000 → "1.2M", 940 → "940". */
+export function fmtTokens(n: number): string {
+  if (n < 1000) return `${Math.round(n)}`;
+  // One decimal, dropped when it's .0 ("31.4k", "200k", "1M"). The k branch
+  // stops where toFixed(1) would round to "1000.0" (e.g. 999_960 → "1M").
+  if (n < 999_950) return `${trimZero((n / 1000).toFixed(1))}k`;
+  return `${trimZero((n / 1_000_000).toFixed(1))}M`;
+}
+
+function trimZero(s: string): string {
+  return s.endsWith(".0") ? s.slice(0, -2) : s;
 }
 
 export function shortId(id: string): string {

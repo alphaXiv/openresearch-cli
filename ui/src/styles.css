@@ -3411,6 +3411,36 @@ a.files-pill:hover {
   min-width: 190px;
   padding: 6px;
 }
+/* Context-window meter: ring trigger + title/value head over a thin bar. */
+.composer-bare.context-ring {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 8px;
+}
+.context-meter-menu {
+  width: 280px;
+  padding: 10px 12px 12px;
+}
+.context-meter-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.context-meter-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.context-meter-menu .progress {
+  margin: 8px 0 0;
+}
+.context-meter-menu .progress-track {
+  height: 5px;
+  border: none;
+  background: var(--border);
+}
 /* Right-anchored menus (bottom-right controls) open toward the left edge. */
 .model-menu.align-right,
 .option-menu.align-right {
