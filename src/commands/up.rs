@@ -232,6 +232,7 @@ fn router(state: AppState) -> Router {
             axum::routing::delete(delete_chat_session).patch(update_chat_session),
         )
         .route("/api/chat/sessions/{id}/messages", get(chat_messages))
+        .route("/api/chat/sessions/{id}/worktree", get(session_worktree))
         .route("/api/chat/sessions/{id}/message", post(send_chat_message))
         .route("/api/chat/sessions/{id}/interrupt", post(interrupt_chat))
         .route("/api/chat/sessions/{id}/respond", post(respond_chat))
@@ -912,6 +913,53 @@ async fn project_working_tree(Path(id): Path<String>) -> ApiResult {
     .await
 }
 
+/// Live view of one chat session's private worktree — what the agent has
+/// changed, before any run exists. Unlike `project_working_tree` (clone-scoped,
+/// diffed against HEAD), the session worktree starts detached on the baseline
+/// tip and the agent commits to experiment branches, so "what it changed" is
+/// the working tree diffed against the merge-base of the baseline and HEAD; a
+/// bare HEAD diff would hide every committed edit. Read-only throughout: no
+/// index-touching (`git add -N`) that would mutate the agent's checkout.
+///
+/// A never-started session (worktree is lazy) or a pruned worktree degrades to
+/// `resolve_checkout_root`'s clone fallback; we report `{ exists: false }`
+/// rather than pass off the clone's contents as the session's work.
+async fn session_worktree(Path(id): Path<String>) -> ApiResult {
+    blocking_api(move || {
+        let store = Store::open()?;
+        let session = store
+            .get_chat_session(&id)?
+            .ok_or_else(|| not_found("chat session"))?;
+        let project = store
+            .get_local_project(&session.project_id)?
+            .ok_or_else(|| not_found("project"))?;
+        let (root, root_kind) = resolve_checkout_root(&store, &project, Some(&id))?;
+        if root_kind != "worktree" {
+            return Ok(Json(json!({ "exists": false })));
+        }
+        let branch = local::git::current_branch(&root);
+        // Diff against the merge-base of the baseline tip and HEAD — the fork
+        // point of the agent's work. Every step that can't resolve (missing
+        // origin ref, unrelated histories, unborn HEAD) falls back to HEAD, so
+        // the diff degrades to "uncommitted only" rather than erroring.
+        let baseline = &project.baseline_branch;
+        let remote_baseline = format!("origin/{baseline}");
+        let base = local::git::merge_base(&root, &remote_baseline, "HEAD")?
+            .unwrap_or_else(|| "HEAD".to_string());
+        let files = local::git::changed_files(&root, &base)?;
+        let payload = local::git::working_tree_diff_against(&root, Some(&base))?;
+        Ok(Json(json!({
+            "exists": true,
+            "branch": branch,
+            "baselineBranch": baseline,
+            "baseSha": base,
+            "files": files,
+            "diff": diff_json(payload),
+        })))
+    })
+    .await
+}
+
 /// Cap on file bytes served to the viewer (mirrors openresearch.sh).
 const FILE_READ_LIMIT: u64 = 512_000;
 
@@ -962,9 +1010,12 @@ fn resolve_checkout_root(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CodeTreeQuery {
-    /// Branch to list the committed tree of; absent lists the hub clone's
-    /// checkout.
+    /// Branch to list the committed tree of; absent lists a live checkout.
     r#ref: Option<String>,
+    /// Chat session whose worktree to list (the live view the Worktree tab's
+    /// Files pane wants). Absent falls back to the hub clone's checkout.
+    /// Mutually exclusive with `ref` — a committed tree has no live worktree.
+    session_id: Option<String>,
 }
 
 /// Cap on entries returned by the code-tree listing.
@@ -981,10 +1032,19 @@ async fn project_code_tree(Path(id): Path<String>, Query(q): Query<CodeTreeQuery
         let project = store
             .get_local_project(&id)?
             .ok_or_else(|| not_found("project"))?;
-        // Branch refs live in the shared object DB — the hub clone resolves
-        // them all; no per-session root here (file reads still take one).
-        let (root, root_kind) = resolve_checkout_root(&store, &project, None)?;
         let ref_name = q.r#ref.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let session_id = q
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if ref_name.is_some() && session_id.is_some() {
+            return Err(bad_request("ref and sessionId are mutually exclusive"));
+        }
+        // Branch refs live in the shared object DB — any checkout resolves them;
+        // for a live listing the session's worktree is the live view when given
+        // (its untracked files the clone never sees), else the hub clone.
+        let (root, root_kind) = resolve_checkout_root(&store, &project, session_id)?;
         let (root_kind, branch, mut entries) = match ref_name {
             Some(name) => {
                 let sha = local::git::resolve_branch_commit(&root, name)?

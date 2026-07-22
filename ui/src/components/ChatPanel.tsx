@@ -3,6 +3,7 @@ import {
   ChevronRight,
   CornerDownLeft,
   FlaskConical,
+  FolderGit2,
   FolderOpen,
   HelpCircle,
   MoreHorizontal,
@@ -878,6 +879,7 @@ export function ChatPanel({
   onTogglePanel,
   onOpenFile,
   onOpenPlan,
+  onOpenWorktree,
   onStartTour,
   children,
 }: {
@@ -902,6 +904,8 @@ export function ChatPanel({
   onOpenFile?: (path: string, sessionId?: string) => void;
   /** Open a plan's markdown as a right-pane tab (plan strip / plan cards). */
   onOpenPlan?: (plan: string, sessionId: string, promptId: string) => void;
+  /** Open the live worktree tab for a session (chat header worktree button). */
+  onOpenWorktree?: (sessionId: string) => void;
   /** Replay the onboarding tour (chat header help button). */
   onStartTour?: () => void;
   /** Middle-pane content when a settings section is active (the SettingsView). */
@@ -1569,6 +1573,16 @@ export function ChatPanel({
             onClick={onStartTour}
           >
             <HelpCircle size={15} />
+          </button>
+        )}
+        {onOpenWorktree && activeId && (
+          <button
+            className="icon-btn"
+            data-tip="View session worktree"
+            aria-label="View session worktree"
+            onClick={() => onOpenWorktree(activeId)}
+          >
+            <FolderGit2 size={15} />
           </button>
         )}
         <button
