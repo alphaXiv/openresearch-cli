@@ -311,6 +311,9 @@ async fn spawn_client(spec: &SpawnSpec) -> Result<Arc<ClaudeClient>> {
         "stream-json",
         "--output-format",
         "stream-json",
+        // Stream text/thinking deltas (stream_event lines) instead of only
+        // complete assistant messages — apply_event paints them token by token.
+        "--include-partial-messages",
         "--verbose",
         "--permission-mode",
         claude_permission_mode(spec.config.permission_mode),

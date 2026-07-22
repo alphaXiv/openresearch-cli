@@ -590,6 +590,11 @@ struct TurnState {
     /// The native session id from the latest `system/init` or `result` (the
     /// caller applies it to the store per event).
     native_session_id: Option<String>,
+    /// The in-flight assistant message id from the stream's `message_start` —
+    /// deltas carry only a block `index`, so this is what keys them to the
+    /// same `{mid}-{index}` part ids the final complete `assistant` event
+    /// upserts.
+    stream_mid: Option<String>,
 }
 
 /// Fold one stream-json output object into the turn's transcript + `TurnState`.
@@ -600,6 +605,52 @@ struct TurnState {
 /// job, keeping this store-free.
 fn apply_event(ctx: &mut TurnCtx, state: &mut TurnState, event: &Value) -> bool {
     match event.get("type").and_then(Value::as_str) {
+        // Partial-message deltas (opt-in via --include-partial-messages): the
+        // text/thinking streams token by token instead of landing as one block
+        // when the complete `assistant` event arrives. Deltas build a part
+        // under the same `{mid}-{index}` id that the final event upserts, so
+        // the authoritative full text simply overwrites the accumulated one.
+        Some("stream_event") => {
+            // A subagent's nested stream (parent_tool_use_id set) would
+            // interleave its text into the transcript — main loop only.
+            if !event.get("parent_tool_use_id").is_none_or(|v| v.is_null()) {
+                return false;
+            }
+            let inner = event.get("event").unwrap_or(&Value::Null);
+            match inner.get("type").and_then(Value::as_str) {
+                Some("message_start") => {
+                    if let Some(mid) = inner.pointer("/message/id").and_then(Value::as_str) {
+                        state.stream_mid = Some(mid.to_string());
+                    }
+                }
+                Some("content_block_delta") => {
+                    let (Some(mid), Some(index)) = (
+                        state.stream_mid.as_deref(),
+                        inner.get("index").and_then(Value::as_u64),
+                    ) else {
+                        return false;
+                    };
+                    let id = format!("{mid}-{index}");
+                    let delta = inner.get("delta").unwrap_or(&Value::Null);
+                    let (field, reasoning) = match delta.get("type").and_then(Value::as_str) {
+                        Some("text_delta") => ("text", false),
+                        Some("thinking_delta") => ("thinking", true),
+                        _ => return false,
+                    };
+                    if let Some(text) = delta.get(field).and_then(Value::as_str) {
+                        if !ctx.assistant.parts.iter().any(|p| p.id == id) {
+                            ctx.upsert_part(if reasoning {
+                                WirePart::reasoning(id.clone(), "")
+                            } else {
+                                WirePart::text(id.clone(), "")
+                            });
+                        }
+                        ctx.append_part_text(&id, text);
+                    }
+                }
+                _ => {}
+            }
+        }
         Some("system") => {
             if event.get("subtype").and_then(Value::as_str) == Some("init") {
                 if let Some(sid) = event.get("session_id").and_then(Value::as_str) {
@@ -1096,6 +1147,46 @@ mod tests {
             err.state.as_ref().unwrap().error.as_deref(),
             Some("claude: boom")
         );
+    }
+
+    #[test]
+    fn stream_deltas_paint_parts_and_the_final_event_overwrites_them() {
+        // Deltas accumulate under {mid}-{index}; the complete assistant event
+        // then upserts the authoritative text over the very same part — one
+        // part, no duplicate, final text wins.
+        let transcript = [
+            r#"{"type":"system","subtype":"init","session_id":"sd1"}"#,
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m9"}},"parent_tool_use_id":null}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}},"parent_tool_use_id":null}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Riv"}},"parent_tool_use_id":null}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ers flow."}},"parent_tool_use_id":null}"#,
+            r#"{"type":"assistant","message":{"id":"m9","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"Rivers flow."}]}}"#,
+            r#"{"type":"result","subtype":"success","session_id":"sd1","is_error":false}"#,
+        ];
+        let mut ctx = TurnCtx::test_stub();
+        let state = fold(&mut ctx, false, &transcript);
+        let parts = &ctx.assistant.parts;
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        assert_eq!(parts[0].kind, "reasoning");
+        assert_eq!(parts[0].text.as_deref(), Some("hmm"));
+        assert_eq!(parts[1].kind, "text");
+        assert_eq!(parts[1].text.as_deref(), Some("Rivers flow."));
+        // The final assistant event still feeds last_text (plan synthesis).
+        assert_eq!(state.last_text, "Rivers flow.");
+    }
+
+    #[test]
+    fn subagent_stream_deltas_are_ignored() {
+        // A Task subagent's nested stream carries parent_tool_use_id — its
+        // deltas must not paint the main transcript.
+        let transcript = [
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"sub"}},"parent_tool_use_id":"toolu_1"}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"nested"}},"parent_tool_use_id":"toolu_1"}"#,
+            r#"{"type":"result","subtype":"success","session_id":"s","is_error":false}"#,
+        ];
+        let mut ctx = TurnCtx::test_stub();
+        fold(&mut ctx, false, &transcript);
+        assert!(ctx.assistant.parts.is_empty(), "{:?}", ctx.assistant.parts);
     }
 
     #[test]
