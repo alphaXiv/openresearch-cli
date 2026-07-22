@@ -421,9 +421,11 @@ pub struct ChatHost {
     /// Outstanding permission-bridge requests, keyed by the prompt part id the
     /// card was surfaced under. Sync mutex, never held across an await.
     pending_permissions: std::sync::Mutex<HashMap<String, PendingPermission>>,
-    /// Per-session bridge token, minted fresh each plan-mode turn. The rest of
-    /// the localhost API is unauthenticated, but this endpoint *grants tool
-    /// permissions*, so the bridge must echo the token the turn was spawned with.
+    /// Per-session bridge token, minted once per plan-mode child spawn (the
+    /// resident bridge carries it for the child's whole life — re-minting
+    /// mid-child would strand it). The rest of the localhost API is
+    /// unauthenticated, but this endpoint *grants tool permissions*, so the
+    /// bridge must echo the token its child was spawned with.
     gate_tokens: std::sync::Mutex<HashMap<String, String>>,
     /// Sessions whose running turn surfaced a bridge card — checked (and
     /// cleared) by the synthesized-plan-card fallback so it never double-cards
@@ -512,11 +514,9 @@ impl ChatHost {
     }
 
     /// Record the port `orx up` bound (once, at startup) so plan-mode turns can
-    /// hand it to the `orx mcp-gate` bridge. The claude host mints the bridge
-    /// token at spawn, so it needs the port too.
+    /// hand it to the `orx mcp-gate` bridge.
     pub fn set_up_port(&self, port: u16) {
         let _ = self.up_port.set(port);
-        self.claude.set_up_port(port);
     }
 
     /// The bound `orx up` port, if this host runs under a server (None in

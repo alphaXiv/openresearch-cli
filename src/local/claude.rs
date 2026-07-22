@@ -61,8 +61,11 @@ pub struct SpawnConfig {
 /// Everything needed to spawn (or respawn) a session's child, built per turn by
 /// the harness. `resume` carries the native session id for `--resume` recovery
 /// (crash/restart or config-change respawn); `None` on a session's first spawn.
+/// `chat` is the spawn-time handle for the plan-mode bridge (`up_port` +
+/// `mint_gate_token`) — the spec is transient (built per turn, consumed by
+/// `ensure`), so the strong ref cannot cycle.
 pub struct SpawnSpec {
-    pub host: Arc<ClaudeHost>,
+    pub chat: Arc<crate::local::chat::ChatHost>,
     pub session_id: String,
     pub repo: PathBuf,
     pub playbook: PathBuf,
@@ -333,10 +336,12 @@ async fn spawn_client(spec: &SpawnSpec) -> Result<Arc<ClaudeClient>> {
     }
 
     // Plan-mode extras, iff the child was spawned in Plan. `bridge_active` on the
-    // config records what we ACHIEVED, not what we wanted: a failed write leaves
-    // it false, and the next plan turn respawns to retry — degrading to today's
-    // no-bridge plan gating, never worse.
+    // config records what we ACHIEVED, not what we wanted: forced false here, set
+    // true only on a successful bridge write. A failed write thus leaves it false
+    // — the next plan turn's wanted-true mismatch respawns to retry, degrading to
+    // today's no-bridge plan gating, never worse.
     let mut config = spec.config.clone();
+    config.bridge_active = false;
     if spec.config.permission_mode == Some(PermissionMode::Plan) {
         match write_plan_settings(&spec.repo) {
             Ok(path) => {
@@ -353,8 +358,8 @@ async fn spawn_client(spec: &SpawnSpec) -> Result<Arc<ClaudeClient>> {
         // (e.g. per turn) would strand a live bridge: `request_permission`
         // equality-checks the token with no expiry (chat/mod.rs), so a fresh
         // token invalidates the resident bridge child's held requests.
-        if let Some(port) = spec.host.up_port.get().copied() {
-            let token = spec.host.chat_mint_gate_token(&spec.session_id);
+        if let Some(port) = spec.chat.up_port() {
+            let token = spec.chat.mint_gate_token(&spec.session_id);
             match write_mcp_config(&spec.repo, port, &spec.session_id, &token) {
                 Ok(path) => {
                     cmd.arg("--mcp-config").arg(path);
@@ -443,12 +448,6 @@ pub struct ClaudeHost {
     /// Serializes ensure() spawns; `inner` is never held across a spawn.
     spawn_lock: Mutex<()>,
     inner: Mutex<HashMap<String, Arc<ClaudeClient>>>,
-    /// Back-reference to the chat host, for `mint_gate_token` at spawn time and
-    /// the bound `orx up` port. Set once via `attach` right after both hosts are
-    /// constructed (they reference each other, so neither can hold the other in
-    /// its constructor).
-    chat: std::sync::OnceLock<std::sync::Weak<crate::local::chat::ChatHost>>,
-    up_port: std::sync::OnceLock<u16>,
 }
 
 impl Default for ClaudeHost {
@@ -462,29 +461,6 @@ impl ClaudeHost {
         Self {
             spawn_lock: Mutex::new(()),
             inner: Mutex::new(HashMap::new()),
-            chat: std::sync::OnceLock::new(),
-            up_port: std::sync::OnceLock::new(),
-        }
-    }
-
-    /// Wire the back-reference to the chat host (a `Weak` — the chat host owns
-    /// the `Arc<ClaudeHost>`, so a strong ref would be a cycle). Idempotent.
-    pub fn attach(&self, chat: std::sync::Weak<crate::local::chat::ChatHost>) {
-        let _ = self.chat.set(chat);
-    }
-
-    /// Record the bound `orx up` port so plan-mode spawns can wire the bridge.
-    pub fn set_up_port(&self, port: u16) {
-        let _ = self.up_port.set(port);
-    }
-
-    /// Mint the per-child gate token via the chat host — called at spawn only.
-    fn chat_mint_gate_token(&self, session_id: &str) -> String {
-        match self.chat.get().and_then(std::sync::Weak::upgrade) {
-            Some(chat) => chat.mint_gate_token(session_id),
-            // No chat host attached (shouldn't happen under `orx up`): a random
-            // token still writes a valid config; the bridge simply won't match.
-            None => uuid::Uuid::new_v4().to_string(),
         }
     }
 
@@ -556,18 +532,6 @@ impl ClaudeHost {
         })
         .await
         .map_err(|e| anyhow!("claude bring-up task failed: {e}"))?
-    }
-
-    /// The session's live client, if any (for inline replies).
-    pub async fn client_for(&self, session_id: &str) -> Option<Arc<ClaudeClient>> {
-        let mut guard = self.inner.lock().await;
-        let client = guard.get(session_id)?;
-        if matches!(client.child.lock().await.try_wait(), Ok(None)) {
-            Some(client.clone())
-        } else {
-            guard.remove(session_id);
-            None
-        }
     }
 
     /// Kill and reap one session's child. The load-bearing interrupt/delete

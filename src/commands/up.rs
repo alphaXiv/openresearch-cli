@@ -55,12 +55,7 @@ pub async fn run(args: UpArgs) -> Result<()> {
         harnesses: Arc::new(tokio::sync::Mutex::new(None)),
         data_dir_move_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
-    // The claude host mints the mcp-gate token at spawn via the chat host, so it
-    // holds a weak back-reference (the chat host owns the Arc — a strong ref
-    // would cycle).
-    claude.attach(Arc::downgrade(&state.chat));
-    // Plan-mode turns hand this port to the `orx mcp-gate` permission bridge
-    // (also propagated to the claude host, which spawns the bridge child).
+    // Plan-mode turns hand this port to the `orx mcp-gate` permission bridge.
     state.chat.set_up_port(port);
 
     spawn_hf_preflight();

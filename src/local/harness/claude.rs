@@ -354,10 +354,11 @@ pub(crate) fn write_plan_settings(repo: &std::path::Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Write the per-turn `--mcp-config` file pointing Claude at `orx mcp-gate`
+/// Write the per-spawn `--mcp-config` file pointing Claude at `orx mcp-gate`
 /// (this same binary) and return its path. The bridge's env block carries the
-/// `orx up` port, the session id, and a fresh per-turn token — everything the
-/// child needs to relay permission requests back to the running server.
+/// `orx up` port, the session id, and a fresh per-child token minted at spawn —
+/// everything the resident bridge needs to relay permission requests back to
+/// the running server for the child's whole life.
 pub(crate) fn write_mcp_config(
     repo: &std::path::Path,
     up_port: u16,
@@ -393,7 +394,7 @@ pub(crate) fn write_mcp_config(
 /// Session reasoning id → Claude Code `--effort` value. The composer only
 /// offers ids from `CLAUDE_EFFORT_LEVELS`, so an unrecognized/absent value just
 /// omits the flag and lets the CLI apply its own default (`high`).
-pub(crate) fn claude_effort(level: Option<&str>) -> Option<&str> {
+fn claude_effort(level: Option<&str>) -> Option<&str> {
     let level = level?;
     CLAUDE_EFFORT_LEVELS
         .iter()
@@ -792,7 +793,7 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
     // reused child costs nothing, a model-only change retunes live, a launch-flag
     // change (or a crash) respawns with `--resume`.
     let spec = SpawnSpec {
-        host: ctx.host.claude.clone(),
+        chat: ctx.host.clone(),
         session_id: ctx.session_id.clone(),
         repo,
         playbook,
@@ -1095,6 +1096,37 @@ mod tests {
             err.state.as_ref().unwrap().error.as_deref(),
             Some("claude: boom")
         );
+    }
+
+    #[test]
+    fn result_without_is_error_falls_back_to_subtype() {
+        // The CLI can omit `is_error`; a non-"success" subtype must still fail
+        // the turn (the `.unwrap_or(subtype != "success")` fallback).
+        let transcript = [
+            r#"{"type":"system","subtype":"init","session_id":"s2"}"#,
+            r#"{"type":"result","subtype":"error_during_execution","result":"boom"}"#,
+        ];
+        let mut ctx = TurnCtx::test_stub();
+        let state = fold(&mut ctx, false, &transcript);
+        assert!(state.saw_result);
+        assert!(state.turn_errored);
+    }
+
+    #[test]
+    fn errored_tool_result_flips_the_tool_part_to_error() {
+        let transcript = [
+            r#"{"type":"system","subtype":"init","session_id":"s3"}"#,
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"call_1","name":"Bash","input":{"command":"false"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call_1","is_error":true,"content":"exit 1"}]}}"#,
+            r#"{"type":"result","subtype":"success","session_id":"s3","is_error":false}"#,
+        ];
+        let mut ctx = TurnCtx::test_stub();
+        let state = fold(&mut ctx, false, &transcript);
+        assert!(!state.turn_errored, "a failed tool is not a failed turn");
+        let tool = ctx.assistant.parts[0].state.as_ref().unwrap();
+        assert_eq!(tool.status, "error");
+        assert_eq!(tool.error.as_deref(), Some("exit 1"));
+        assert_eq!(tool.output, None);
     }
 
     #[test]
