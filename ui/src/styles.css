@@ -4180,6 +4180,62 @@ a.files-pill:hover {
   white-space: nowrap;
 }
 
+/* ---- live worktree tab (WorktreeTab.tsx) ----
+   The Changes/Files viewer for a chat session's private worktree. Reuses the
+   .code-tab shell; adds a branch chip, a status-badged change list, and a diff
+   region below it. */
+.wt-branch-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: color-mix(in oklab, var(--text) 8%, transparent);
+  color: var(--subtext);
+  font-size: var(--fs-xs);
+}
+.wt-branch-chip > svg {
+  flex-shrink: 0;
+}
+.wt-branch-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+.wt-count {
+  padding: 0;
+  border: none;
+}
+/* Same horizontal gutter as .drawer-body so the diff cards match the
+ * experiment Changes view; no padding-top for the same reason there — sticky
+ * diff-file headers would sit below the top with content peeking through.
+ * The first child carries the spacing as margin instead. */
+.wt-changes {
+  padding: 0 16px 24px;
+}
+.wt-changes > :first-child {
+  margin-top: 14px;
+}
+.wt-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--muted);
+}
+.wt-empty > svg {
+  color: var(--subtext);
+}
+.wt-empty p {
+  margin: 0;
+  max-width: 320px;
+  font-size: var(--fs-sm);
+}
+
 /* ---- onboarding tour ----
    Spotlight walkthrough of the workspace (Tour.tsx). The overlay sits above
    the z-100 modal ladder; the dim is a single oversized box-shadow around the
