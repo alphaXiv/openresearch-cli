@@ -237,8 +237,9 @@ export const getWorkingTree = (projectId: string) =>
 export type CheckoutRoot = "worktree" | "clone" | "branch";
 
 /** Source selector for checkout reads: `ref` picks a branch's committed
- * state (sessionId is then ignored server-side); `sessionId` alone picks the
- * session's live worktree; neither picks the hub clone. */
+ * state; `sessionId` picks the session's live worktree; neither picks the hub
+ * clone. Don't send both — the file endpoint ignores `sessionId` under `ref`,
+ * but code-tree rejects the combination outright. */
 export interface CheckoutRef {
   sessionId?: string;
   ref?: string;

@@ -482,8 +482,8 @@ pub fn working_tree_diff(repo: &Path) -> Result<(Option<String>, DiffPayload)> {
 /// The working tree diffed against `base` (a merge-base sha for a session
 /// worktree) instead of `HEAD` — the agent commits its work to experiment
 /// branches, so a bare `HEAD` diff would hide everything it committed since
-/// forking from the baseline. `None` reproduces `working_tree_diff`'s `HEAD`
-/// behaviour, keeping the clone-scoped endpoint untouched. Tracked edits come
+/// forking from the baseline. `None` diffs against `HEAD` — the clone-scoped
+/// behaviour `working_tree_diff` wraps. Tracked edits come
 /// from one `git diff`; untracked files are appended as new-file diffs, both
 /// under the shared `MAX_DIFF_BYTES` cap.
 pub fn working_tree_diff_against(repo: &Path, base: Option<&str>) -> Result<DiffPayload> {
@@ -615,6 +615,10 @@ pub fn changed_files(repo: &Path, base: &str) -> Result<Vec<ChangedFile>> {
         });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
+    // The two passes cover disjoint states (tracked vs untracked), but the UI
+    // keys rows on the path — dedupe defensively rather than trust git's edge
+    // cases (e.g. index-only states) forever.
+    files.dedup_by(|a, b| a.path == b.path);
     Ok(files)
 }
 

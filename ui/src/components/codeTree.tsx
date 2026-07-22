@@ -15,7 +15,7 @@ export interface DirNode {
   files: string[];
 }
 
-export function emptyDir(): DirNode {
+function emptyDir(): DirNode {
   return { dirs: new Map(), files: [] };
 }
 
@@ -44,7 +44,7 @@ export function buildTree(entries: string[]): DirNode {
 // from its default. No seeding pass — dirs appearing in later refreshes
 // behave exactly like their siblings.
 
-export function DirRow({
+function DirRow({
   name,
   node,
   path,

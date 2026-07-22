@@ -20,6 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   getCodeTree,
   getSessionWorktree,
+  listChatSessions,
   type ChangedFile,
   type ChangedStatus,
   type CodeTree,
@@ -147,6 +148,10 @@ export function WorktreeTab({
   // mode wasteful.
   useEffect(() => {
     let busy = false;
+    // Once any edge arrives for this session it supersedes the mount-time
+    // snapshot below (which may resolve later, out of date).
+    let edgeSeen = false;
+    let disposed = false;
     let timer: ReturnType<typeof setInterval> | null = null;
     const start = () => {
       if (timer) return;
@@ -160,6 +165,7 @@ export function WorktreeTab({
     };
     const off = onChatEvent((ev) => {
       if (ev.type !== "busy" || ev.sessionId !== sessionId) return;
+      edgeSeen = true;
       if (ev.busy && !busy) {
         busy = true;
         start();
@@ -169,11 +175,25 @@ export function WorktreeTab({
         load(); // catch the final post-turn state
       }
     });
+    // chat.busy is edge-only: a tab opened mid-turn would never see a
+    // busy:true edge, so polling (and the gated busy→idle refresh) would sit
+    // out the whole turn. Seed from the session list's busy snapshot instead.
+    listChatSessions(projectId)
+      .then((sessions) => {
+        if (disposed || edgeSeen || busy) return;
+        if (sessions.find((s) => s.id === sessionId)?.busy) {
+          busy = true;
+          start();
+        }
+      })
+      .catch(() => {});
     return () => {
+      disposed = true;
       off();
       stop();
     };
-  }, [sessionId, load]);
+    // load is memoized on [sessionId, projectId], which the closure also reads.
+  }, [sessionId, projectId, load]);
 
   const filesTree = useMemo(() => (tree ? buildTree(tree.entries) : null), [tree]);
 

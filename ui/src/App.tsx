@@ -37,7 +37,7 @@ import { Md } from "./components/Md";
 import { SettingsView, type SettingsTab } from "./components/SettingsPage";
 import { Tour, TOUR_DONE_KEY } from "./components/Tour";
 import { TreeView } from "./components/TreeView";
-import { useOrxEvents } from "./events";
+import { onChatEvent, useOrxEvents } from "./events";
 
 /** An experiment view open as a right-panel tab. */
 interface ExpViewDef {
@@ -80,7 +80,7 @@ interface PlanViewDef {
  * card's Code shortcut. Source + expansion state live here — CodeTab
  * unmounts whenever another right-pane tab fronts it (e.g. clicking a
  * file), and remount must not lose them. Discriminates on the `code` flag
- * (the other tab kinds discriminate on `view`/`path`/`kind`). */
+ * (the other tab kinds discriminate on `id`/`path`/`kind`/`wt`). */
 interface CodeTabDef {
   code: true;
   /** Source to browse: "" = the project clone, else a branch name. */
@@ -283,6 +283,7 @@ export default function App() {
     setFileTabs([]);
     setPlanTabs([]);
     setCodeTab(null);
+    setWorktreeTab(null);
     setRightTab("experiments");
     listExperiments(projectId).then(setExperiments).catch(() => {});
     listRuns(projectId).then(setRuns).catch(() => {});
@@ -442,6 +443,22 @@ export default function App() {
     setWorktreeTab(null);
     setRightTab((cur) => (typeof cur === "object" && "wt" in cur ? "experiments" : cur));
   }, []);
+
+  // A deleted session takes its worktree with it — close the tab rather than
+  // leave it 404-ing over stale content (deletion arrives over SSE; ChatPanel
+  // only forgets its own session list).
+  useEffect(
+    () =>
+      onChatEvent((ev) => {
+        if (ev.type !== "sessionDeleted") return;
+        setWorktreeTab((prev) => {
+          if (!prev || prev.sessionId !== ev.sessionId) return prev;
+          setRightTab((cur) => (typeof cur === "object" && "wt" in cur ? "experiments" : cur));
+          return null;
+        });
+      }),
+    [],
+  );
 
   // Drag the panel's left edge to resize; width persists across reloads.
   const resizePanel = (e: React.PointerEvent) => {
