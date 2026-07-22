@@ -660,10 +660,11 @@ const Message = memo(function Message({
 });
 
 /** Memoized transcript: composer keystrokes re-render ChatPanel (draft state
- * lives there), and without this boundary each keystroke re-allocated N
- * Message elements and ran N memo comparisons. All props are referentially
- * stable across keystrokes, so typing costs one shallow compare here instead
- * of O(messages) work. */
+ * lives there), and this boundary keeps them from re-allocating N Message
+ * elements and running N memo comparisons. Every prop passed here must stay
+ * referentially stable across keystrokes (memoized/useCallback, never inline)
+ * or the boundary silently breaks — with that held, typing costs one shallow
+ * compare instead of O(messages) work. */
 const Transcript = memo(function Transcript({
   messages,
   onOpenFile,
@@ -673,7 +674,7 @@ const Transcript = memo(function Transcript({
 }: {
   messages: ChatMessage[];
   onOpenFile?: (path: string) => void;
-  onRespond?: (answer: PromptAnswer) => Promise<boolean>;
+  onRespond?: (answer: PromptAnswer) => void;
   onOpenPlan?: (plan: string, promptId: string) => void;
   skills?: SkillInfo[];
 }) {
