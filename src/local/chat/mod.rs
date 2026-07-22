@@ -563,7 +563,7 @@ impl ChatHost {
     ) -> Result<PermissionDecision> {
         // The endpoint grants tool permissions, so unlike the rest of the
         // localhost API it authenticates: the bridge must echo the token its
-        // turn was spawned with.
+        // child was spawned with.
         let token_ok = self
             .gate_tokens
             .lock()
