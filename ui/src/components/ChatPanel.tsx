@@ -57,6 +57,7 @@ import {
   usePopover,
   type ModelSelection,
 } from "./ModelPicker";
+import { ContextMeter } from "./ContextMeter";
 
 const SELECTION_STORAGE_KEY = "orx:agent-selection";
 
@@ -1138,7 +1139,11 @@ export function ChatPanel({
             const i = cur.findIndex((s) => s.id === ev.session.id);
             if (i < 0) return [ev.session, ...cur];
             const next = cur.slice();
-            next[i] = ev.session;
+            // An interrupted turn aborts before the persist block, so its
+            // follow-up chat.session can lack usage the client already showed
+            // live. Usage is never legitimately cleared, so keep the local
+            // value whenever the incoming session omits one.
+            next[i] = { ...ev.session, contextUsage: ev.session.contextUsage ?? cur[i].contextUsage };
             return next;
           });
           break;
@@ -1150,6 +1155,11 @@ export function ChatPanel({
           break;
         case "busy":
           dispatch({ type: "busy", sessionId: ev.sessionId, busy: ev.busy });
+          break;
+        case "usage":
+          setSessions((cur) =>
+            cur.map((s) => (s.id === ev.sessionId ? { ...s, contextUsage: ev.usage } : s)),
+          );
           break;
       }
     });
@@ -1883,9 +1893,10 @@ export function ChatPanel({
               onSelect={setPermissionMode}
             />
             <div style={{ flex: 1 }} />
-            {/* Bottom-right: model, then reasoning level. The picker reflects the
-                open session (harness locked once it exists); the global default
-                only applies before the first message. */}
+            {/* Bottom-right: context meter, model, then reasoning level. The
+                picker reflects the open session (harness locked once it exists);
+                the global default only applies before the first message. */}
+            <ContextMeter usage={openSession?.contextUsage} />
             <ModelPicker
               value={composerSelection}
               onSelect={selectModel}

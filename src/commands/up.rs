@@ -2477,6 +2477,7 @@ async fn create_chat_session(
         permission_mode: nonempty(req.permission_mode),
         reasoning_level: nonempty(req.reasoning_level),
         archived: false,
+        context_usage_json: None,
         created_at: now_ms(),
         updated_at: now_ms(),
     };

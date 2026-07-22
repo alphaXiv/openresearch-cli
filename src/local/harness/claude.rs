@@ -26,7 +26,8 @@ use super::options::{HarnessOptions, PermissionMode};
 use super::{Harness, ResumeAction};
 use crate::error::{anyhow, Result};
 use crate::local::chat::{
-    PromptAnswer, ResumeCtx, TurnCtx, WirePart, WirePrompt, WireQuestionOption, WireToolState,
+    ContextUsage, PromptAnswer, ResumeCtx, TurnCtx, WirePart, WirePrompt, WireQuestionOption,
+    WireToolState,
 };
 use crate::local::claude::{SpawnConfig, SpawnSpec, TurnEvent};
 use crate::local::opencode::ensure_playbook;
@@ -731,6 +732,20 @@ fn apply_event(ctx: &mut TurnCtx, state: &mut TurnState, event: &Value) -> bool 
                     _ => {}
                 }
             }
+            // Per-message usage gives live updates during multi-step turns; the
+            // window arrives later on `result`, so report the token count only.
+            // A subagent's message is a top-level `assistant` event with
+            // `parent_tool_use_id` set — its smaller count must not overwrite
+            // (latest-wins) the main session's occupancy, so skip its usage.
+            let is_subagent = !event.get("parent_tool_use_id").is_none_or(Value::is_null);
+            if !is_subagent {
+                if let Some(used) = claude_used_tokens(event.pointer("/message/usage")) {
+                    ctx.report_usage(ContextUsage {
+                        used_tokens: used,
+                        context_window: None,
+                    });
+                }
+            }
         }
         Some("user") => {
             // Synthetic tool-result turns: complete the matching tool part.
@@ -796,11 +811,76 @@ fn apply_event(ctx: &mut TurnCtx, state: &mut TurnState, event: &Value) -> bool 
                     .to_string();
                 ctx.push_error(format!("claude: {detail}"));
             }
+            report_result_usage(ctx, event);
             return true;
         }
         _ => {}
     }
     false
+}
+
+/// Sum the four token buckets of a Claude `usage` object into the context-window
+/// occupancy of that request (input + cache read + cache write + output).
+/// Returns `None` when the object is absent or carries none of the fields.
+fn claude_used_tokens(usage: Option<&Value>) -> Option<u64> {
+    let usage = usage?;
+    let field = |name: &str| usage.get(name).and_then(Value::as_u64);
+    let keys = [
+        "input_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "output_tokens",
+    ];
+    if keys.iter().all(|k| field(k).is_none()) {
+        return None;
+    }
+    Some(keys.iter().filter_map(|k| field(k)).sum())
+}
+
+/// Fold the terminal `result` event's usage into the meter: `modelUsage` reports
+/// the context window (keyed by model id — pick the turn's model, else the
+/// largest entry, so subagent models don't win); occupancy comes from the
+/// `assistant` usage already captured this turn, else the last
+/// `usage.iterations[]` entry, else the top-level `usage` aggregate.
+fn report_result_usage(ctx: &mut TurnCtx, event: &Value) {
+    let model_usage = event.get("modelUsage").and_then(Value::as_object);
+    let entry = model_usage.and_then(|map| {
+        map.get(ctx.model.as_deref().unwrap_or_default())
+            .or_else(|| {
+                map.values().max_by_key(|v| {
+                    v.get("inputTokens").and_then(Value::as_u64).unwrap_or(0)
+                        + v.get("outputTokens").and_then(Value::as_u64).unwrap_or(0)
+                        + v.get("cacheReadInputTokens")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)
+                        + v.get("cacheCreationInputTokens")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)
+                })
+            })
+    });
+    let context_window = entry
+        .and_then(|e| e.get("contextWindow"))
+        .and_then(Value::as_u64);
+    // Prefer usage already captured from an `assistant` event; else fall back to
+    // the LAST iteration (the aggregate overstates a multi-iteration context).
+    let iteration_used = event
+        .pointer("/usage/iterations")
+        .and_then(Value::as_array)
+        .and_then(|it| it.last())
+        .and_then(|last| claude_used_tokens(Some(last)));
+    let used = ctx
+        .context_usage
+        .as_ref()
+        .map(|u| u.used_tokens)
+        .or(iteration_used)
+        .or_else(|| claude_used_tokens(event.get("usage")));
+    if let Some(used) = used {
+        ctx.report_usage(ContextUsage {
+            used_tokens: used,
+            context_window,
+        });
+    }
 }
 
 /// The reasoning-level → `--effort` value the spawn config carries. Split out so
@@ -1288,5 +1368,89 @@ mod tests {
         assert!(!state.saw_prompt);
         assert_eq!(ctx.assistant.parts.len(), 1, "{:?}", ctx.assistant.parts);
         assert_eq!(ctx.assistant.parts[0].tool.as_deref(), Some("Bash"));
+    }
+
+    #[test]
+    fn assistant_usage_reports_summed_token_count_without_window() {
+        let mut ctx = TurnCtx::test_stub();
+        let event: Value = serde_json::from_str(
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"hi"}],
+                 "usage":{"input_tokens":3,"cache_creation_input_tokens":27557,"cache_read_input_tokens":100,"output_tokens":4}}}"#,
+        )
+        .unwrap();
+        apply_event(&mut ctx, &mut TurnState::default(), &event);
+        let usage = ctx.context_usage.expect("assistant usage reported");
+        assert_eq!(usage.used_tokens, 3 + 27557 + 100 + 4);
+        assert_eq!(usage.context_window, None);
+    }
+
+    #[test]
+    fn result_modelusage_supplies_window_and_keeps_assistant_tokens() {
+        // Real shape captured 2026-07-22 from claude 2.1.197.
+        let mut ctx = TurnCtx::test_stub();
+        ctx.model = Some("claude-haiku-4-5".into());
+        let assistant: Value = serde_json::from_str(
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"hi"}],
+                 "usage":{"input_tokens":3,"cache_creation_input_tokens":27557,"cache_read_input_tokens":0,"output_tokens":4}}}"#,
+        )
+        .unwrap();
+        apply_event(&mut ctx, &mut TurnState::default(), &assistant);
+        let result: Value = serde_json::from_str(
+            r#"{"type":"result","subtype":"success","num_turns":1,
+                "usage":{"input_tokens":3,"cache_creation_input_tokens":27557,"cache_read_input_tokens":0,"output_tokens":4,
+                  "iterations":[{"input_tokens":3,"output_tokens":4,"cache_read_input_tokens":0,"cache_creation_input_tokens":27557,"type":"message"}]},
+                "modelUsage":{"claude-haiku-4-5":{"inputTokens":3,"outputTokens":4,"cacheReadInputTokens":0,"cacheCreationInputTokens":27557,"costUSD":0.055137,"contextWindow":200000,"maxOutputTokens":32000}}}"#,
+        )
+        .unwrap();
+        let done = apply_event(&mut ctx, &mut TurnState::default(), &result);
+        assert!(done);
+        let usage = ctx.context_usage.expect("result usage present");
+        // The assistant already reported the tokens; result only adds the window.
+        assert_eq!(usage.used_tokens, 3 + 27557 + 4);
+        assert_eq!(usage.context_window, Some(200000));
+    }
+
+    #[test]
+    fn subagent_assistant_usage_does_not_touch_the_meter() {
+        // A Task subagent's message is a top-level `assistant` event with
+        // `parent_tool_use_id` set; its (smaller) usage must NOT overwrite the
+        // main session's occupancy.
+        let mut ctx = TurnCtx::test_stub();
+        let main: Value = serde_json::from_str(
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"hi"}],
+                 "usage":{"input_tokens":50000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":100}}}"#,
+        )
+        .unwrap();
+        apply_event(&mut ctx, &mut TurnState::default(), &main);
+        let before = ctx.context_usage.clone().expect("main usage reported");
+        assert_eq!(before.used_tokens, 50100);
+
+        let subagent: Value = serde_json::from_str(
+            r#"{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"id":"m2","content":[{"type":"text","text":"sub"}],
+                 "usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":2}}}"#,
+        )
+        .unwrap();
+        apply_event(&mut ctx, &mut TurnState::default(), &subagent);
+        assert_eq!(ctx.context_usage, Some(before));
+    }
+
+    #[test]
+    fn result_falls_back_to_last_iteration_when_no_assistant_usage() {
+        let mut ctx = TurnCtx::test_stub();
+        ctx.model = Some("claude-haiku-4-5".into());
+        let result: Value = serde_json::from_str(
+            r#"{"type":"result","subtype":"success",
+                "usage":{"input_tokens":9,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":9,
+                  "iterations":[
+                    {"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},
+                    {"input_tokens":40,"output_tokens":2,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}]},
+                "modelUsage":{"claude-haiku-4-5":{"inputTokens":40,"outputTokens":2,"cacheReadInputTokens":5,"cacheCreationInputTokens":3,"contextWindow":200000}}}"#,
+        )
+        .unwrap();
+        apply_event(&mut ctx, &mut TurnState::default(), &result);
+        let usage = ctx.context_usage.expect("result usage present");
+        // Last iteration (40+2+5+3), not the aggregate.
+        assert_eq!(usage.used_tokens, 40 + 2 + 5 + 3);
+        assert_eq!(usage.context_window, Some(200000));
     }
 }

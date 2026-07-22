@@ -284,6 +284,20 @@ fn save_images(images: &[ImageAttachment]) -> Result<Vec<(String, std::path::Pat
     Ok(saved)
 }
 
+/// How much of the model's context window a session has consumed, measured off
+/// the most recent API request the harness reported. Latest report wins (not
+/// cumulative), so auto-compaction naturally drops the number.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsage {
+    /// Tokens occupying the context window after the most recent API request
+    /// (input + cache read + cache write + output of that request).
+    pub used_tokens: u64,
+    /// Total context window of the model, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WireMessage {
@@ -294,6 +308,10 @@ pub struct WireMessage {
 }
 
 pub fn session_json(s: &StoredChatSession, busy: bool) -> Value {
+    let context_usage = s
+        .context_usage_json
+        .as_deref()
+        .and_then(|j| serde_json::from_str::<Value>(j).ok());
     json!({
         "id": s.id,
         "projectId": s.project_id,
@@ -306,6 +324,7 @@ pub fn session_json(s: &StoredChatSession, busy: bool) -> Value {
         "createdAt": s.created_at,
         "updatedAt": s.updated_at,
         "busy": busy,
+        "contextUsage": context_usage,
     })
 }
 
@@ -985,6 +1004,13 @@ impl ChatHost {
                 parts: Vec::new(),
                 created_at: now_ms(),
             },
+            // Seed from the persisted value so mid-turn reports (which carry a
+            // token count but often no window) inherit last turn's window and
+            // the meter keeps its percent while the turn streams.
+            context_usage: session
+                .context_usage_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str(json).ok()),
             last_flush: Instant::now() - FLUSH_INTERVAL,
         };
         let task = tokio::spawn(async move {
@@ -996,6 +1022,13 @@ impl ChatHost {
                 ctx.push_error(format!("{err}"));
             }
             let _ = ctx.flush();
+            // Persist the turn's final context usage so it survives a backend
+            // restart and rides on the `chat.session` emit below.
+            if let Some(usage) = &ctx.context_usage {
+                if let (Ok(store), Ok(json)) = (Store::open(), serde_json::to_string(usage)) {
+                    let _ = store.set_chat_session_context_usage(&ctx.session_id, &json);
+                }
+            }
             ctx.host.finish_turn(&ctx.session_id).await;
         });
         // Upgrade the reservation None→Some(handle), atomically re-checking that
@@ -1558,6 +1591,9 @@ pub struct TurnCtx {
     pub project: LocalProject,
     pub text: String,
     pub assistant: WireMessage,
+    /// Latest context-window usage the harness reported this turn. Persisted at
+    /// turn end; `report_usage` also streams it live over `chat.usage`.
+    pub context_usage: Option<ContextUsage>,
     last_flush: Instant,
 }
 
@@ -1604,6 +1640,7 @@ impl TurnCtx {
                 parts: Vec::new(),
                 created_at: 0,
             },
+            context_usage: None,
             last_flush: Instant::now(),
         }
     }
@@ -1642,6 +1679,23 @@ impl TurnCtx {
                 );
             }
         }
+    }
+
+    /// Record the latest context-window usage a harness reported and stream it
+    /// live over `chat.usage`. Merging: a report that omits `context_window`
+    /// inherits the previously-known value (an `assistant` event carries the
+    /// token count but not the window; the `result` event fills the window).
+    pub fn report_usage(&mut self, mut usage: ContextUsage) {
+        if let Some(prev) = &self.context_usage {
+            if usage.context_window.is_none() {
+                usage.context_window = prev.context_window;
+            }
+        }
+        self.context_usage = Some(usage.clone());
+        self.host.emit(
+            "chat.usage",
+            json!({ "sessionId": self.session_id, "usage": usage }),
+        );
     }
 
     /// Insert or replace a part by id, preserving arrival order.
@@ -2055,5 +2109,50 @@ mod bridge_tests {
         assert!(prompt.resolved);
         assert_eq!(prompt.answers, vec!["A"]);
         assert_eq!(prompt.approved, Some(true));
+    }
+
+    fn bare_session() -> StoredChatSession {
+        StoredChatSession {
+            id: "chat_1".into(),
+            project_id: "proj_1".into(),
+            harness: "claude-code".into(),
+            native_session_id: None,
+            title: None,
+            model: Some("claude-haiku-4-5".into()),
+            permission_mode: None,
+            reasoning_level: None,
+            archived: false,
+            context_usage_json: None,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn session_json_includes_context_usage_when_set_null_otherwise() {
+        // No usage stored → the field is JSON null.
+        let session = bare_session();
+        assert!(session_json(&session, false)["contextUsage"].is_null());
+
+        // Stored usage is inlined as a parsed object, not a string.
+        let mut with_usage = bare_session();
+        with_usage.context_usage_json =
+            Some(r#"{"usedTokens":27564,"contextWindow":200000}"#.into());
+        let value = session_json(&with_usage, false);
+        assert_eq!(value["contextUsage"]["usedTokens"], 27564);
+        assert_eq!(value["contextUsage"]["contextWindow"], 200000);
+    }
+
+    #[test]
+    fn context_usage_serde_camel_cases_and_skips_none() {
+        let usage = ContextUsage {
+            used_tokens: 100,
+            context_window: None,
+        };
+        // Only usedTokens survives; the None window is skipped.
+        assert_eq!(
+            serde_json::to_value(&usage).unwrap(),
+            json!({ "usedTokens": 100 })
+        );
     }
 }
