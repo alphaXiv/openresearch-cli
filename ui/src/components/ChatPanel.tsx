@@ -263,13 +263,7 @@ function toolLine(part: ChatPart): string {
 
 /** One expandable tool row inside a group: gray summary line, click to reveal
  * the input + output. */
-const ToolRow = memo(function ToolRow({
-  part,
-  onOpenFile,
-}: {
-  part: ChatPart;
-  onOpenFile?: (path: string) => void;
-}) {
+function ToolRow({ part, onOpenFile }: { part: ChatPart; onOpenFile?: (path: string) => void }) {
   const state = part.state;
   const output = state?.error || state?.output || "";
   const cmd = typeof state?.input?.command === "string" ? state.input.command : null;
@@ -297,23 +291,20 @@ const ToolRow = memo(function ToolRow({
       {hasDetail && (
         <div className="tool-detail">
           {cmd && <div className="tool-cmd-full">{cmd}</div>}
+          {/* Safety net for pre-cap stored transcripts; the backend caps live
+              tool output at 16k (TOOL_TEXT_CAP), so this slice must stay
+              above that or it clips the truncation marker. */}
           {output && <div className="tool-output">{output.slice(0, 20000)}</div>}
         </div>
       )}
     </details>
   );
-});
+}
 
 /** A run of consecutive tool calls, collapsed into one gray line like the
  * Claude desktop app ("Read hello.py" for one, "Used N tools" for several).
  * Clicking expands every row; a still-running tool auto-expands. */
-const ToolGroup = memo(function ToolGroup({
-  parts,
-  onOpenFile,
-}: {
-  parts: ChatPart[];
-  onOpenFile?: (path: string) => void;
-}) {
+function ToolGroup({ parts, onOpenFile }: { parts: ChatPart[]; onOpenFile?: (path: string) => void }) {
   const running = parts.some((p) => p.state?.status === "running");
   const errored = parts.some((p) => p.state?.status === "error");
   const [open, setOpen] = useState(false);
@@ -343,7 +334,7 @@ const ToolGroup = memo(function ToolGroup({
       )}
     </div>
   );
-});
+}
 
 /** Interactive card for a plan / permission / question prompt. Approving (or
  * answering) resumes the session. Once resolved, cards mirror Claude Code:
@@ -1634,8 +1625,6 @@ export function ChatPanel({
           }}
         >
           <div className="chat-thread-inner" ref={threadInnerRef}>
-            {/* Stamp the session onto file opens: the agent runs in this
-                session's worktree, so that's where its paths point. */}
             {messages.filter(messageHasVisibleContent).map((m) => (
               <Message
                 key={m.id}
