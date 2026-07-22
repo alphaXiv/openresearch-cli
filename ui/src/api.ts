@@ -278,11 +278,43 @@ export interface CodeTree {
 }
 
 /** Flat file listing of the project — a branch's committed tree when `ref` is
- * given, else the hub clone's checkout — plus the branch name. */
-export const getCodeTree = (projectId: string, opts: { ref?: string } = {}) => {
+ * given, else a chat session's live worktree when `sessionId` is given, else
+ * the hub clone's checkout — plus the branch name. `ref` and `sessionId` are
+ * mutually exclusive (the server rejects both). */
+export const getCodeTree = (projectId: string, opts: CheckoutRef = {}) => {
   const qs = checkoutQuery(opts).toString();
   return get<CodeTree>(`/api/projects/${projectId}/code-tree${qs ? `?${qs}` : ""}`);
 };
+
+/** How a file in a session's worktree differs from the diff base. Lowercase to
+ * match the server's serialization and the single-letter badges the UI draws. */
+export type ChangedStatus = "added" | "modified" | "deleted" | "renamed" | "untracked";
+
+export interface ChangedFile {
+  path: string;
+  status: ChangedStatus;
+  /** Pre-rename path — present only for `renamed` entries. */
+  oldPath?: string;
+}
+
+/** Live view of a chat session's private worktree. `exists: false` when the
+ * agent hasn't started yet (the worktree is created lazily on the first turn)
+ * or was pruned — the remaining fields are then absent. `files` is the
+ * complete change list even when `diff` truncates (they come from separate git
+ * passes); `diff` is the working tree against the baseline merge-base, with
+ * untracked files rendered as new-file diffs. */
+export interface SessionWorktree {
+  exists: boolean;
+  /** Checked-out branch, or null when detached at the baseline tip. */
+  branch?: string | null;
+  baselineBranch?: string;
+  baseSha?: string;
+  files?: ChangedFile[];
+  diff?: DiffPayload;
+}
+
+export const getSessionWorktree = (sessionId: string) =>
+  get<SessionWorktree>(`/api/chat/sessions/${sessionId}/worktree`);
 
 /** A GitHub `tree` URL for a branch. Branch names contain `/` (`orx/<slug>`),
  * so encode each path segment — never the whole string, which would escape the

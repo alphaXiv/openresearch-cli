@@ -4180,6 +4180,126 @@ a.files-pill:hover {
   white-space: nowrap;
 }
 
+/* ---- live worktree tab (WorktreeTab.tsx) ----
+   The Changes/Files viewer for a chat session's private worktree. Reuses the
+   .code-tab shell; adds a branch chip, a status-badged change list, and a diff
+   region below it. */
+.wt-branch-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: color-mix(in oklab, var(--text) 8%, transparent);
+  color: var(--subtext);
+  font-size: var(--fs-xs);
+}
+.wt-branch-chip > svg {
+  flex-shrink: 0;
+}
+.wt-branch-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+.wt-count {
+  padding: 0;
+  border: none;
+}
+.wt-changes {
+  display: flex;
+  flex-direction: column;
+}
+.wt-file-list {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-variant);
+  flex-shrink: 0;
+}
+.wt-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-md);
+}
+.wt-file-row:hover {
+  background: var(--panel);
+}
+.wt-file-row-static {
+  cursor: default;
+}
+.wt-file-row-static:hover {
+  background: transparent;
+}
+.wt-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-xs);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+}
+.wt-badge-added,
+.wt-badge-untracked {
+  background: var(--accent-green-subtle);
+  color: var(--accent-green);
+}
+.wt-badge-modified {
+  background: var(--accent-amber-subtle);
+  color: var(--accent-amber);
+}
+.wt-badge-deleted {
+  background: var(--accent-red-subtle);
+  color: var(--accent-red);
+}
+.wt-badge-renamed {
+  background: var(--accent-blue-subtle);
+  color: var(--accent-blue);
+}
+.wt-file-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+.wt-file-row-static .wt-file-path {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.wt-diff {
+  padding: 8px;
+}
+.wt-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--muted);
+}
+.wt-empty > svg {
+  color: var(--subtext);
+}
+.wt-empty p {
+  margin: 0;
+  max-width: 320px;
+  font-size: var(--fs-sm);
+}
+
 /* ---- onboarding tour ----
    Spotlight walkthrough of the workspace (Tour.tsx). The overlay sits above
    the z-100 modal ladder; the dim is a single oversized box-shadow around the

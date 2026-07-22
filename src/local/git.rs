@@ -475,7 +475,20 @@ pub fn list_commits(repo: &Path, branch: &str, limit: usize) -> Result<Vec<Commi
 /// files rendered as new-file diffs. Returns (current branch, diff).
 pub fn working_tree_diff(repo: &Path) -> Result<(Option<String>, DiffPayload)> {
     let branch = current_branch(repo);
-    let mut bytes = git_bytes(repo, &["--no-pager", "diff", "HEAD"], &[1])?;
+    let payload = working_tree_diff_against(repo, None)?;
+    Ok((branch, payload))
+}
+
+/// The working tree diffed against `base` (a merge-base sha for a session
+/// worktree) instead of `HEAD` — the agent commits its work to experiment
+/// branches, so a bare `HEAD` diff would hide everything it committed since
+/// forking from the baseline. `None` reproduces `working_tree_diff`'s `HEAD`
+/// behaviour, keeping the clone-scoped endpoint untouched. Tracked edits come
+/// from one `git diff`; untracked files are appended as new-file diffs, both
+/// under the shared `MAX_DIFF_BYTES` cap.
+pub fn working_tree_diff_against(repo: &Path, base: Option<&str>) -> Result<DiffPayload> {
+    let base = base.unwrap_or("HEAD");
+    let mut bytes = git_bytes(repo, &["--no-pager", "diff", base], &[1])?;
     let untracked = git(Some(repo), &["ls-files", "--others", "--exclude-standard"])?;
     for f in untracked.lines().filter(|l| !l.is_empty()) {
         if bytes.len() > MAX_DIFF_BYTES {
@@ -489,7 +502,120 @@ pub fn working_tree_diff(repo: &Path) -> Result<(Option<String>, DiffPayload)> {
             bytes.extend_from_slice(&chunk);
         }
     }
-    Ok((branch, cap_diff(bytes)))
+    Ok(cap_diff(bytes))
+}
+
+/// The merge-base of `a` and `b` (`git merge-base`), or `Ok(None)` when git
+/// can't compute one — an unresolvable ref, unrelated histories, or a fresh
+/// worktree whose baseline ref is momentarily missing. Callers treat `None` as
+/// "fall back to HEAD" rather than an error: a missing merge-base is a routine
+/// state, not a failure.
+pub fn merge_base(repo: &Path, a: &str, b: &str) -> Result<Option<String>> {
+    match git(Some(repo), &["merge-base", a, b]) {
+        Ok(sha) if !sha.is_empty() => Ok(Some(sha)),
+        _ => Ok(None),
+    }
+}
+
+/// How a changed file differs from the diff base. Serialized lowercase to
+/// match the single-letter status badges the UI renders; `renamed` and
+/// `untracked` have no git single-letter porcelain equivalent (rename is `R`
+/// with a score, untracked comes from a separate `ls-files` pass).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChangedStatus {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Untracked,
+}
+
+/// One entry in the session worktree's change list. `old_path` is only set for
+/// renames (the pre-rename path); the list is complete even when the unified
+/// diff truncates, because it comes from a separate name-status pass.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangedFile {
+    pub path: String,
+    pub status: ChangedStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
+}
+
+/// The set of files that differ between `base` and the worktree — tracked
+/// changes from `git diff --name-status -z` (so rename pairs and non-ASCII
+/// paths survive intact) plus untracked-not-ignored files from `git ls-files
+/// --others`. This is the authoritative change list the Changes view renders:
+/// it stays complete even when the unified diff hits `MAX_DIFF_BYTES`. Sorted
+/// by path for a stable ordering.
+pub fn changed_files(repo: &Path, base: &str) -> Result<Vec<ChangedFile>> {
+    let bytes = git_bytes(
+        repo,
+        &["--no-pager", "diff", "--name-status", "-z", base],
+        &[1],
+    )?;
+    // -z output is NUL-delimited fields (not lines): a status field followed by
+    // one path, except renames/copies which emit `R<score>`/`C<score>` and two
+    // paths (old, new). Walk the fields with an explicit cursor so the extra
+    // rename path is consumed in lockstep.
+    let fields = split_nul(&bytes);
+    let mut files = Vec::new();
+    let mut i = 0;
+    while i < fields.len() {
+        let code = &fields[i];
+        let first = code.chars().next().unwrap_or(' ');
+        match first {
+            'R' | 'C' => {
+                // Rename/copy: <old> then <new>. A copy leaves the original in
+                // place, so surface only the new path (as a rename) — the old
+                // file is unchanged and needs no row.
+                let old = fields.get(i + 1).cloned();
+                let new = fields.get(i + 2).cloned();
+                if let Some(path) = new {
+                    files.push(ChangedFile {
+                        path,
+                        status: ChangedStatus::Renamed,
+                        old_path: old,
+                    });
+                }
+                i += 3;
+            }
+            _ => {
+                if let Some(path) = fields.get(i + 1).cloned() {
+                    let status = match first {
+                        'A' => ChangedStatus::Added,
+                        'D' => ChangedStatus::Deleted,
+                        _ => ChangedStatus::Modified,
+                    };
+                    files.push(ChangedFile {
+                        path,
+                        status,
+                        old_path: None,
+                    });
+                }
+                i += 2;
+            }
+        }
+    }
+    let untracked = git_bytes(
+        repo,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+        &[],
+    )?;
+    for path in split_nul(&untracked) {
+        // `--others` reports a nested git repo as `dir/` — not a file; drop it.
+        if path.ends_with('/') {
+            continue;
+        }
+        files.push(ChangedFile {
+            path,
+            status: ChangedStatus::Untracked,
+            old_path: None,
+        });
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
 }
 
 /// The checked-out branch name, or `None` when detached (`rev-parse
@@ -641,4 +767,158 @@ pub fn file_at_capped(
         String::from_utf8_lossy(&buf).into_owned(),
         truncated,
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A throwaway git repo under the temp dir with one seed commit on `main`.
+    /// Configured with a fixed identity and no signing/hooks so `commit`
+    /// succeeds regardless of the host's global git config.
+    fn temp_repo() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("orx-git-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create repo dir");
+        run(&dir, &["init", "-q", "-b", "main"]);
+        run(&dir, &["config", "user.name", "orx-test"]);
+        run(&dir, &["config", "user.email", "orx-test@example.com"]);
+        run(&dir, &["config", "commit.gpgsign", "false"]);
+        write(&dir, "seed.txt", "seed\n");
+        run(&dir, &["add", "-A"]);
+        run(&dir, &["commit", "-q", "-m", "seed"]);
+        dir
+    }
+
+    fn run(dir: &Path, args: &[&str]) -> String {
+        git(Some(dir), args).unwrap_or_else(|e| panic!("git {args:?} failed: {e}"))
+    }
+
+    fn write(dir: &Path, rel: &str, contents: &str) {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent");
+        }
+        std::fs::write(path, contents).expect("write file");
+    }
+
+    fn statuses(files: &[ChangedFile]) -> Vec<(String, ChangedStatus)> {
+        files
+            .iter()
+            .map(|f| (f.path.clone(), f.status.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn merge_base_normal_and_missing() {
+        let repo = temp_repo();
+        let seed = run(&repo, &["rev-parse", "HEAD"]);
+        // A second commit on main: merge-base(HEAD, seed) is the seed itself.
+        write(&repo, "a.txt", "a\n");
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-q", "-m", "second"]);
+        assert_eq!(merge_base(&repo, "HEAD", &seed).unwrap(), Some(seed));
+        // An unknown ref yields None, never an error.
+        assert_eq!(merge_base(&repo, "HEAD", "no-such-ref").unwrap(), None);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn changed_files_committed_ahead_uncommitted_untracked() {
+        let repo = temp_repo();
+        let base = run(&repo, &["rev-parse", "HEAD"]);
+        // Committed-ahead: a new file committed on top of the base.
+        write(&repo, "committed.txt", "c\n");
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-q", "-m", "add committed"]);
+        // Uncommitted: edit a tracked file in the working tree.
+        write(&repo, "seed.txt", "seed edited\n");
+        // Untracked: a brand-new unstaged file.
+        write(&repo, "untracked.txt", "u\n");
+
+        let got = statuses(&changed_files(&repo, &base).unwrap());
+        assert_eq!(
+            got,
+            vec![
+                ("committed.txt".to_string(), ChangedStatus::Added),
+                ("seed.txt".to_string(), ChangedStatus::Modified),
+                ("untracked.txt".to_string(), ChangedStatus::Untracked),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn changed_files_rename_and_delete() {
+        let repo = temp_repo();
+        write(
+            &repo,
+            "old.txt",
+            "the quick brown fox jumps over the lazy dog\n",
+        );
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-q", "-m", "add old"]);
+        write(&repo, "gone.txt", "delete me\n");
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-q", "-m", "add gone"]);
+        let base = run(&repo, &["rev-parse", "HEAD"]);
+        // Rename old.txt -> new.txt (identical content: a pure rename) and
+        // delete gone.txt, then commit so they land in the name-status diff.
+        run(&repo, &["mv", "old.txt", "new.txt"]);
+        run(&repo, &["rm", "-q", "gone.txt"]);
+        run(&repo, &["commit", "-q", "-m", "rename and delete"]);
+
+        let files = changed_files(&repo, &base).unwrap();
+        let renamed = files
+            .iter()
+            .find(|f| f.path == "new.txt")
+            .expect("rename row");
+        assert_eq!(renamed.status, ChangedStatus::Renamed);
+        assert_eq!(renamed.old_path.as_deref(), Some("old.txt"));
+        let deleted = files
+            .iter()
+            .find(|f| f.path == "gone.txt")
+            .expect("delete row");
+        assert_eq!(deleted.status, ChangedStatus::Deleted);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn working_tree_diff_against_includes_committed_ahead() {
+        let repo = temp_repo();
+        let base = run(&repo, &["rev-parse", "HEAD"]);
+        // Content committed after the base must appear in the diff — a bare HEAD
+        // diff (base = None) would show nothing, since the tree is clean.
+        write(&repo, "ahead.txt", "committed line\n");
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-q", "-m", "ahead"]);
+
+        assert!(working_tree_diff_against(&repo, None)
+            .unwrap()
+            .diff
+            .is_empty());
+        let payload = working_tree_diff_against(&repo, Some(&base)).unwrap();
+        assert!(payload.diff.contains("ahead.txt"));
+        assert!(payload.diff.contains("committed line"));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn detached_zero_change_is_empty() {
+        // A fresh detached checkout at the baseline tip with no edits: base and
+        // HEAD coincide, so there are no changed files and an empty diff — the
+        // "detached, No changes yet" state the UI renders.
+        let repo = temp_repo();
+        let head = run(&repo, &["rev-parse", "HEAD"]);
+        run(&repo, &["checkout", "-q", "--detach", &head]);
+        let base = merge_base(&repo, "main", "HEAD")
+            .unwrap()
+            .expect("merge-base");
+        assert!(changed_files(&repo, &base).unwrap().is_empty());
+        assert!(working_tree_diff_against(&repo, Some(&base))
+            .unwrap()
+            .diff
+            .is_empty());
+        assert_eq!(current_branch(&repo), None);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
 }
