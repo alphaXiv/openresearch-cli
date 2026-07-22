@@ -2665,6 +2665,7 @@ mod tests {
             host: std::sync::Arc::new(crate::local::chat::ChatHost::new(
                 std::sync::Arc::new(crate::local::opencode::AgentHost::new(None)),
                 std::sync::Arc::new(crate::local::codex::CodexHost::new()),
+                std::sync::Arc::new(crate::local::claude::ClaudeHost::new()),
             )),
             session_id: "s".into(),
             native_session_id: None,

@@ -17,7 +17,7 @@
 //! in `registry()`; the dispatch, the ID list, the detection sweep, and the
 //! skill installer all pick it up with no further edits.
 
-mod claude;
+pub(crate) mod claude;
 pub(crate) mod codex;
 mod cursor;
 mod detect;

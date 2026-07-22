@@ -48,9 +48,10 @@ pub async fn run(args: UpArgs) -> Result<()> {
     // no eager agent bring-up. (--no-agent is now a no-op kept for compat.)
     let agent = Arc::new(AgentHost::new(args.model.clone()));
     let codex = Arc::new(local::codex::CodexHost::new());
+    let claude = Arc::new(local::claude::ClaudeHost::new());
     let state = AppState {
         agent: agent.clone(),
-        chat: Arc::new(ChatHost::new(agent.clone(), codex.clone())),
+        chat: Arc::new(ChatHost::new(agent.clone(), codex.clone(), claude.clone())),
         harnesses: Arc::new(tokio::sync::Mutex::new(None)),
         data_dir_move_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
@@ -91,6 +92,7 @@ pub async fn run(args: UpArgs) -> Result<()> {
     }
     agent.shutdown().await;
     codex.shutdown().await;
+    claude.shutdown().await;
     Ok(())
 }
 
@@ -573,6 +575,7 @@ async fn delete_project(State(state): State<AppState>, Path(id): Path<String>) -
         let _ = state.chat.interrupt(&session.id).await;
         state.chat.opencode.kill_session(&session.id).await;
         state.chat.codex.kill_session(&session.id).await;
+        state.chat.claude.kill_session(&session.id).await;
         local::chat::cleanup_session_worktree(&project, &session.id);
     }
     store.delete_local_project(&id)?;

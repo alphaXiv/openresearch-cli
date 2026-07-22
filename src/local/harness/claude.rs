@@ -1,33 +1,34 @@
 //! Claude Code harness.
 //!
-//! Chat: one `claude --print` process per turn, stream-json on stdout,
-//! multi-turn via `--resume` against Claude Code's own session store. The
+//! Chat: one *resident* `claude --print --input-format stream-json` child per
+//! chat session (`local::claude::ClaudeHost`), reused across turns — each turn
+//! sends one user message and folds the child's stream-json output until a
+//! `result` event. The child persists (stable `session_id`, stdin held open),
+//! collapsing the old spawn-per-turn overhead; a config change (permission mode
+//! / effort / bridge), interrupt, or crash respawns it with `--resume`. The
 //! playbook rides `--append-system-prompt-file`; the permission mode is
 //! `--permission-mode` from the session's setting (`auto`/`bypass` — see
 //! `options`). AskUserQuestion / ExitPlanMode surface as interactive cards: the
-//! turn ends on them and the user's answer resumes the session — except in
-//! plan mode, where the mcp-gate bridge holds both open mid-turn and the
-//! answer continues the same turn.
+//! turn ends on them and the user's answer resumes the session — except in plan
+//! mode, where the mcp-gate bridge holds both open mid-turn and the answer
+//! continues the same turn.
 //!
 //! Detection: `~/.claude.json` carries the signed-in OAuth account (no secrets
 //! read); `ANTHROPIC_API_KEY` is the api-key fallback.
 
 use std::path::PathBuf;
-use std::process::Stdio;
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
 
 use super::detect::{bin_version, find_on_path, nonempty_str, read_json, HarnessInfo};
 use super::options::{HarnessOptions, PermissionMode};
 use super::{Harness, ResumeAction};
 use crate::error::{anyhow, Result};
 use crate::local::chat::{
-    prepare_env, PromptAnswer, ResumeCtx, TurnCtx, WirePart, WirePrompt, WireQuestionOption,
-    WireToolState,
+    PromptAnswer, ResumeCtx, TurnCtx, WirePart, WirePrompt, WireQuestionOption, WireToolState,
 };
+use crate::local::claude::{SpawnConfig, SpawnSpec, TurnEvent};
 use crate::local::opencode::ensure_playbook;
 
 /// Each harness runs directly (its own CLI, the user's own login), so its
@@ -52,7 +53,7 @@ const CLAUDE_EFFORT_LEVELS: [(&str, &str); 5] = [
 pub struct ClaudeCode;
 
 /// `claude` on PATH, else the common install drop locations.
-pub fn find_claude() -> Option<PathBuf> {
+pub(crate) fn find_claude() -> Option<PathBuf> {
     find_on_path("claude").or_else(|| {
         let home = dirs::home_dir()?;
         [".claude/local/claude", ".local/bin/claude"]
@@ -296,7 +297,7 @@ impl Harness for ClaudeCode {
 /// harness-agnostic (`ask`/`accept-edits`/`bypass`), so this is where the enum
 /// is spelled back into Claude's own CLI vocabulary; `Auto` is the default when
 /// the session hasn't picked a mode.
-fn claude_permission_mode(mode: Option<PermissionMode>) -> &'static str {
+pub(crate) fn claude_permission_mode(mode: Option<PermissionMode>) -> &'static str {
     match mode.unwrap_or(PermissionMode::Auto) {
         PermissionMode::Ask => "default",
         PermissionMode::AcceptEdits => "acceptEdits",
@@ -325,7 +326,7 @@ const MCP_CONFIG_REL: &str = ".openresearch/agent/claude-mcp.json";
 ///
 /// The hook command is this executable's absolute path, so it resolves without
 /// depending on `orx` being on Claude's `PATH`.
-fn write_plan_settings(repo: &std::path::Path) -> Result<PathBuf> {
+pub(crate) fn write_plan_settings(repo: &std::path::Path) -> Result<PathBuf> {
     let orx = std::env::current_exe()
         .map_err(|e| anyhow!("cannot resolve orx binary path for plan-mode hook: {e}"))?;
     let hook = serde_json::json!([{
@@ -353,11 +354,12 @@ fn write_plan_settings(repo: &std::path::Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Write the per-turn `--mcp-config` file pointing Claude at `orx mcp-gate`
+/// Write the per-spawn `--mcp-config` file pointing Claude at `orx mcp-gate`
 /// (this same binary) and return its path. The bridge's env block carries the
-/// `orx up` port, the session id, and a fresh per-turn token — everything the
-/// child needs to relay permission requests back to the running server.
-fn write_mcp_config(
+/// `orx up` port, the session id, and a fresh per-child token minted at spawn —
+/// everything the resident bridge needs to relay permission requests back to
+/// the running server for the child's whole life.
+pub(crate) fn write_mcp_config(
     repo: &std::path::Path,
     up_port: u16,
     session_id: &str,
@@ -564,306 +566,385 @@ fn result_text(content: &Value) -> String {
     }
 }
 
+/// The per-turn state `apply_event` folds each stream-json line into. Kept
+/// store-free so the caller (not the fold) owns every side effect — the native
+/// session id is applied per event by `run_turn`, and every flush happens there
+/// too, which is what lets the fold run against a bare `TurnCtx::test_stub()` in
+/// the fixture tests.
+#[derive(Default)]
+struct TurnState {
+    /// Whether this child was spawned with the mcp-gate bridge active. With the
+    /// bridge on, ExitPlanMode / AskUserQuestion come from the bridge (held,
+    /// mid-turn-answerable), so their `tool_use` renders nothing.
+    bridge_active: bool,
+    /// The `result` event has landed — the turn is over.
+    saw_result: bool,
+    /// An interactive card was surfaced this turn (suppresses the synthesized
+    /// plan card — see `should_synthesize_plan`).
+    saw_prompt: bool,
+    /// The turn ended with a genuine failure (drives the error path).
+    turn_errored: bool,
+    /// The last non-empty assistant text block — the plan, if the model wrote
+    /// one as plain text.
+    last_text: String,
+    /// The native session id from the latest `system/init` or `result` (the
+    /// caller applies it to the store per event).
+    native_session_id: Option<String>,
+    /// The in-flight assistant message id from the stream's `message_start` —
+    /// deltas carry only a block `index`, so this is what keys them to the
+    /// same `{mid}-{index}` part ids the final complete `assistant` event
+    /// upserts.
+    stream_mid: Option<String>,
+}
+
+/// Fold one stream-json output object into the turn's transcript + `TurnState`.
+/// Pure w.r.t. the store — touches only `ctx.assistant.parts` (via the TurnCtx
+/// helpers) and `state` — so it is fixture-tested against `TurnCtx::test_stub()`.
+/// Returns `true` when this event is the terminal `result` (the caller stops
+/// the recv loop). Native-session-id application and flushing are the caller's
+/// job, keeping this store-free.
+fn apply_event(ctx: &mut TurnCtx, state: &mut TurnState, event: &Value) -> bool {
+    match event.get("type").and_then(Value::as_str) {
+        // Partial-message deltas (opt-in via --include-partial-messages): the
+        // text/thinking streams token by token instead of landing as one block
+        // when the complete `assistant` event arrives. Deltas build a part
+        // under the same `{mid}-{index}` id that the final event upserts, so
+        // the authoritative full text simply overwrites the accumulated one.
+        // That overwrite (and part ordering) leans on two stream-protocol
+        // invariants: the stream's message id equals the final assistant
+        // event's, and a block's `index` is its position in the final content
+        // array, with blocks streamed in ascending order.
+        Some("stream_event") => {
+            // A subagent's nested stream (parent_tool_use_id set) would
+            // interleave its text into the transcript — main loop only.
+            if !event.get("parent_tool_use_id").is_none_or(|v| v.is_null()) {
+                return false;
+            }
+            let inner = event.get("event").unwrap_or(&Value::Null);
+            match inner.get("type").and_then(Value::as_str) {
+                Some("message_start") => {
+                    if let Some(mid) = inner.pointer("/message/id").and_then(Value::as_str) {
+                        state.stream_mid = Some(mid.to_string());
+                    }
+                }
+                Some("content_block_delta") => {
+                    let (Some(mid), Some(index)) = (
+                        state.stream_mid.as_deref(),
+                        inner.get("index").and_then(Value::as_u64),
+                    ) else {
+                        return false;
+                    };
+                    let id = format!("{mid}-{index}");
+                    let delta = inner.get("delta").unwrap_or(&Value::Null);
+                    let (field, reasoning) = match delta.get("type").and_then(Value::as_str) {
+                        Some("text_delta") => ("text", false),
+                        Some("thinking_delta") => ("thinking", true),
+                        _ => return false,
+                    };
+                    if let Some(text) = delta.get(field).and_then(Value::as_str) {
+                        if !ctx.assistant.parts.iter().any(|p| p.id == id) {
+                            ctx.upsert_part(if reasoning {
+                                WirePart::reasoning(id.clone(), "")
+                            } else {
+                                WirePart::text(id.clone(), "")
+                            });
+                        }
+                        ctx.append_part_text(&id, text);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some("system") => {
+            if event.get("subtype").and_then(Value::as_str) == Some("init") {
+                if let Some(sid) = event.get("session_id").and_then(Value::as_str) {
+                    state.native_session_id = Some(sid.to_string());
+                }
+            }
+        }
+        Some("assistant") => {
+            let mid = event
+                .pointer("/message/id")
+                .and_then(Value::as_str)
+                .unwrap_or("m")
+                .to_string();
+            let blocks = event
+                .pointer("/message/content")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            for (i, block) in blocks.iter().enumerate() {
+                match block.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        let text = block.get("text").and_then(Value::as_str).unwrap_or("");
+                        if !text.trim().is_empty() {
+                            state.last_text = text.to_string();
+                        }
+                        ctx.upsert_part(WirePart::text(format!("{mid}-{i}"), text));
+                    }
+                    Some("thinking") => {
+                        let text = block.get("thinking").and_then(Value::as_str).unwrap_or("");
+                        ctx.upsert_part(WirePart::reasoning(format!("{mid}-{i}"), text));
+                    }
+                    Some("tool_use") => {
+                        let id = block
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or(&format!("{mid}-{i}"))
+                            .to_string();
+                        let name = block.get("name").and_then(Value::as_str).unwrap_or("");
+                        let input = block.get("input");
+                        // ExitPlanMode / AskUserQuestion surface as interactive
+                        // prompt cards instead of plain tool rows, and the user's
+                        // choice resumes the session. With the bridge active,
+                        // BOTH cards come from the bridge instead (held,
+                        // mid-turn-answerable) and the tool_use renders NOTHING:
+                        // a tool row would duplicate the card — and the denial
+                        // that carries the user's answer back would paint it as a
+                        // spurious error row once the tool_result lands.
+                        if state.bridge_active && matches!(name, "ExitPlanMode" | "AskUserQuestion")
+                        {
+                            continue;
+                        }
+                        if let Some(prompt) =
+                            plan_prompt(name, input).or_else(|| question_prompt(name, input))
+                        {
+                            state.saw_prompt = true;
+                            ctx.upsert_part(WirePart::prompt(id, prompt));
+                        } else {
+                            ctx.upsert_part(WirePart {
+                                id,
+                                kind: "tool".into(),
+                                text: None,
+                                tool: Some(name.to_string()),
+                                state: Some(WireToolState {
+                                    status: "running".into(),
+                                    input: input.map(normalize_input),
+                                    output: None,
+                                    error: None,
+                                    title: None,
+                                }),
+                                prompt: None,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Some("user") => {
+            // Synthetic tool-result turns: complete the matching tool part.
+            let blocks = event
+                .pointer("/message/content")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            for block in &blocks {
+                if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                    continue;
+                }
+                let Some(tool_id) = block.get("tool_use_id").and_then(Value::as_str) else {
+                    continue;
+                };
+                let is_error = block
+                    .get("is_error")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let text = block.get("content").map(result_text).unwrap_or_default();
+                if let Some(part) = ctx.assistant.parts.iter_mut().find(|p| p.id == tool_id) {
+                    if let Some(state) = part.state.as_mut() {
+                        state.status = if is_error { "error" } else { "completed" }.into();
+                        if is_error {
+                            state.error = Some(text.clone());
+                        } else {
+                            state.output = Some(text.clone());
+                        }
+                    }
+                }
+            }
+        }
+        Some("result") => {
+            state.saw_result = true;
+            // Resume mints a fresh session id per turn — track the latest.
+            if let Some(sid) = event.get("session_id").and_then(Value::as_str) {
+                state.native_session_id = Some(sid.to_string());
+            }
+            // We deliberately do NOT turn `permission_denials` into approve-me
+            // cards. Headless has no interactive approval, and of the modes we
+            // offer, only Plan produces denials — and those are *expected*
+            // (read-only by design). Surfacing an "Allow" that re-ran the turn
+            // under bypass would silently defeat plan mode. The model already
+            // narrates the block in text; the recourse is approving the plan
+            // (the ExitPlanMode card), which leaves plan mode. Auto/Bypass never
+            // deny in the first place.
+            //
+            // A plan pause is NOT a failure: the CLI records the blocked tools
+            // in `permission_denials` but still reports `subtype: "success"` /
+            // `is_error: false`. So drive the error path off the result status
+            // alone — a genuine failure is still surfaced.
+            let subtype = event.get("subtype").and_then(Value::as_str).unwrap_or("");
+            let is_error = event
+                .get("is_error")
+                .and_then(Value::as_bool)
+                .unwrap_or(subtype != "success");
+            if is_error {
+                state.turn_errored = true;
+                let detail = event
+                    .get("result")
+                    .and_then(Value::as_str)
+                    .unwrap_or(subtype)
+                    .to_string();
+                ctx.push_error(format!("claude: {detail}"));
+            }
+            return true;
+        }
+        _ => {}
+    }
+    false
+}
+
+/// The reasoning-level → `--effort` value the spawn config carries. Split out so
+/// the harness and the host agree on exactly what the child was launched with.
+fn spawn_config(ctx: &TurnCtx) -> SpawnConfig {
+    SpawnConfig {
+        permission_mode: ctx.permission_mode,
+        effort: claude_effort(ctx.reasoning_level.as_deref()).map(str::to_string),
+        model: ctx.model.clone(),
+        // The turn WANTS the bridge iff it's plan mode under a bound `orx up`
+        // port; whether the bridge was actually achieved is recorded on the
+        // spawned child's config (a failed write leaves it false and the next
+        // plan turn respawns). Keeping the wanted value here means a plan turn
+        // reconciles against a child that already has the bridge and reuses it.
+        bridge_active: ctx.permission_mode == Some(PermissionMode::Plan)
+            && ctx.host.up_port().is_some(),
+    }
+}
+
 async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
-    let bin = find_claude().ok_or_else(|| {
-        anyhow!("claude not found on PATH — install Claude Code and run `claude` once to sign in")
-    })?;
     let project = ctx.project.clone();
     let session_id = ctx.session_id.clone();
     // The modular orx skills land in the harness's session-skills dir, fresh,
-    // for this session's agent to auto-load — source of truth is the trait.
+    // for this session's agent to auto-load — source of truth is the trait. Run
+    // per turn (worktree + skills refresh); the resident child re-reads the
+    // playbook only on respawn, same tradeoff as codex (see opencode.rs's
+    // playbook-freshness comment).
     let skills_dir = ClaudeCode.session_skills_dir();
     let (repo, playbook) =
         tokio::task::spawn_blocking(move || ensure_playbook(&project, &session_id, skills_dir))
             .await
             .map_err(|e| anyhow!("playbook task failed: {e}"))??;
 
-    let mut cmd = Command::new(&bin);
-    cmd.args([
-        "--print",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--permission-mode",
-        claude_permission_mode(ctx.permission_mode),
-    ])
-    // AskUserQuestion and ExitPlanMode are now surfaced to the user as
-    // interactive cards (see plan_prompt / question_prompt) instead of being
-    // disallowed; the turn ends on them and the answer resumes the session —
-    // unless the plan-mode bridge is active, which holds them open mid-turn.
-    .arg("--append-system-prompt-file")
-    .arg(&playbook)
-    .current_dir(&repo)
-    .stdin(Stdio::piped())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::from(crate::local::chat::harness_log("claude")?))
-    .kill_on_drop(true);
-    if let Some(model) = &ctx.model {
-        cmd.args(["--model", model]);
-    }
-    // Reasoning level maps directly to Claude Code's `--effort` flag.
-    if let Some(effort) = claude_effort(ctx.reasoning_level.as_deref()) {
-        cmd.args(["--effort", effort]);
-    }
-    if let Some(native_id) = &ctx.native_session_id {
-        cmd.args(["--resume", native_id]);
-    }
-    // In plan mode, two per-turn files change what the CLI gates:
-    //  * `--settings` wires the `orx plan-gate` PreToolUse hook — read-only
-    //    inspection allowed, ExitPlanMode forced to `ask` (headless would
-    //    self-approve it otherwise).
-    //  * `--mcp-config` + `--permission-prompt-tool` wire the `orx mcp-gate`
-    //    bridge: every permission the CLI would have prompted for interactively
-    //    is relayed to `orx up`, which surfaces a card and holds the call open
-    //    until the user answers — desktop-style mid-turn approvals.
-    // Both are best-effort: without them plan mode degrades to its default
-    // gating (denials) rather than failing the turn. On CLI versions without
-    // `--permission-prompt-tool` the flag is silently ignored (verified), so no
-    // version gate is needed.
-    let mut bridge_active = false;
-    if ctx.permission_mode == Some(PermissionMode::Plan) {
-        match write_plan_settings(&repo) {
-            Ok(path) => {
-                cmd.arg("--settings").arg(path);
-            }
-            Err(e) => {
-                eprintln!(
-                    "orx up: plan-mode settings not written, orx inspection will be gated: {e}"
-                );
-            }
-        }
-        // Without a bound port (not under `orx up`) there's no HTTP surface to
-        // relay approvals to — skip the bridge.
-        if let Some(port) = ctx.host.up_port() {
-            let token = ctx.host.mint_gate_token(&ctx.session_id);
-            match write_mcp_config(&repo, port, &ctx.session_id, &token) {
-                Ok(path) => {
-                    cmd.arg("--mcp-config").arg(path);
-                    cmd.args(["--permission-prompt-tool", "mcp__orx__approve"]);
-                    // Give a held approval an hour before the CLI abandons
-                    // the tool call; orx denies at 55 min, safely inside it.
-                    cmd.env("MCP_TOOL_TIMEOUT", "3600000");
-                    bridge_active = true;
-                }
-                Err(e) => {
-                    eprintln!(
-                        "orx up: mcp bridge not configured, gray-area tools will be denied: {e}"
-                    );
-                }
-            }
-        }
-    }
-    prepare_env(&mut cmd);
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| anyhow!("Could not spawn {}: {}", bin.display(), e))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(ctx.text.as_bytes()).await?;
-        // Dropped here: EOF is what tells --print the prompt is complete.
-    }
-    let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
-    let mut lines = BufReader::new(stdout).lines();
-    let mut saw_result = false;
-    // Synthesized-plan-card tracking (see `should_synthesize_plan`): whether
-    // any interactive card was surfaced, whether the turn errored, and the
-    // last non-empty text block — the plan, if the model wrote one as text.
-    // Clear any bridge-card flag a previous aborted turn left behind so it
-    // can't suppress this turn's fallback.
     let plan_mode = ctx.permission_mode == Some(PermissionMode::Plan);
+    // Clear any bridge-card flag a previous aborted turn left behind so it can't
+    // suppress this turn's fallback.
     let _ = ctx.host.take_bridge_prompted(&ctx.session_id);
     // Sweep zombie HELD cards (native_id) a crashed/restarted process left
-    // unresolved: they can never be answered again, and once this turn makes
-    // the session busy one could capture the composer's typed-text routing.
-    // End-turn cards are deliberately left alone — they resume via --resume.
+    // unresolved: they can never be answered again, and once this turn makes the
+    // session busy one could capture the composer's typed-text routing. End-turn
+    // cards are deliberately left alone — they resume via --resume.
     let _ = ctx.host.resolve_stale_prompts(&ctx.session_id, true).await;
-    let mut saw_prompt = false;
-    let mut turn_errored = false;
-    let mut last_text = String::new();
 
-    while let Some(line) = lines.next_line().await? {
-        let Ok(event) = serde_json::from_str::<Value>(&line) else {
-            continue;
+    // Ensure the session's resident child, reconciled to this turn's config: a
+    // reused child costs nothing, a model-only change retunes live, a launch-flag
+    // change (or a crash) respawns with `--resume`.
+    let spec = SpawnSpec {
+        chat: ctx.host.clone(),
+        session_id: ctx.session_id.clone(),
+        repo,
+        playbook,
+        resume: ctx.native_session_id.clone(),
+        config: spawn_config(ctx),
+    };
+    let client = ctx.host.claude.ensure(spec).await?;
+    // The child records what bridge state it ACHIEVED — a failed mcp-config write
+    // leaves it false even in plan mode. Drive card suppression off that, not the
+    // wanted value.
+    let bridge_active = client.config().bridge_active;
+
+    // Route events to this turn before sending the message — nothing is missed.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let _route = client.register_turn(tx);
+    if let Err(e) = client.send_user_message(&ctx.text).await {
+        // The child is unusable (stdin gone). Kill it so the next turn respawns
+        // with `--resume` and recovers this session's context.
+        ctx.host.claude.kill_session(&ctx.session_id).await;
+        return Err(anyhow!(
+            "claude stdin write failed: {e}; see {}",
+            crate::store::data_dir().join("agent-claude.log").display()
+        ));
+    }
+
+    let mut state = TurnState {
+        bridge_active,
+        ..Default::default()
+    };
+    // Fold events until the turn's `result`. The caller (here) applies the
+    // native session id and flushes per event, keeping `apply_event` store-free.
+    loop {
+        let Some(event) = rx.recv().await else {
+            // The route channel closed without a Closed marker — treat as a
+            // dropped turn; the next turn respawns via `--resume`.
+            break;
         };
-        match event.get("type").and_then(Value::as_str) {
-            Some("system") => {
-                if event.get("subtype").and_then(Value::as_str) == Some("init") {
-                    if let Some(sid) = event.get("session_id").and_then(Value::as_str) {
-                        ctx.set_native_session_id(sid);
-                    }
-                }
-            }
-            Some("assistant") => {
-                let mid = event
-                    .pointer("/message/id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("m")
-                    .to_string();
-                let blocks = event
-                    .pointer("/message/content")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                for (i, block) in blocks.iter().enumerate() {
-                    match block.get("type").and_then(Value::as_str) {
-                        Some("text") => {
-                            let text = block.get("text").and_then(Value::as_str).unwrap_or("");
-                            if !text.trim().is_empty() {
-                                last_text = text.to_string();
-                            }
-                            ctx.upsert_part(WirePart::text(format!("{mid}-{i}"), text));
-                        }
-                        Some("thinking") => {
-                            let text = block.get("thinking").and_then(Value::as_str).unwrap_or("");
-                            ctx.upsert_part(WirePart::reasoning(format!("{mid}-{i}"), text));
-                        }
-                        Some("tool_use") => {
-                            let id = block
-                                .get("id")
-                                .and_then(Value::as_str)
-                                .unwrap_or(&format!("{mid}-{i}"))
-                                .to_string();
-                            let name = block.get("name").and_then(Value::as_str).unwrap_or("");
-                            let input = block.get("input");
-                            // ExitPlanMode / AskUserQuestion surface as interactive
-                            // prompt cards instead of plain tool rows, and the
-                            // user's choice resumes the session. With the bridge
-                            // active, BOTH cards come from the bridge instead
-                            // (held, mid-turn-answerable) and the tool_use
-                            // renders NOTHING: a tool row would duplicate the
-                            // card — and the denial that carries the user's
-                            // answer back would paint it as a spurious error
-                            // row once the tool_result lands.
-                            if bridge_active && matches!(name, "ExitPlanMode" | "AskUserQuestion") {
-                                continue;
-                            }
-                            if let Some(prompt) =
-                                plan_prompt(name, input).or_else(|| question_prompt(name, input))
-                            {
-                                saw_prompt = true;
-                                ctx.upsert_part(WirePart::prompt(id, prompt));
-                            } else {
-                                ctx.upsert_part(WirePart {
-                                    id,
-                                    kind: "tool".into(),
-                                    text: None,
-                                    tool: Some(name.to_string()),
-                                    state: Some(WireToolState {
-                                        status: "running".into(),
-                                        input: input.map(normalize_input),
-                                        output: None,
-                                        error: None,
-                                        title: None,
-                                    }),
-                                    prompt: None,
-                                });
-                            }
-                        }
-                        _ => {}
-                    }
+        match event {
+            TurnEvent::Line(value) => {
+                let done = apply_event(ctx, &mut state, &value);
+                if let Some(sid) = state.native_session_id.take() {
+                    ctx.set_native_session_id(&sid);
                 }
                 ctx.maybe_flush();
-            }
-            Some("user") => {
-                // Synthetic tool-result turns: complete the matching tool part.
-                let blocks = event
-                    .pointer("/message/content")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                for block in &blocks {
-                    if block.get("type").and_then(Value::as_str) != Some("tool_result") {
-                        continue;
-                    }
-                    let Some(tool_id) = block.get("tool_use_id").and_then(Value::as_str) else {
-                        continue;
-                    };
-                    let is_error = block
-                        .get("is_error")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false);
-                    let text = block.get("content").map(result_text).unwrap_or_default();
-                    if let Some(part) = ctx.assistant.parts.iter_mut().find(|p| p.id == tool_id) {
-                        if let Some(state) = part.state.as_mut() {
-                            state.status = if is_error { "error" } else { "completed" }.into();
-                            if is_error {
-                                state.error = Some(text.clone());
-                            } else {
-                                state.output = Some(text.clone());
-                            }
-                        }
-                    }
+                if done {
+                    break;
                 }
-                ctx.maybe_flush();
             }
-            Some("result") => {
-                saw_result = true;
-                // Resume mints a fresh session id per turn — track the latest.
-                if let Some(sid) = event.get("session_id").and_then(Value::as_str) {
-                    ctx.set_native_session_id(sid);
+            TurnEvent::Closed => {
+                // Child died mid-turn (EOF on stdout). The next turn respawns via
+                // `--resume`; surface the failure like the old exit path did.
+                if let Some(sid) = state.native_session_id.take() {
+                    ctx.set_native_session_id(&sid);
                 }
-                // We deliberately do NOT turn `permission_denials` into approve-me
-                // cards. Headless has no interactive approval, and of the modes we
-                // offer, only Plan produces denials — and those are *expected*
-                // (read-only by design). Surfacing an "Allow" that re-ran the turn
-                // under bypass would silently defeat plan mode. The model already
-                // narrates the block in text; the recourse is approving the plan
-                // (the ExitPlanMode card), which leaves plan mode. Auto/Bypass
-                // never deny in the first place.
-                //
-                // A plan pause is NOT a failure: the CLI records the blocked tools
-                // in `permission_denials` but still reports `subtype: "success"` /
-                // `is_error: false`. So drive the error path off the result status
-                // alone — a genuine failure is still surfaced.
-                let subtype = event.get("subtype").and_then(Value::as_str).unwrap_or("");
-                let is_error = event
-                    .get("is_error")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(subtype != "success");
-                if is_error {
-                    turn_errored = true;
-                    let detail = event
-                        .get("result")
-                        .and_then(Value::as_str)
-                        .unwrap_or(subtype)
-                        .to_string();
-                    ctx.push_error(format!("claude: {detail}"));
-                }
-                ctx.maybe_flush();
+                ctx.host.claude.kill_session(&ctx.session_id).await;
+                let _ = ctx.flush();
+                return Err(anyhow!(
+                    "claude exited mid-turn; see {}",
+                    crate::store::data_dir().join("agent-claude.log").display()
+                ));
             }
-            _ => {}
         }
     }
 
-    // The model sometimes ends a plan-mode turn with its plan as plain text
-    // and no ExitPlanMode call. Headless leaves no way out of plan mode then —
-    // only a plan-card answer switches the resume mode, so a chat "yes" would
-    // resume still read-only. Synthesize a card from the final text so
-    // approval always has a handle. A plan/permission card the bridge surfaced
-    // mid-turn counts as "saw a prompt" (e.g. keep-planning continued this
-    // same turn); a mid-turn *question* deliberately does not — its answer is
-    // no exit recourse, and the turn may still end with a texty plan.
-    let saw_prompt = saw_prompt || ctx.host.take_bridge_prompted(&ctx.session_id);
-    if should_synthesize_plan(plan_mode, saw_prompt, turn_errored, &last_text) {
+    // A channel-end without a `result` means the child closed between turns or
+    // the turn was dropped — respawn next turn and report the miss.
+    if !state.saw_result {
+        ctx.host.claude.kill_session(&ctx.session_id).await;
+        let _ = ctx.flush();
+        return Err(anyhow!(
+            "claude ended the turn without a result; see {}",
+            crate::store::data_dir().join("agent-claude.log").display()
+        ));
+    }
+
+    // The model sometimes ends a plan-mode turn with its plan as plain text and
+    // no ExitPlanMode call. Headless leaves no way out of plan mode then — only
+    // a plan-card answer switches the resume mode, so a chat "yes" would resume
+    // still read-only. Synthesize a card from the final text so approval always
+    // has a handle. A plan/permission card the bridge surfaced mid-turn counts
+    // as "saw a prompt" (e.g. keep-planning continued this same turn); a mid-turn
+    // *question* deliberately does not — its answer is no exit recourse, and the
+    // turn may still end with a texty plan.
+    let saw_prompt = state.saw_prompt || ctx.host.take_bridge_prompted(&ctx.session_id);
+    if should_synthesize_plan(plan_mode, saw_prompt, state.turn_errored, &state.last_text) {
         ctx.upsert_part(WirePart::prompt(
             format!("plan-synth-{}", ctx.assistant.id),
             WirePrompt {
                 kind: "plan".into(),
-                plan: Some(last_text),
+                plan: Some(std::mem::take(&mut state.last_text)),
                 synthesized: true,
                 ..Default::default()
             },
         ));
-        ctx.maybe_flush();
     }
-
-    let status = child.wait().await?;
-    if !status.success() && !saw_result {
-        return Err(anyhow!(
-            "claude exited with {status}; see {}",
-            crate::store::data_dir().join("agent-claude.log").display()
-        ));
-    }
+    let _ = ctx.flush();
     Ok(())
 }
 
@@ -990,5 +1071,222 @@ mod tests {
         // A Codex-only id like a bare "medium" is fine (shared), but junk is not.
         assert_eq!(claude_effort(Some("ultra")), None);
         assert_eq!(claude_effort(None), None);
+    }
+
+    /// Fold a hand-written stream-json transcript through `apply_event` against a
+    /// bare `TurnCtx::test_stub()` — the store-free property. Returns the final
+    /// state; asserts the fold stops on the `result` event and no earlier.
+    fn fold(ctx: &mut TurnCtx, bridge_active: bool, lines: &[&str]) -> TurnState {
+        let mut state = TurnState {
+            bridge_active,
+            ..Default::default()
+        };
+        for line in lines {
+            let event: Value = serde_json::from_str(line).expect("valid stream-json line");
+            let done = apply_event(ctx, &mut state, &event);
+            assert_eq!(
+                done,
+                event.get("type").and_then(Value::as_str) == Some("result"),
+                "only the result event ends the fold: {line}"
+            );
+            if done {
+                break;
+            }
+        }
+        state
+    }
+
+    #[test]
+    fn plain_turn_folds_text_thinking_and_tool_lifecycle() {
+        let transcript = [
+            r#"{"type":"system","subtype":"init","session_id":"sess-abc"}"#,
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"thinking","thinking":"pondering"},{"type":"text","text":"Reading the file."}]}}"#,
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"call_1","name":"Read","input":{"file_path":"/x/y.rs"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call_1","content":"fn main() {}"}]}}"#,
+            r#"{"type":"result","subtype":"success","session_id":"sess-abc","is_error":false}"#,
+        ];
+        let mut ctx = TurnCtx::test_stub();
+        let state = fold(&mut ctx, false, &transcript);
+
+        assert!(state.saw_result);
+        assert!(!state.turn_errored);
+        assert!(!state.saw_prompt);
+        assert_eq!(state.native_session_id.as_deref(), Some("sess-abc"));
+        assert_eq!(state.last_text, "Reading the file.");
+
+        let parts = &ctx.assistant.parts;
+        // thinking (m1-0), text (m1-1), tool (call_1) — three distinct parts.
+        assert_eq!(parts.len(), 3, "{parts:?}");
+        assert_eq!(parts[0].kind, "reasoning");
+        assert_eq!(parts[0].text.as_deref(), Some("pondering"));
+        assert_eq!(parts[1].kind, "text");
+        assert_eq!(parts[1].text.as_deref(), Some("Reading the file."));
+        // The tool_result completed the tool part in place, with the input
+        // normalized (file_path → filePath for the UI summary).
+        assert_eq!(parts[2].kind, "tool");
+        let tool = parts[2].state.as_ref().unwrap();
+        assert_eq!(tool.status, "completed");
+        assert_eq!(tool.output.as_deref(), Some("fn main() {}"));
+        assert_eq!(tool.input.as_ref().unwrap()["filePath"], "/x/y.rs");
+    }
+
+    #[test]
+    fn error_result_flags_the_turn_and_pushes_an_error_part() {
+        let transcript = [
+            r#"{"type":"system","subtype":"init","session_id":"s1"}"#,
+            r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"boom"}"#,
+        ];
+        let mut ctx = TurnCtx::test_stub();
+        let state = fold(&mut ctx, false, &transcript);
+        assert!(state.saw_result);
+        assert!(state.turn_errored);
+        // The error part carries the CLI's detail, prefixed.
+        let err = ctx
+            .assistant
+            .parts
+            .iter()
+            .find(|p| p.tool.as_deref() == Some("error"))
+            .expect("error part");
+        assert_eq!(
+            err.state.as_ref().unwrap().error.as_deref(),
+            Some("claude: boom")
+        );
+    }
+
+    #[test]
+    fn stream_deltas_paint_parts_and_the_final_event_overwrites_them() {
+        // Deltas accumulate under {mid}-{index}; the complete assistant event
+        // then upserts the authoritative text over the very same part — one
+        // part, no duplicate, final text wins.
+        let transcript = [
+            r#"{"type":"system","subtype":"init","session_id":"sd1"}"#,
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m9"}},"parent_tool_use_id":null}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}},"parent_tool_use_id":null}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Riv"}},"parent_tool_use_id":null}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ers flow."}},"parent_tool_use_id":null}"#,
+            r#"{"type":"assistant","message":{"id":"m9","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"Rivers flow."}]}}"#,
+            r#"{"type":"result","subtype":"success","session_id":"sd1","is_error":false}"#,
+        ];
+        let mut ctx = TurnCtx::test_stub();
+        let state = fold(&mut ctx, false, &transcript);
+        let parts = &ctx.assistant.parts;
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        assert_eq!(parts[0].kind, "reasoning");
+        assert_eq!(parts[0].text.as_deref(), Some("hmm"));
+        assert_eq!(parts[1].kind, "text");
+        assert_eq!(parts[1].text.as_deref(), Some("Rivers flow."));
+        // The final assistant event still feeds last_text (plan synthesis).
+        assert_eq!(state.last_text, "Rivers flow.");
+    }
+
+    #[test]
+    fn subagent_stream_deltas_are_ignored() {
+        // A Task subagent's nested stream carries parent_tool_use_id — its
+        // deltas must not paint the main transcript.
+        let transcript = [
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"sub"}},"parent_tool_use_id":"toolu_1"}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"nested"}},"parent_tool_use_id":"toolu_1"}"#,
+            r#"{"type":"result","subtype":"success","session_id":"s","is_error":false}"#,
+        ];
+        let mut ctx = TurnCtx::test_stub();
+        fold(&mut ctx, false, &transcript);
+        assert!(ctx.assistant.parts.is_empty(), "{:?}", ctx.assistant.parts);
+    }
+
+    #[test]
+    fn result_without_is_error_falls_back_to_subtype() {
+        // The CLI can omit `is_error`; a non-"success" subtype must still fail
+        // the turn (the `.unwrap_or(subtype != "success")` fallback).
+        let transcript = [
+            r#"{"type":"system","subtype":"init","session_id":"s2"}"#,
+            r#"{"type":"result","subtype":"error_during_execution","result":"boom"}"#,
+        ];
+        let mut ctx = TurnCtx::test_stub();
+        let state = fold(&mut ctx, false, &transcript);
+        assert!(state.saw_result);
+        assert!(state.turn_errored);
+    }
+
+    #[test]
+    fn errored_tool_result_flips_the_tool_part_to_error() {
+        let transcript = [
+            r#"{"type":"system","subtype":"init","session_id":"s3"}"#,
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"call_1","name":"Bash","input":{"command":"false"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call_1","is_error":true,"content":"exit 1"}]}}"#,
+            r#"{"type":"result","subtype":"success","session_id":"s3","is_error":false}"#,
+        ];
+        let mut ctx = TurnCtx::test_stub();
+        let state = fold(&mut ctx, false, &transcript);
+        assert!(!state.turn_errored, "a failed tool is not a failed turn");
+        let tool = ctx.assistant.parts[0].state.as_ref().unwrap();
+        assert_eq!(tool.status, "error");
+        assert_eq!(tool.error.as_deref(), Some("exit 1"));
+        assert_eq!(tool.output, None);
+    }
+
+    #[test]
+    fn plan_mode_texty_plan_flags_synthesize() {
+        // Plan mode, no ExitPlanMode call — the model just wrote its plan as
+        // text. saw_prompt stays false and the text is captured, so the run_turn
+        // fallback (should_synthesize_plan) would synthesize a plan card.
+        let transcript = [
+            r#"{"type":"system","subtype":"init","session_id":"p1"}"#,
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"Here is my plan: step one, step two."}]}}"#,
+            r#"{"type":"result","subtype":"success","session_id":"p1","is_error":false}"#,
+        ];
+        let mut ctx = TurnCtx::test_stub();
+        let state = fold(&mut ctx, false, &transcript);
+        assert!(!state.saw_prompt);
+        assert!(!state.turn_errored);
+        assert!(should_synthesize_plan(
+            true,
+            state.saw_prompt,
+            state.turn_errored,
+            &state.last_text
+        ));
+
+        // An ExitPlanMode call instead sets saw_prompt and suppresses the card.
+        let with_card = [
+            r#"{"type":"assistant","message":{"id":"m2","content":[{"type":"tool_use","id":"c1","name":"ExitPlanMode","input":{"plan":"do it"}}]}}"#,
+            r#"{"type":"result","subtype":"success","session_id":"p1","is_error":false}"#,
+        ];
+        let mut ctx = TurnCtx::test_stub();
+        let state = fold(&mut ctx, false, &with_card);
+        assert!(state.saw_prompt);
+        assert!(!should_synthesize_plan(
+            true,
+            state.saw_prompt,
+            state.turn_errored,
+            &state.last_text
+        ));
+        // The ExitPlanMode surfaced as a plan prompt card, not a tool row.
+        let card = ctx
+            .assistant
+            .parts
+            .iter()
+            .find(|p| p.kind == "prompt")
+            .unwrap();
+        assert_eq!(card.prompt.as_ref().unwrap().kind, "plan");
+    }
+
+    #[test]
+    fn bridge_active_suppresses_exitplanmode_and_question_rows() {
+        // With the bridge on, the CLI relays ExitPlanMode / AskUserQuestion as
+        // held bridge cards; their tool_use must render NOTHING (a duplicate row,
+        // then a spurious error row when the answer-denial's tool_result lands).
+        let transcript = [
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"c1","name":"ExitPlanMode","input":{"plan":"p"}}]}}"#,
+            r#"{"type":"assistant","message":{"id":"m2","content":[{"type":"tool_use","id":"c2","name":"AskUserQuestion","input":{"questions":[{"question":"which?","header":"h","options":[]}]}}]}}"#,
+            r#"{"type":"assistant","message":{"id":"m3","content":[{"type":"tool_use","id":"c3","name":"Bash","input":{"command":"ls"}}]}}"#,
+            r#"{"type":"result","subtype":"success","session_id":"b1","is_error":false}"#,
+        ];
+        let mut ctx = TurnCtx::test_stub();
+        let state = fold(&mut ctx, true, &transcript);
+        assert!(state.saw_result);
+        // Only the Bash tool part survives; the two bridge-owned calls render
+        // nothing, and neither sets saw_prompt (the bridge tracks that itself).
+        assert!(!state.saw_prompt);
+        assert_eq!(ctx.assistant.parts.len(), 1, "{:?}", ctx.assistant.parts);
+        assert_eq!(ctx.assistant.parts[0].tool.as_deref(), Some("Bash"));
     }
 }
