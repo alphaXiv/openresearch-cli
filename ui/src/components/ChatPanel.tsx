@@ -564,7 +564,9 @@ function messageHasVisibleContent(m: ChatMessage): boolean {
  * only the message actually being streamed re-renders (and re-parses its
  * markdown/KaTeX), not the entire transcript. Callback props must stay
  * referentially stable for this to hold (see the useCallback/useMemo wiring
- * in ChatPanel). */
+ * in ChatPanel). `Transcript` below adds a second boundary for the other hot
+ * path — composer keystrokes re-render ChatPanel itself, and the transcript
+ * memo stops those from touching the rows at all. */
 const Message = memo(function Message({
   message,
   onOpenFile,
@@ -655,6 +657,41 @@ const Message = memo(function Message({
   flushTools();
 
   return <div className="msg-assistant">{rendered}</div>;
+});
+
+/** Memoized transcript: composer keystrokes re-render ChatPanel (draft state
+ * lives there), and this boundary keeps them from re-allocating N Message
+ * elements and running N memo comparisons. Every prop passed here must stay
+ * referentially stable across keystrokes (memoized/useCallback, never inline)
+ * or the boundary silently breaks — with that held, typing costs one shallow
+ * compare instead of O(messages) work. */
+const Transcript = memo(function Transcript({
+  messages,
+  onOpenFile,
+  onRespond,
+  onOpenPlan,
+  skills,
+}: {
+  messages: ChatMessage[];
+  onOpenFile?: (path: string) => void;
+  onRespond?: (answer: PromptAnswer) => void;
+  onOpenPlan?: (plan: string, promptId: string) => void;
+  skills?: SkillInfo[];
+}) {
+  return (
+    <>
+      {messages.filter(messageHasVisibleContent).map((m) => (
+        <Message
+          key={m.id}
+          message={m}
+          onOpenFile={onOpenFile}
+          onRespond={onRespond}
+          onOpenPlan={onOpenPlan}
+          skills={skills}
+        />
+      ))}
+    </>
+  );
 });
 
 // --- session rail ------------------------------------------------------------
@@ -1126,15 +1163,23 @@ export function ChatPanel({
   // `pendingQuestion` instead — what send() can actually service). End-turn
   // cards (no nativeId) never coexist with a busy turn of their own, so
   // keying on nativeId avoids false positives from stale cards. (Sessions
-  // whose transcripts aren't loaded fall back to plain busy.)
-  const sessionWaiting = (id: string) =>
-    state.busySessions.has(id) &&
-    (state.messagesBySession[id] ?? []).some((m) =>
-      m.parts.some(
-        (p) => p.type === "prompt" && p.prompt && !p.prompt.resolved && p.prompt.nativeId,
-      ),
-    );
-  const awaitingInput = activeId ? sessionWaiting(activeId) : false;
+  // whose transcripts aren't loaded fall back to plain busy.) Memoized so the
+  // messages × parts scan stays off the per-keystroke render path.
+  const waitingSessions = useMemo(() => {
+    const waiting = new Set<string>();
+    for (const id of state.busySessions) {
+      if (
+        (state.messagesBySession[id] ?? []).some((m) =>
+          m.parts.some(
+            (p) => p.type === "prompt" && p.prompt && !p.prompt.resolved && p.prompt.nativeId,
+          ),
+        )
+      )
+        waiting.add(id);
+    }
+    return waiting;
+  }, [state.busySessions, state.messagesBySession]);
+  const awaitingInput = activeId ? waitingSessions.has(activeId) : false;
   const activeSession = openSession;
 
   // The newest unresolved plan prompt, if any — it drives the docked strip
@@ -1496,7 +1541,7 @@ export function ChatPanel({
             session={s}
             active={s.id === activeId && mainView === "chat"}
             busy={state.busySessions.has(s.id)}
-            waiting={sessionWaiting(s.id)}
+            waiting={waitingSessions.has(s.id)}
             onOpen={() => {
               setActiveId(s.id);
               onSelectMainView("chat");
@@ -1639,16 +1684,13 @@ export function ChatPanel({
           }}
         >
           <div className="chat-thread-inner" ref={threadInnerRef}>
-            {messages.filter(messageHasVisibleContent).map((m) => (
-              <Message
-                key={m.id}
-                message={m}
-                onOpenFile={openFileInSession}
-                onRespond={respond}
-                onOpenPlan={openPlan}
-                skills={skills}
-              />
-            ))}
+            <Transcript
+              messages={messages}
+              onOpenFile={openFileInSession}
+              onRespond={respond}
+              onOpenPlan={openPlan}
+              skills={skills}
+            />
             {busy &&
               (awaitingInput ? (
                 <div className="working awaiting">Waiting for your input…</div>
