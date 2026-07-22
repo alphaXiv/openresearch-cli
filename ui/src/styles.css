@@ -3415,6 +3415,7 @@ a.files-pill:hover {
 .composer-bare.context-ring {
   display: inline-flex;
   align-items: center;
+  margin-right: 8px;
 }
 .context-meter-menu {
   width: 280px;
@@ -3429,7 +3430,7 @@ a.files-pill:hover {
   color: var(--muted);
 }
 .context-meter-value {
-  color: var(--subtext);
+  color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 .context-meter-menu .progress {
