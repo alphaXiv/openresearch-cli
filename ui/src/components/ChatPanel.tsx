@@ -1893,10 +1893,9 @@ export function ChatPanel({
               onSelect={setPermissionMode}
             />
             <div style={{ flex: 1 }} />
-            {/* Bottom-right: context meter, model, then reasoning level. The
+            {/* Bottom-right: model, reasoning level, then context meter. The
                 picker reflects the open session (harness locked once it exists);
                 the global default only applies before the first message. */}
-            <ContextMeter usage={openSession?.contextUsage} />
             <ModelPicker
               value={composerSelection}
               onSelect={selectModel}
@@ -1913,6 +1912,7 @@ export function ChatPanel({
               title="Reasoning level for this chat"
               onSelect={setReasoningLevel}
             />
+            <ContextMeter usage={openSession?.contextUsage} />
             {busy && !pendingQuestion ? (
               // Stop whenever the turn is busy and typed text has nowhere to
               // go — actively streaming, or held on a plan/permission card

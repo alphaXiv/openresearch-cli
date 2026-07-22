@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
 
-/** Determinate progress bar with a percent + optional caption. Shared by the
- * data-dir move card and the chat context-window meter. `fillColor` overrides
- * the default accent (the meter tints it amber/red as it fills). */
+/** Determinate progress bar. The caption row renders only when `label` or
+ * `caption` is given (the context meter draws a bare bar; the data-dir move
+ * card passes a byte caption). `fillColor` overrides the default accent. */
 export function ProgressBar({
   value,
   max,
@@ -24,10 +24,12 @@ export function ProgressBar({
       <div className="progress-track">
         <div className="progress-fill" style={{ width: `${pct}%`, background: fillColor }} />
       </div>
-      <div className="progress-caption">
-        <span>{label ?? `${pct}%`}</span>
-        {caption}
-      </div>
+      {(label !== undefined || caption !== undefined) && (
+        <div className="progress-caption">
+          <span>{label ?? `${pct}%`}</span>
+          {caption}
+        </div>
+      )}
     </div>
   );
 }

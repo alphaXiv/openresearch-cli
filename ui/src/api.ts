@@ -939,14 +939,14 @@ export function fmtBytes(n: number): string {
 /** Compact token count, e.g. 62300 → "62k", 1_200_000 → "1.2M", 940 → "940". */
 export function fmtTokens(n: number): string {
   if (n < 1000) return `${Math.round(n)}`;
-  if (n < 1_000_000) {
-    const k = n / 1000;
-    const rounded = k < 100 ? k.toFixed(k < 10 ? 1 : 0) : `${Math.round(k)}`;
-    // Rounding can land on 1000k (e.g. 999_600) — roll it up to "1.0M".
-    if (rounded !== "1000") return `${rounded}k`;
-  }
-  const m = n / 1_000_000;
-  return `${m < 10 ? m.toFixed(1) : Math.round(m)}M`;
+  // One decimal, dropped when it's .0 ("31.4k", "200k", "1M"). The k branch
+  // stops where toFixed(1) would round to "1000.0" (e.g. 999_960 → "1M").
+  if (n < 999_950) return `${trimZero((n / 1000).toFixed(1))}k`;
+  return `${trimZero((n / 1_000_000).toFixed(1))}M`;
+}
+
+function trimZero(s: string): string {
+  return s.endsWith(".0") ? s.slice(0, -2) : s;
 }
 
 export function shortId(id: string): string {

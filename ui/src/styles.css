@@ -3411,18 +3411,34 @@ a.files-pill:hover {
   min-width: 190px;
   padding: 6px;
 }
-/* Context-window meter popover: a titled progress bar + token caption. */
+/* Context-window meter: ring trigger + title/value head over a thin bar. */
+.composer-bare.context-ring {
+  display: inline-flex;
+  align-items: center;
+}
 .context-meter-menu {
-  width: 240px;
-  padding: 6px 10px 10px;
+  width: 280px;
+  padding: 10px 12px 12px;
 }
-.context-meter-menu .progress {
-  margin: 6px 0 0;
-}
-.context-meter-caption {
-  margin-top: 6px;
+.context-meter-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
   font-size: var(--fs-sm);
   color: var(--muted);
+}
+.context-meter-value {
+  color: var(--subtext);
+  font-variant-numeric: tabular-nums;
+}
+.context-meter-menu .progress {
+  margin: 8px 0 0;
+}
+.context-meter-menu .progress-track {
+  height: 5px;
+  border: none;
+  background: var(--border);
 }
 /* Right-anchored menus (bottom-right controls) open toward the left edge. */
 .model-menu.align-right,
