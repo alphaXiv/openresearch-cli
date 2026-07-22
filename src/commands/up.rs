@@ -48,13 +48,19 @@ pub async fn run(args: UpArgs) -> Result<()> {
     // no eager agent bring-up. (--no-agent is now a no-op kept for compat.)
     let agent = Arc::new(AgentHost::new(args.model.clone()));
     let codex = Arc::new(local::codex::CodexHost::new());
+    let claude = Arc::new(local::claude::ClaudeHost::new());
     let state = AppState {
         agent: agent.clone(),
-        chat: Arc::new(ChatHost::new(agent.clone(), codex.clone())),
+        chat: Arc::new(ChatHost::new(agent.clone(), codex.clone(), claude.clone())),
         harnesses: Arc::new(tokio::sync::Mutex::new(None)),
         data_dir_move_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
-    // Plan-mode turns hand this port to the `orx mcp-gate` permission bridge.
+    // The claude host mints the mcp-gate token at spawn via the chat host, so it
+    // holds a weak back-reference (the chat host owns the Arc — a strong ref
+    // would cycle).
+    claude.attach(Arc::downgrade(&state.chat));
+    // Plan-mode turns hand this port to the `orx mcp-gate` permission bridge
+    // (also propagated to the claude host, which spawns the bridge child).
     state.chat.set_up_port(port);
 
     spawn_hf_preflight();
@@ -91,6 +97,7 @@ pub async fn run(args: UpArgs) -> Result<()> {
     }
     agent.shutdown().await;
     codex.shutdown().await;
+    claude.shutdown().await;
     Ok(())
 }
 
@@ -572,6 +579,7 @@ async fn delete_project(State(state): State<AppState>, Path(id): Path<String>) -
         let _ = state.chat.interrupt(&session.id).await;
         state.chat.opencode.kill_session(&session.id).await;
         state.chat.codex.kill_session(&session.id).await;
+        state.chat.claude.kill_session(&session.id).await;
         local::chat::cleanup_session_worktree(&project, &session.id);
     }
     store.delete_local_project(&id)?;

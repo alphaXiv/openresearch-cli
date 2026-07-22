@@ -391,6 +391,9 @@ pub struct ChatHost {
     pub opencode: Arc<AgentHost>,
     /// Lazy codex app-server manager (only the codex adapter spawns it).
     pub codex: Arc<crate::local::codex::CodexHost>,
+    /// Persistent Claude Code child manager (one resident child per session;
+    /// only the claude adapter spawns it).
+    pub claude: Arc<crate::local::claude::ClaudeHost>,
     http: reqwest::Client,
     events: broadcast::Sender<(&'static str, Value)>,
     /// Sessions with a turn in flight. A key present means busy; the value is
@@ -486,11 +489,16 @@ impl Drop for TurnGuard {
 }
 
 impl ChatHost {
-    pub fn new(opencode: Arc<AgentHost>, codex: Arc<crate::local::codex::CodexHost>) -> Self {
+    pub fn new(
+        opencode: Arc<AgentHost>,
+        codex: Arc<crate::local::codex::CodexHost>,
+        claude: Arc<crate::local::claude::ClaudeHost>,
+    ) -> Self {
         let (events, _) = broadcast::channel(256);
         Self {
             opencode,
             codex,
+            claude,
             http: reqwest::Client::new(),
             events,
             turns: Mutex::new(HashMap::new()),
@@ -504,9 +512,11 @@ impl ChatHost {
     }
 
     /// Record the port `orx up` bound (once, at startup) so plan-mode turns can
-    /// hand it to the `orx mcp-gate` bridge.
+    /// hand it to the `orx mcp-gate` bridge. The claude host mints the bridge
+    /// token at spawn, so it needs the port too.
     pub fn set_up_port(&self, port: u16) {
         let _ = self.up_port.set(port);
+        self.claude.set_up_port(port);
     }
 
     /// The bound `orx up` port, if this host runs under a server (None in
@@ -515,9 +525,15 @@ impl ChatHost {
         self.up_port.get().copied()
     }
 
-    /// Mint (and remember) the bridge token for a session's plan-mode turn.
-    /// One token per session, refreshed each turn; the previous turn's bridge
-    /// child dies with its turn, so overwriting is correct.
+    /// Mint (and remember) the bridge token for a session's plan-mode child.
+    /// One token per *child* now, minted at spawn (not per turn): the resident
+    /// claude child — and its bridge — live across turns, so a live plan child
+    /// keeps its token until a config-change/interrupt/crash respawn mints a new
+    /// one. Overwriting on each mint is still correct (a respawn's old child is
+    /// killed first), but the mint site moved to `claude::spawn_client`;
+    /// re-minting while a plan child is live would strand its held bridge
+    /// requests, since `request_permission` equality-checks the token with no
+    /// expiry.
     pub fn mint_gate_token(&self, session_id: &str) -> String {
         let token = uuid::Uuid::new_v4().to_string();
         self.gate_tokens
@@ -740,6 +756,7 @@ impl ChatHost {
     pub async fn shutdown_harnesses(&self) {
         self.opencode.shutdown().await;
         self.codex.shutdown().await;
+        self.claude.shutdown().await;
     }
 
     pub async fn busy_sessions(&self) -> Vec<String> {
@@ -1006,6 +1023,15 @@ impl ChatHost {
                     // (and settles the turn as "interrupted" in its rollout)
                     // instead of only losing its orx-side listener.
                     self.codex.interrupt_session(session_id).await;
+                } else if session.harness == "claude-code" {
+                    // The load-bearing change: a resident claude child survives
+                    // task-abort/kill_on_drop, so aborting the turn task leaves
+                    // it generating with no listener. Kill it — v1 has no
+                    // reliable native interrupt (the control request gave no
+                    // response). The next turn respawns with `--resume`,
+                    // recovering this session's context (today-identical
+                    // semantics).
+                    self.claude.kill_session(session_id).await;
                 }
             }
         }
@@ -1206,9 +1232,11 @@ impl ChatHost {
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
         let _ = self.interrupt(session_id).await;
         // A live opencode serve child would keep running in (and lock) the
-        // session's worktree.
+        // session's worktree; the resident claude child's cwd is that worktree
+        // too, so reap it before `cleanup_session_worktree` below.
         self.opencode.kill_session(session_id).await;
         self.codex.kill_session(session_id).await;
+        self.claude.kill_session(session_id).await;
         // Drop the session's respond lock so the map doesn't retain an entry for
         // a session that no longer exists.
         self.respond_locks.lock().await.remove(session_id);
@@ -1504,6 +1532,7 @@ impl TurnCtx {
             host: Arc::new(ChatHost::new(
                 Arc::new(AgentHost::new(None)),
                 Arc::new(crate::local::codex::CodexHost::new()),
+                Arc::new(crate::local::claude::ClaudeHost::new()),
             )),
             session_id: "test-session".into(),
             harness: "test".into(),

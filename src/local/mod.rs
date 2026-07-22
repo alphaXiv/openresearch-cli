@@ -11,6 +11,7 @@
 
 pub mod agent_skills;
 pub mod chat;
+pub mod claude;
 pub mod codex;
 pub mod datadir;
 pub mod experiments;
