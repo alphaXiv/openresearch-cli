@@ -1544,8 +1544,8 @@ export function ChatPanel({
         {onOpenWorktree && activeId && (
           <button
             className="icon-btn"
-            data-tip="View worktree"
-            aria-label="View worktree"
+            data-tip="View session worktree"
+            aria-label="View session worktree"
             onClick={() => onOpenWorktree(activeId)}
           >
             <FolderGit2 size={15} />
