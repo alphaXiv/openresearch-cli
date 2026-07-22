@@ -1544,7 +1544,7 @@ export function ChatPanel({
         {onOpenWorktree && activeId && (
           <button
             className="icon-btn"
-            title="View worktree"
+            data-tip="View worktree"
             aria-label="View worktree"
             onClick={() => onOpenWorktree(activeId)}
           >

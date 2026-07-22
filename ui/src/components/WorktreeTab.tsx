@@ -3,9 +3,10 @@
 // committed-state only). Two segmented views, both bound to the session the tab
 // was opened from:
 //
-//   Changes (default): a status-badged list of every changed file (complete
-//     even when the diff truncates — it comes from a separate git pass) plus
-//     the unified diff vs the baseline merge-base, untracked files included.
+//   Changes (default): the unified diff vs the baseline merge-base, untracked
+//     files included as new-file chunks — the same per-file-card rendering as
+//     the experiment Changes view (the header's file count comes from a
+//     separate git pass, so it stays truthful even when the diff truncates).
 //   Files: the full live worktree tree (CodeTab's shared components), clicks
 //     opening the existing FileViewer against this session's worktree.
 //
@@ -21,8 +22,6 @@ import {
   getCodeTree,
   getSessionWorktree,
   listChatSessions,
-  type ChangedFile,
-  type ChangedStatus,
   type CodeTree,
   type SessionWorktree,
 } from "../api";
@@ -34,49 +33,7 @@ import { GitDiff, TruncatedDiffNotice } from "./GitDiff";
  * poll in DetailDrawer). */
 const POLL_MS = 5000;
 
-/** Single-letter badge + label per change status, for the file list. */
-const STATUS_META: Record<ChangedStatus, { badge: string; label: string }> = {
-  added: { badge: "A", label: "added" },
-  modified: { badge: "M", label: "modified" },
-  deleted: { badge: "D", label: "deleted" },
-  renamed: { badge: "R", label: "renamed" },
-  untracked: { badge: "U", label: "untracked" },
-};
-
 export type WorktreeView = "changes" | "files";
-
-function ChangedFileRow({
-  file,
-  onOpenFile,
-}: {
-  file: ChangedFile;
-  onOpenFile: (path: string) => void;
-}) {
-  const meta = STATUS_META[file.status];
-  // A deleted file has nothing to open — render it as static text, not a button.
-  const label =
-    file.status === "renamed" && file.oldPath ? `${file.oldPath} → ${file.path}` : file.path;
-  const common = (
-    <>
-      <span className={`wt-badge wt-badge-${file.status}`} title={meta.label}>
-        {meta.badge}
-      </span>
-      <span className="wt-file-path">{label}</span>
-    </>
-  );
-  if (file.status === "deleted") {
-    return (
-      <div className="wt-file-row wt-file-row-static" title={label}>
-        {common}
-      </div>
-    );
-  }
-  return (
-    <button type="button" className="wt-file-row" title={label} onClick={() => onOpenFile(file.path)}>
-      {common}
-    </button>
-  );
-}
 
 export function WorktreeTab({
   sessionId,
@@ -252,30 +209,14 @@ export function WorktreeTab({
         </div>
       ) : view === "changes" ? (
         <div className="code-tab-body wt-changes">
-          {fileCount === 0 ? (
-            <div className="code-tab-note">No changes yet.</div>
+          {fileCount === 0 || !wt.diff ? (
+            <div className="changes-note">No changes yet.</div>
           ) : (
             <>
-              <div className="wt-file-list">
-                {wt.files!.map((f) => (
-                  <ChangedFileRow
-                    key={f.path}
-                    file={f}
-                    onOpenFile={(path) => onOpenFile(path, sessionId)}
-                  />
-                ))}
-              </div>
-              {wt.diff && (
-                <div className="wt-diff">
-                  {wt.diff.truncated && (
-                    <TruncatedDiffNotice
-                      bytesRead={wt.diff.bytesRead}
-                      byteLimit={wt.diff.byteLimit}
-                    />
-                  )}
-                  <GitDiff diff={wt.diff.diff} />
-                </div>
+              {wt.diff.truncated && (
+                <TruncatedDiffNotice bytesRead={wt.diff.bytesRead} byteLimit={wt.diff.byteLimit} />
               )}
+              <GitDiff diff={wt.diff.diff} />
             </>
           )}
         </div>
