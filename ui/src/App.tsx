@@ -51,7 +51,12 @@ const sameExpTab = (a: ExpViewDef, b: ExpViewDef) => a.id === b.id && a.view ===
  * code browser). */
 interface FileViewDef {
   path: string;
-  /** Chat session whose worktree holds the file (absent → hub clone). */
+  /** Which backend serves this file. Absent/"repo" → the repo `/file`
+   * endpoint (worktree/clone/branch); "files" → the project's files dir
+   * (`/files/report` + `/files/file`). */
+  source?: "repo" | "files";
+  /** Chat session whose worktree holds the file (absent → hub clone).
+   * Files-dir tabs never carry this. */
   sessionId?: string;
   /** Branch whose committed copy to show (code browser in branch mode);
    * overrides the live checkout. */
@@ -59,9 +64,13 @@ interface FileViewDef {
 }
 
 const sameFileTab = (a: FileViewDef, b: FileViewDef) =>
-  a.path === b.path && a.sessionId === b.sessionId && a.ref === b.ref;
+  a.path === b.path &&
+  (a.source ?? "repo") === (b.source ?? "repo") &&
+  a.sessionId === b.sessionId &&
+  a.ref === b.ref;
 
-const fileTabKey = (t: FileViewDef) => `${t.sessionId ?? ""}:${t.ref ?? ""}:${t.path}`;
+const fileTabKey = (t: FileViewDef) =>
+  `${t.source ?? "repo"}:${t.sessionId ?? ""}:${t.ref ?? ""}:${t.path}`;
 
 /** A proposed plan open as a right-panel tab (from the chat plan strip/card).
  * The markdown is already client-side (it rode the prompt part), so the tab
@@ -104,28 +113,52 @@ interface WorktreeTabDef {
   toggled: ReadonlySet<string>;
 }
 
-// Map a path an agent reported to a repo-relative one — keeping the session
-// id when it points into a per-session worktree, so the file is read from the
-// right checkout. Relative paths name files in the click context's checkout
-// and inherit `contextSessionId`; the regex fallbacks encode the
+/** Escape a string for literal use inside a RegExp. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Map a path an agent reported to a right-pane file tab. A files-dir path
+// (a report/figure the agent wrote under <data dir>/files/<slug>/…) is stripped
+// to a files-dir-relative path and tagged source:"files" so FileViewer reads it
+// from the /files endpoints. Otherwise it's a repo/worktree path stripped to
+// repo-relative, keeping the session id when it points into a per-session
+// worktree. Relative paths name files in the click context's checkout and
+// inherit `contextSessionId`; the regex fallbacks encode the
 // ~/.cache/openresearch/ layouts from src/local/git.rs:
 // worktrees/<owner>/<repo>/<session>/… and repos/<owner>/<repo>/….
 function parseFilePath(
   rawPath: string,
   repoPath?: string,
   contextSessionId?: string,
+  filesDir?: string,
+  slug?: string,
 ): FileViewDef | null {
   let path = rawPath;
   let sessionId: string | undefined;
   const clone = repoPath?.replace(/\/+$/, "");
+  const files = filesDir?.replace(/\/+$/, "");
   if (!path.startsWith("/")) {
     sessionId = contextSessionId;
+  } else if (files && (path === files || path.startsWith(`${files}/`))) {
+    // Files-dir file — exact prefix match against the (non-canonical) dir the
+    // backend surfaced, which mirrors what the agent inlines.
+    const rel = path.slice(files.length).replace(/^\/+/, "");
+    return rel ? { path: rel, source: "files" } : null;
   } else if (clone && (path === clone || path.startsWith(`${clone}/`))) {
     path = path.slice(clone.length).replace(/^\/+/, "");
   } else {
-    const wt = path.match(/\/openresearch\/worktrees\/[^/]+\/[^/]+\/([^/]+)\/(.+)$/);
-    const hub = wt ? null : path.match(/\/openresearch\/repos\/[^/]+\/[^/]+\/(.+)$/);
-    if (wt) {
+    // Files-dir fallback for a symlink-divergent path (e.g. /tmp vs
+    // /private/tmp) where the exact prefix missed: match the …/files/<slug>/<rel>
+    // layout, requiring the slug segment when we know it. (Legacy artifacts/ is
+    // migrated to files/ in place, so it never appears in a live path.)
+    const slugPat = slug ? escapeRegExp(slug) : "[^/]+";
+    const fd = path.match(new RegExp(`/files/${slugPat}/(.+)$`));
+    const wt = fd ? null : path.match(/\/openresearch\/worktrees\/[^/]+\/[^/]+\/([^/]+)\/(.+)$/);
+    const hub = fd || wt ? null : path.match(/\/openresearch\/repos\/[^/]+\/[^/]+\/(.+)$/);
+    if (fd) {
+      return { path: fd[1], source: "files" };
+    } else if (wt) {
       sessionId = wt[1];
       path = wt[2];
     } else if (hub) {
@@ -340,10 +373,18 @@ export default function App() {
   // parseFilePath for how it resolves against the reported path.
   const openFileTab = useCallback(
     (rawPath: string, contextSessionId?: string, ref?: string) => {
-      const repoPath = projects?.find((p) => p.id === projectId)?.repoPath;
-      const tab = parseFilePath(rawPath, repoPath, contextSessionId);
+      const project = projects?.find((p) => p.id === projectId);
+      const tab = parseFilePath(
+        rawPath,
+        project?.repoPath,
+        contextSessionId,
+        project?.filesDir,
+        project?.slug,
+      );
       if (!tab) return;
-      if (ref) tab.ref = ref;
+      // A branch ref only applies to repo files; never stamp it onto a
+      // files-dir tab (it has no branch, and would fragment the tab identity).
+      if (ref && tab.source !== "files") tab.ref = ref;
       setFileTabs((prev) => (prev.some((t) => sameFileTab(t, tab)) ? prev : [...prev, tab]));
       setRightTab(tab);
       setPanelOpen(true);
@@ -765,6 +806,7 @@ export default function App() {
                   key={fileTabKey(fileTab)}
                   projectId={projectId}
                   path={fileTab.path}
+                  source={fileTab.source}
                   sessionId={fileTab.sessionId}
                   gitRef={fileTab.ref}
                   onOpenFile={openFileTab}

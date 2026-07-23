@@ -8,6 +8,10 @@ export interface Project {
   githubRepo: string;
   baselineBranch: string;
   repoPath: string;
+  /** Absolute path of the project's files dir (`<data dir>/files/<slug>`),
+   *  non-canonical to match the paths agents inline into chat. Lets the UI
+   *  recognize a files-dir link and route it to the files endpoints. */
+  filesDir: string;
   runCommand?: string | null;
   /** arXiv id the project starts from (versionless). */
   paperId?: string | null;
@@ -613,6 +617,18 @@ export const deleteFile = (projectId: string, path: string) =>
 /** Raw file (images, CSVs, report figures) served by the API. */
 export const fileUrl = (projectId: string, path: string) =>
   `/api/projects/${projectId}/files/file?path=${encodeURIComponent(path)}`;
+
+/** Text body of a files-dir file (raw bytes decoded as UTF-8), or `null` when
+ *  the file is missing (404). The endpoint returns bytes, not JSON, so this
+ *  bypasses the `get`/`json` helpers; a 404 is a normal "not found", not an
+ *  error to surface. */
+export const getFilesDirFileText = (projectId: string, path: string): Promise<string | null> =>
+  fetch(fileUrl(projectId, path)).then((r) => {
+    if (r.status === 404) return null;
+    // Bare message — the viewer prefixes "Failed to load file:" itself.
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.text();
+  });
 
 export interface GitSettings {
   gitVersion: string | null;

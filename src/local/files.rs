@@ -58,6 +58,16 @@ pub fn files_dir(project: &LocalProject) -> PathBuf {
     files_root().join(&project.slug)
 }
 
+/// The files dir as the UI sees it, for recognizing files-dir paths in chat
+/// links. Deliberately NOT canonicalized: the absolute path the agent inlines
+/// into the transcript comes from the un-canonicalized `files_dir` (the
+/// `{files}` playbook token in `opencode.rs` and the `orx report` guidance),
+/// so the surfaced string must match it byte-for-byte or the UI's prefix match
+/// misses on symlinked data dirs (e.g. `/tmp` → `/private/tmp`).
+pub fn files_dir_display(project: &LocalProject) -> String {
+    files_dir(project).to_string_lossy().into_owned()
+}
+
 /// Create the project's files dir if missing and return it.
 pub fn ensure_dir(project: &LocalProject) -> Result<PathBuf> {
     let dir = files_dir(project);

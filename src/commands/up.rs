@@ -342,8 +342,28 @@ async fn list_skills() -> Json<Value> {
     Json(json!({ "skills": skills }))
 }
 
+/// Serialize a project for the UI, injecting the absolute `filesDir` so the
+/// dashboard can recognize files-dir paths in chat links. Every project the UI
+/// receives must go through this — the SSE `project.updated` diff (fired on
+/// every visit, since `open_project` bumps `updated_at`) and `create_project`
+/// upsert into the same `projects` state as `list_projects`, so enriching one
+/// site alone would let a bare project overwrite `filesDir` mid-session.
+fn project_json(p: &local::model::LocalProject) -> Value {
+    // LocalProject is all String/Option/i64, so this can't realistically fail;
+    // fail loud rather than emit a malformed `null` project if it ever does.
+    let mut v = serde_json::to_value(p).expect("LocalProject serializes");
+    if let Value::Object(map) = &mut v {
+        map.insert(
+            "filesDir".into(),
+            Value::String(local::files::files_dir_display(p)),
+        );
+    }
+    v
+}
+
 async fn list_projects() -> ApiResult {
     let projects = Store::open()?.list_local_projects()?;
+    let projects: Vec<Value> = projects.iter().map(project_json).collect();
     Ok(Json(json!({ "projects": projects })))
 }
 
@@ -475,14 +495,16 @@ async fn create_project(
             .await
             .map_err(|e| anyhow!("clone task failed: {e}"))?;
     }
-    Ok(Json(json!({ "project": result.map_err(bad_request)? })))
+    Ok(Json(
+        json!({ "project": project_json(&result.map_err(bad_request)?) }),
+    ))
 }
 
 async fn get_project(Path(id): Path<String>) -> ApiResult {
     let project = Store::open()?
         .get_local_project(&id)?
         .ok_or_else(|| not_found("project"))?;
-    Ok(Json(json!({ "project": project })))
+    Ok(Json(json!({ "project": project_json(&project) })))
 }
 
 /// Mark a project visited: bumps updated_at, which drives the recency sort
@@ -493,7 +515,7 @@ async fn open_project(Path(id): Path<String>) -> ApiResult {
     let project = store
         .get_local_project(&id)?
         .ok_or_else(|| not_found("project"))?;
-    Ok(Json(json!({ "project": project })))
+    Ok(Json(json!({ "project": project_json(&project) })))
 }
 
 /// Present-vs-absent for PATCH fields: absent = leave, null = clear.
@@ -542,7 +564,7 @@ async fn update_project(
     let project = store
         .get_local_project(&id)?
         .ok_or_else(|| not_found("project"))?;
-    Ok(Json(json!({ "project": project })))
+    Ok(Json(json!({ "project": project_json(&project) })))
 }
 
 /// Delete a project and everything hanging off it. Refuses while runs are in
@@ -2772,7 +2794,7 @@ fn collect_events(cursor: &mut EventCursor, first: bool) -> Result<Vec<Event>> {
                 .insert(project.id.clone(), project.updated_at);
             out.push(json_event(
                 "project.updated",
-                &json!({ "project": project }),
+                &json!({ "project": project_json(&project) }),
             ));
         }
         push_experiment_events(&store, &project.id, cursor, &mut out)?;
