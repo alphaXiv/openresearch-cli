@@ -88,8 +88,10 @@ function collectReports(entries: FileEntry[]): FileEntry[] {
 }
 
 /** Report markdown with report-relative image/link paths (`images/...`)
- * rewritten to the file endpoint, scoped to the report's folder. */
-function ReportMd({
+ * rewritten to the file endpoint, scoped to the report's folder. Exported so
+ * the chat file viewer can render files-dir reports with the same image
+ * resolution (a bare <Md> would 404 the figures). */
+export function ReportMd({
   projectId,
   folder,
   markdown,
