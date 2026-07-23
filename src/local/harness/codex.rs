@@ -41,8 +41,8 @@ use super::options::{HarnessOptions, PermissionMode};
 use super::{should_synthesize_plan, synthesize_resume, Harness, ResumeAction};
 use crate::error::{anyhow, Result};
 use crate::local::chat::{
-    prepare_env, ContextUsage, PromptAnswer, ResumeCtx, TurnCtx, WirePart, WirePrompt,
-    WireQuestionOption, WireToolState,
+    prepare_env, set_chat_session_env, ContextUsage, PromptAnswer, ResumeCtx, TurnCtx, WirePart,
+    WirePrompt, WireQuestionOption, WireToolState,
 };
 use crate::local::codex::{CodexClient, ServerReqKind, TurnEvent};
 use crate::local::opencode::ensure_playbook;
@@ -1751,6 +1751,10 @@ async fn run_turn_exec(ctx: &mut TurnCtx) -> Result<()> {
     };
     cmd.arg(prompt);
     prepare_env(&mut cmd);
+    // Tag the run this sandboxed turn may launch (`orx exp run`) with the
+    // session, so the run watcher notifies this chat. After prepare_env so it
+    // isn't shadowed by a synced value.
+    set_chat_session_env(&mut cmd, &ctx.session_id);
     // Pin the sandboxed turn's store to the exact path granted above. The
     // grant was resolved from the host's env, but the child could resolve a
     // different data dir — `prepare_env` injects dashboard-synced vars (a

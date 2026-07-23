@@ -411,6 +411,7 @@ mod tests {
             commit_sha: Some("abcdef1234567890".to_string()),
             result_markdown: result_markdown.map(str::to_string),
             cancel_requested: false,
+            chat_session_id: None,
         }
     }
 
