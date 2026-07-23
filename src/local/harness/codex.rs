@@ -922,9 +922,9 @@ fn subagent_thread_ids(item: &Value) -> Vec<String> {
 }
 
 /// Build the "subagent" spawn part for a collab/sub-activity item. The UI reads
-/// `state.input` to label the row ("Spawned agent", "Sub-agent started", …) and
-/// to find the sub-agent thread id(s); the sub-agent's streamed transcript is
-/// hung under `children` by the turn loop.
+/// `state.input` to label the row ("Spawned agent", "Sub-agent started", …); the
+/// sub-agent's streamed transcript is hung under `children` by the turn loop,
+/// and the UI locates it via this part's id, not any thread id in the payload.
 fn subagent_spawn_part(id: &str, item: &Value, completed: bool) -> WirePart {
     // collabAgentToolCall carries a `status` (inProgress|completed|failed);
     // subAgentActivity has no status — treat it as a completed marker row.
@@ -1171,9 +1171,15 @@ fn route_sub_event(
     };
     let discovered = apply_sub_notification(&mut spawn_part.children, tid, method, params);
     for (gtid, spawn_id) in discovered {
-        sub_threads.entry(gtid).or_insert(SubThread {
-            spawn_part_id: spawn_id,
-        });
+        // Re-point, same as `register_sub_threads_from` for top-level threads: a
+        // later collab item on this grandchild thread (sendInput/resumeAgent)
+        // owns its continued transcript.
+        sub_threads.insert(
+            gtid,
+            SubThread {
+                spawn_part_id: spawn_id,
+            },
+        );
     }
 }
 

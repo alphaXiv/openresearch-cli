@@ -782,7 +782,7 @@ function SubagentBlock({
   // Reuse the tool-group shell (identical styling) + a `subagent` modifier that
   // only swaps in the sub-agent icon color.
   return (
-    <div className={`tool-group subagent-block ${errored ? "has-error" : ""}`}>
+    <div className={`tool-group ${errored ? "has-error" : ""}`}>
       <button className="tool-group-summary" onClick={() => setOpen((v) => !v)}>
         <Users size={12} className="subagent-icon" />
         <span className={toolStatusClass(part.state?.status)} />
