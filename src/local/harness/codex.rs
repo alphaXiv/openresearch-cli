@@ -939,28 +939,14 @@ fn subagent_spawn_part(id: &str, item: &Value, completed: bool) -> WirePart {
     } else {
         "completed"
     };
-    // Surface the fields the UI needs to label the row + open the transcript;
-    // keep it compact rather than dumping the whole item.
+    // Surface only what the UI labels the row from (`toolLine`'s subagent arm
+    // reads `tool` / `prompt` / `kind`) — the transcript is located via the
+    // spawn part id + `children`, not via any thread id in the payload.
     let mut input = serde_json::Map::new();
-    for key in [
-        "tool",
-        "prompt",
-        "model",
-        "reasoningEffort",
-        "kind",
-        "agentPath",
-        "agentsStates",
-    ] {
+    for key in ["tool", "prompt", "kind"] {
         if let Some(v) = item.get(key) {
             input.insert(key.into(), v.clone());
         }
-    }
-    let threads = subagent_thread_ids(item);
-    if !threads.is_empty() {
-        input.insert(
-            "threadIds".into(),
-            Value::Array(threads.into_iter().map(Value::String).collect()),
-        );
     }
     tool_part(
         id.to_string(),
@@ -1134,10 +1120,18 @@ fn register_sub_threads_from(
     let Some(spawn_id) = item.get("id").and_then(Value::as_str) else {
         return;
     };
+    // Re-point (not just first-write): a later collab item on the same thread —
+    // `sendInput`/`resumeAgent` after the initial spawn — should own the
+    // thread's continued transcript, so its activity streams under the new row
+    // rather than the original (already-completed) spawn row. Re-firing the same
+    // spawn item (started→completed) re-points to the same id: a harmless no-op.
     for tid in subagent_thread_ids(item) {
-        sub_threads.entry(tid).or_insert_with(|| SubThread {
-            spawn_part_id: spawn_id.to_string(),
-        });
+        sub_threads.insert(
+            tid,
+            SubThread {
+                spawn_part_id: spawn_id.to_string(),
+            },
+        );
     }
 }
 
@@ -1459,6 +1453,7 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
                         "codex produced no output for {} minutes — turn interrupted",
                         TURN_WATCHDOG.as_secs() / 60
                     ));
+                    settle_running_subagents(&mut ctx.assistant.parts);
                     let _ = ctx.flush();
                     return Ok(());
                 }
@@ -1467,6 +1462,8 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
             rx.recv().await
         };
         let Some(event) = event else {
+            settle_running_subagents(&mut ctx.assistant.parts);
+            let _ = ctx.flush();
             return Err(anyhow!("codex app-server event stream ended mid-turn"));
         };
         match event {
@@ -1597,10 +1594,14 @@ async fn run_turn_app_server(ctx: &mut TurnCtx) -> Result<()> {
                 }
             }
             TurnEvent::Closed => {
-                // Child gone: nothing to settle with codex; just close cards.
+                // Child gone: nothing to settle with codex; just close cards and
+                // stamp any orphaned running sub-agent rows so they don't spin
+                // forever in the persisted transcript.
                 for part_id in std::mem::take(&mut open_requests).into_keys() {
                     resolve_card(ctx, &part_id);
                 }
+                settle_running_subagents(&mut ctx.assistant.parts);
+                let _ = ctx.flush();
                 return Err(anyhow!(
                     "codex app-server exited mid-turn; see {}",
                     crate::store::data_dir().join("agent-codex.log").display()
@@ -2728,6 +2729,57 @@ mod tests {
                 .status,
             "completed"
         );
+    }
+
+    /// A later collab item (`sendInput`) on an already-spawned thread re-points
+    /// the thread to the new spawn row, so its continued activity streams under
+    /// the new row — not the original, already-completed spawn.
+    #[test]
+    fn send_input_repoints_thread_to_the_new_spawn_row() {
+        let mut ctx = TurnCtx::test_stub();
+        let mut subs: HashMap<String, SubThread> = HashMap::new();
+        let spawn = json!({"item":{"type":"collabAgentToolCall","id":"spawn1",
+            "tool":"spawnAgent","status":"completed","receiverThreadIds":["sub"]},
+            "threadId":"parent","turnId":"turn1"});
+        register_sub_threads_from("item/completed", &spawn, &mut subs);
+        apply_notification(&mut ctx, "item/completed", &spawn);
+        assert_eq!(subs.get("sub").unwrap().spawn_part_id, "spawn1");
+
+        // Parent sends more input to the same thread → a new collab item/row.
+        let send = json!({"item":{"type":"collabAgentToolCall","id":"spawn2",
+            "tool":"sendInput","status":"inProgress","receiverThreadIds":["sub"]},
+            "threadId":"parent","turnId":"turn1"});
+        register_sub_threads_from("item/started", &send, &mut subs);
+        apply_notification(&mut ctx, "item/started", &send);
+        // Thread now owned by the new row.
+        assert_eq!(subs.get("sub").unwrap().spawn_part_id, "spawn2");
+
+        // The sub-agent's fresh activity streams under spawn2, not spawn1.
+        route_sub_event(
+            &mut ctx,
+            &mut subs,
+            "sub",
+            "item/completed",
+            &json!({"item":{"type":"agentMessage","id":"m2","text":"more"},
+                "threadId":"sub","turnId":"subturn2"}),
+        );
+        let spawn1 = ctx
+            .assistant
+            .parts
+            .iter()
+            .find(|p| p.id == "spawn1")
+            .unwrap();
+        let spawn2 = ctx
+            .assistant
+            .parts
+            .iter()
+            .find(|p| p.id == "spawn2")
+            .unwrap();
+        assert!(
+            spawn1.children.is_empty(),
+            "original row gets no new activity"
+        );
+        assert_eq!(spawn2.children[0].id, "sub:m2");
     }
 
     #[test]

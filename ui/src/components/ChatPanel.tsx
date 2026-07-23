@@ -694,7 +694,6 @@ function renderParts(
           key={part.id}
           part={part}
           onOpenFile={onOpenFile}
-          onOpenPlan={onOpenPlan}
           onOpenSubagent={onOpenSubagent}
         />,
       );
@@ -769,12 +768,10 @@ export function SubagentTranscript({
 function SubagentBlock({
   part,
   onOpenFile,
-  onOpenPlan,
   onOpenSubagent,
 }: {
   part: ChatPart;
   onOpenFile?: (path: string) => void;
-  onOpenPlan?: (plan: string, promptId: string) => void;
   onOpenSubagent?: (spawnPartId: string) => void;
 }) {
   const running = part.state?.status === "running";
@@ -782,9 +779,11 @@ function SubagentBlock({
   const children = part.children ?? [];
   const [open, setOpen] = useState(false);
   const expanded = open || running;
+  // Reuse the tool-group shell (identical styling) + a `subagent` modifier that
+  // only swaps in the sub-agent icon color.
   return (
-    <div className={`subagent-block ${errored ? "has-error" : ""}`}>
-      <button className="subagent-summary" onClick={() => setOpen((v) => !v)}>
+    <div className={`tool-group subagent-block ${errored ? "has-error" : ""}`}>
+      <button className="tool-group-summary" onClick={() => setOpen((v) => !v)}>
         <Users size={12} className="subagent-icon" />
         <span className={toolStatusClass(part.state?.status)} />
         <span className="tool-line">{toolLine(part)}</span>
@@ -804,11 +803,11 @@ function SubagentBlock({
         <ChevronRight size={12} className={`tool-chevron ${expanded ? "open" : ""}`} />
       </button>
       {expanded && (
-        <div className="subagent-transcript">
+        <div className="tool-group-rows">
           {children.length === 0 ? (
             <div className="subagent-empty">{running ? "Working…" : "No activity"}</div>
           ) : (
-            renderParts(children, { onOpenFile, onOpenPlan, onOpenSubagent })
+            renderParts(children, { onOpenFile, onOpenSubagent })
           )}
         </div>
       )}

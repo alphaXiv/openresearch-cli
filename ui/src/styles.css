@@ -772,6 +772,11 @@ textarea::placeholder {
 .plan-tab-content .md {
   max-width: var(--readable-col);
 }
+.subagent-tab-content {
+  overflow-y: auto;
+  background: var(--base);
+  padding: 12px 16px;
+}
 
 /* Segmented control: a clearly-darker track (the theme's creams all blend
    into each other) with a raised white pill on the active segment. */
@@ -1104,38 +1109,11 @@ textarea::placeholder {
   padding-left: 10px;
   border-left: 1px solid var(--border-variant);
 }
-/* A Codex sub-agent spawn row + its nested, streaming transcript. Reads like a
-   tool group but with a distinct icon and an indented child transcript. */
-.subagent-block {
-  margin: 2px 0;
-}
-.subagent-summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 3px 2px;
-  cursor: pointer;
-  color: var(--muted);
-  font-size: var(--fs-md);
-  text-align: left;
-  border-radius: var(--radius-sm);
-}
-.subagent-summary:hover {
-  color: var(--subtext);
-  background: var(--surface);
-}
-.subagent-block.has-error .subagent-summary {
-  color: var(--accent-red);
-}
+/* A Codex sub-agent spawn row reuses the .tool-group shell; it only needs the
+   sub-agent icon color and an empty-state line. */
 .subagent-icon {
   flex-shrink: 0;
   color: var(--muted);
-}
-.subagent-transcript {
-  margin: 2px 0 4px 7px;
-  padding-left: 10px;
-  border-left: 1px solid var(--border-variant);
 }
 .subagent-empty {
   padding: 3px 4px;
