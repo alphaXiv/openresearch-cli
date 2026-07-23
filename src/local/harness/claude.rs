@@ -726,6 +726,7 @@ fn apply_event(ctx: &mut TurnCtx, state: &mut TurnState, event: &Value) -> bool 
                                     title: None,
                                 }),
                                 prompt: None,
+                                children: Vec::new(),
                             });
                         }
                     }

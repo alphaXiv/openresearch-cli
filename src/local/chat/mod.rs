@@ -56,7 +56,8 @@ fn cap_tool_text(text: &mut String) {
 /// Cap every tool part's `output`/`error` in place. Applied on each flush —
 /// this covers every adapter (they all land parts on the turn's
 /// `assistant.parts`, some by direct mutation); an adapter that re-upserts a
-/// part with the full output just gets re-capped on the next flush.
+/// part with the full output just gets re-capped on the next flush. Recurses
+/// into `children` so a nested sub-agent transcript's output is bounded too.
 fn cap_tool_parts(parts: &mut [WirePart]) {
     for part in parts.iter_mut() {
         if let Some(state) = part.state.as_mut() {
@@ -67,6 +68,7 @@ fn cap_tool_parts(parts: &mut [WirePart]) {
                 cap_tool_text(error);
             }
         }
+        cap_tool_parts(&mut part.children);
     }
 }
 
@@ -183,6 +185,13 @@ pub struct WirePart {
     /// Present only on `prompt` parts — the interactive request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<WirePrompt>,
+    /// Nested parts belonging to a sub-agent this part spawned (Codex
+    /// collaboration). A spawn part streams the sub-agent's own transcript here;
+    /// arbitrary depth for sub-agents that spawn their own. `default` +
+    /// `skip_serializing_if` keeps old `parts_json` rows and childless parts
+    /// byte-identical on the wire — no migration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<WirePart>,
 }
 
 impl WirePart {
@@ -194,6 +203,7 @@ impl WirePart {
             tool: None,
             state: None,
             prompt: None,
+            children: Vec::new(),
         }
     }
 
@@ -221,6 +231,7 @@ impl WirePart {
             tool: None,
             state: None,
             prompt: Some(prompt),
+            children: Vec::new(),
         }
     }
 }
@@ -1728,6 +1739,7 @@ impl TurnCtx {
                 title: None,
             }),
             prompt: None,
+            children: Vec::new(),
         });
     }
 
@@ -1985,25 +1997,32 @@ mod cap_tests {
     }
 
     /// The per-flush pass caps `output` and `error` on tool parts and leaves
-    /// text parts alone.
+    /// text parts alone. Nested sub-agent parts (`children`) are capped too.
     #[test]
     fn cap_tool_parts_caps_output_and_error() {
+        let bloated_tool = |id: &str| WirePart {
+            id: id.into(),
+            kind: "tool".into(),
+            text: None,
+            tool: Some("Bash".into()),
+            state: Some(WireToolState {
+                status: "completed".into(),
+                input: None,
+                output: Some("y".repeat(1_000_000)),
+                error: Some("e".repeat(1_000_000)),
+                title: None,
+            }),
+            prompt: None,
+            children: Vec::new(),
+        };
+        // A spawn part whose sub-agent transcript (a child) has huge output.
+        let mut spawn = bloated_tool("spawn");
+        spawn.tool = Some("subagent".into());
+        spawn.children = vec![bloated_tool("sub-t1")];
         let mut parts = vec![
             WirePart::text("t0", "z".repeat(TOOL_TEXT_CAP * 2)),
-            WirePart {
-                id: "t1".into(),
-                kind: "tool".into(),
-                text: None,
-                tool: Some("Bash".into()),
-                state: Some(WireToolState {
-                    status: "completed".into(),
-                    input: None,
-                    output: Some("y".repeat(1_000_000)),
-                    error: Some("e".repeat(1_000_000)),
-                    title: None,
-                }),
-                prompt: None,
-            },
+            bloated_tool("t1"),
+            spawn,
         ];
         cap_tool_parts(&mut parts);
         // Assistant prose is never capped — only tool payloads.
@@ -2014,6 +2033,12 @@ mod cap_tests {
             TOOL_TEXT_CAP
         );
         assert_eq!(state.error.as_ref().unwrap().chars().count(), TOOL_TEXT_CAP);
+        // The nested sub-agent part's output is bounded by the recursion.
+        let child_state = parts[2].children[0].state.as_ref().unwrap();
+        assert_eq!(
+            child_state.output.as_ref().unwrap().chars().count(),
+            TOOL_TEXT_CAP
+        );
     }
 }
 

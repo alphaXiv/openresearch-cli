@@ -203,6 +203,7 @@ fn to_wire_part(part: &Value) -> Option<WirePart> {
             tool: None,
             state: None,
             prompt: None,
+            children: Vec::new(),
         }),
         "tool" => {
             let state = part.get("state");
@@ -232,6 +233,7 @@ fn to_wire_part(part: &Value) -> Option<WirePart> {
                         .map(str::to_string),
                 }),
                 prompt: None,
+                children: Vec::new(),
             })
         }
         _ => None,

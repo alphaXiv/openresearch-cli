@@ -781,6 +781,9 @@ export interface ChatPart {
   tool?: string;
   state?: ChatToolState;
   prompt?: ChatPrompt;
+  /** Nested transcript of a sub-agent this part spawned (Codex `subagent`
+   * tool). Streams live and recurses for sub-agents that spawn their own. */
+  children?: ChatPart[];
 }
 
 export interface ChatMessage {
