@@ -1836,9 +1836,8 @@ fn is_terminal(status: &str) -> bool {
 /// The chat session a completed run should notify: the one that *launched* it
 /// (recorded on the run), provided it still exists and has history. Returns
 /// `None` for an orphan run (no owning session — CLI-launched or pre-migration)
-/// or a launcher that was since deleted/emptied. Store-only and agent-free, so
-/// the routing decision is unit-testable in isolation. The busy check and the
-/// actual send stay in `watch_runs`.
+/// or a launcher since deleted/emptied. Store-only (the busy check and send stay
+/// in `watch_runs`), which also keeps the routing decision unit-testable.
 fn notify_target(store: &Store, run: &crate::store::StoredRun) -> Option<String> {
     let session_id = run.chat_session_id.clone()?;
     let session = store.get_chat_session(&session_id).ok().flatten()?;
@@ -1875,9 +1874,7 @@ pub async fn watch_runs(chat: Arc<ChatHost>) {
             if first || !newly_terminal {
                 continue;
             }
-            // The session to poke — the one that launched the run, if it still
-            // exists with history. `None` skips (orphan run, or a session that
-            // was deleted). Never a project-wide guess.
+            // The launching session (see `notify_target`); `None` skips.
             let Some(session_id) = notify_target(&store, &run) else {
                 continue;
             };
