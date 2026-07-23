@@ -1833,11 +1833,30 @@ fn is_terminal(status: &str) -> bool {
     matches!(status, "done" | "failed" | "cancelled")
 }
 
-/// Poke a project's chat when a run completes while no turn is in flight —
-/// the local stand-in for the cloud agent staying online inside a blocking
-/// `orx exp wait`. The first pass only seeds the cursor, so a server restart
-/// doesn't replay old completions. Busy sessions are skipped (the agent is
-/// awake — likely in its wait loop — and will see the completion itself).
+/// The chat session a completed run should notify: the one that *launched* it
+/// (recorded on the run), provided it still exists and has history. Returns
+/// `None` for an orphan run (no owning session — CLI-launched or pre-migration)
+/// or a launcher since deleted/emptied. Store-only (the busy check and send stay
+/// in `watch_runs`), which also keeps the routing decision unit-testable.
+fn notify_target(store: &Store, run: &crate::store::StoredRun) -> Option<String> {
+    let session_id = run.chat_session_id.clone()?;
+    let session = store.get_chat_session(&session_id).ok().flatten()?;
+    let has_history = store
+        .list_chat_messages(&session.id)
+        .map(|m| !m.is_empty())
+        .unwrap_or(false);
+    has_history.then_some(session.id)
+}
+
+/// Poke the chat session that *launched* a run when it completes while no turn
+/// is in flight — the local stand-in for the cloud agent staying online inside
+/// a blocking `orx exp wait`. Routing is by the run's recorded
+/// `chat_session_id` (stamped from the harness child's `ORX_CHAT_SESSION_ID`),
+/// never a project-wide guess, so a second idle agent in the same project is
+/// never handed another agent's run. The first pass only seeds the cursor, so a
+/// server restart doesn't replay old completions. A busy owner is skipped (the
+/// agent is awake — likely in its wait loop — and will see the completion
+/// itself); a run with no owning session (CLI-launched) pokes nothing.
 pub async fn watch_runs(chat: Arc<ChatHost>) {
     let mut seen: HashMap<String, String> = HashMap::new();
     let mut first = true;
@@ -1855,20 +1874,13 @@ pub async fn watch_runs(chat: Arc<ChatHost>) {
             if first || !newly_terminal {
                 continue;
             }
-            let Ok(sessions) = store.list_chat_sessions_by_project(&run.project_id) else {
+            // The launching session (see `notify_target`); `None` skips.
+            let Some(session_id) = notify_target(&store, &run) else {
                 continue;
             };
-            // Most recently touched session that already has history — never
-            // mint or retitle a fresh one.
-            let Some(session) = sessions.into_iter().find(|s| {
-                store
-                    .list_chat_messages(&s.id)
-                    .map(|m| !m.is_empty())
-                    .unwrap_or(false)
-            }) else {
-                continue;
-            };
-            if chat.is_busy(&session.id).await {
+            if chat.is_busy(&session_id).await {
+                // The owner is awake — likely blocking in its own `orx exp
+                // wait` — and will observe the completion itself.
                 continue;
             }
             let text = format!(
@@ -1878,7 +1890,7 @@ pub async fn watch_runs(chat: Arc<ChatHost>) {
                 run.id, run.status, run.project_id, run.id
             );
             if let Err(err) = chat
-                .send_message(&session.id, text, TurnOverrides::default(), Vec::new())
+                .send_message(&session_id, text, TurnOverrides::default(), Vec::new())
                 .await
             {
                 eprintln!("orx up: run watcher: {err}");
@@ -1906,6 +1918,29 @@ pub fn prepare_env(cmd: &mut tokio::process::Command) {
             cmd.env(key, value);
         }
     }
+}
+
+/// Env var carrying the launching chat session's id into a harness child. The
+/// agent shells out `orx exp run`, a fresh `orx` subprocess that inherits this,
+/// so run creation can stamp `StoredRun::chat_session_id` (see
+/// `launching_chat_session`) and the run watcher can route the completion
+/// notification back to exactly the session that started it.
+pub const CHAT_SESSION_ENV: &str = "ORX_CHAT_SESSION_ID";
+
+/// Stamp the launching session id onto a harness child's env. Call *after*
+/// `prepare_env` so a dashboard-synced value can't shadow it. Harness children
+/// are one-per-session, so this is unambiguous.
+pub fn set_chat_session_env(cmd: &mut tokio::process::Command, session_id: &str) {
+    cmd.env(CHAT_SESSION_ENV, session_id);
+}
+
+/// The chat session that launched this run, read from the env the harness child
+/// exported (see [`set_chat_session_env`]). `None` for CLI-launched or server
+/// runs — those intentionally poke no chat session on completion.
+pub fn launching_chat_session() -> Option<String> {
+    std::env::var(CHAT_SESSION_ENV)
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 /// Append-only stderr sink for a harness child (startup/debug diagnostics).
@@ -2154,5 +2189,103 @@ mod bridge_tests {
             serde_json::to_value(&usage).unwrap(),
             json!({ "usedTokens": 100 })
         );
+    }
+}
+
+#[cfg(test)]
+mod notify_target_tests {
+    use super::*;
+    use crate::store::{Store, StoredChatMessage, StoredChatSession, StoredRun};
+
+    fn session(store: &Store, id: &str, project: &str, updated_at: i64, msgs: usize) {
+        store
+            .create_chat_session(&StoredChatSession {
+                id: id.into(),
+                project_id: project.into(),
+                harness: "codex".into(),
+                native_session_id: None,
+                title: None,
+                model: None,
+                permission_mode: None,
+                reasoning_level: None,
+                archived: false,
+                context_usage_json: None,
+                created_at: 1,
+                updated_at,
+            })
+            .unwrap();
+        for i in 0..msgs {
+            store
+                .upsert_chat_message(&StoredChatMessage {
+                    id: format!("{id}-m{i}"),
+                    session_id: id.into(),
+                    role: "user".into(),
+                    parts_json: "[]".into(),
+                    created_at: 1,
+                })
+                .unwrap();
+        }
+    }
+
+    fn run(project: &str, owner: Option<&str>) -> StoredRun {
+        StoredRun {
+            id: "run_x".into(),
+            experiment_id: "exp_1".into(),
+            project_id: project.into(),
+            status: "failed".into(),
+            backend_json: "{}".into(),
+            command: "echo hi".into(),
+            created_at: 1,
+            updated_at: 1,
+            ended_at: None,
+            exit_code: None,
+            commit_sha: None,
+            result_markdown: None,
+            cancel_requested: false,
+            chat_session_id: owner.map(str::to_string),
+        }
+    }
+
+    fn temp_store(tag: &str) -> (Store, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("orx-notify-{tag}-{}", uuid::Uuid::new_v4()));
+        (Store::open_at(dir.clone()).unwrap(), dir)
+    }
+
+    /// The reported bug: an idle bystander is the *most recently updated*
+    /// session in the project, while an older session actually launched the
+    /// run. Routing must follow ownership, not recency.
+    #[test]
+    fn routes_to_launcher_not_the_newest_bystander() {
+        let (store, dir) = temp_store("owner");
+        let proj = "p1";
+        // Owner is older; bystander is the newest — what the old project-wide
+        // heuristic would have wrongly picked.
+        session(&store, "owner", proj, 100, 3);
+        session(&store, "bystander", proj, 999, 3);
+
+        let target = notify_target(&store, &run(proj, Some("owner")));
+        assert_eq!(target.as_deref(), Some("owner"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A run with no recorded owner (CLI-launched / pre-migration) pokes no one
+    /// — never a project-wide guess.
+    #[test]
+    fn orphan_run_notifies_no_one() {
+        let (store, dir) = temp_store("orphan");
+        session(&store, "bystander", "p1", 999, 3);
+        assert_eq!(notify_target(&store, &run("p1", None)), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The owner must still exist and have history; an empty (or vanished)
+    /// launcher is skipped rather than poked.
+    #[test]
+    fn empty_or_missing_owner_is_skipped() {
+        let (store, dir) = temp_store("empty");
+        session(&store, "empty_owner", "p1", 100, 0);
+        assert_eq!(notify_target(&store, &run("p1", Some("empty_owner"))), None);
+        assert_eq!(notify_target(&store, &run("p1", Some("ghost"))), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

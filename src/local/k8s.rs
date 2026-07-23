@@ -222,6 +222,7 @@ pub async fn submit_local_k8s(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         commit_sha: Some(commit_sha),
         result_markdown: None,
         cancel_requested: false,
+        chat_session_id: crate::local::chat::launching_chat_session(),
     };
     store.upsert_run(&run)?;
 

@@ -220,6 +220,7 @@ pub async fn submit_local_openresearch(args: &crate::ExpRunArgs) -> Result<Store
         commit_sha: Some(commit_sha),
         result_markdown: None,
         cancel_requested: false,
+        chat_session_id: crate::local::chat::launching_chat_session(),
     };
 
     // From here the box is billing: never leak it behind an error the store

@@ -474,7 +474,7 @@ async fn read_loop(client: Arc<CodexClient>, stdout: tokio::process::ChildStdout
 /// Spawn `codex app-server` (no handshake yet — see `CodexHost::ensure`, which
 /// registers the client *before* the handshake so every kill path can reach
 /// the child even if the spawning turn task is aborted mid-handshake).
-async fn spawn_client() -> Result<Arc<CodexClient>> {
+async fn spawn_client(session_id: &str) -> Result<Arc<CodexClient>> {
     let bin = find_codex_required()?;
     let mut cmd = Command::new(&bin);
     cmd.arg("app-server")
@@ -483,6 +483,10 @@ async fn spawn_client() -> Result<Arc<CodexClient>> {
         .stderr(Stdio::from(crate::local::chat::harness_log("codex")?))
         .kill_on_drop(true);
     crate::local::chat::prepare_env(&mut cmd);
+    // Stamp the launching session (one app-server child per orx session) so a
+    // run the agent starts via `orx exp run` is tagged with it and the run
+    // watcher notifies this chat. After prepare_env so it isn't shadowed.
+    crate::local::chat::set_chat_session_env(&mut cmd, session_id);
     // Pin the child's store to the same canonicalized dir the sandbox policy
     // grants (see harness/codex.rs `ensure_orx_data_dir`) — after prepare_env
     // so the pin beats a dashboard-synced ORX_DATA_DIR. Unconditional: the
@@ -615,7 +619,7 @@ impl CodexHost {
         let host = self.clone();
         let session = session_id.to_string();
         tokio::spawn(async move {
-            let client = spawn_client().await?;
+            let client = spawn_client(&session).await?;
             // Never displace a live entry: if an abandoned bring-up's insert
             // races a successor's (spawn_lock was released by the abort), the
             // loser kills its own child and defers to the live one.

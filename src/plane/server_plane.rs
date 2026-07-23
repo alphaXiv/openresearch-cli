@@ -930,6 +930,7 @@ impl ServerPlane {
             commit_sha: None,
             result_markdown: None,
             cancel_requested: false,
+            chat_session_id: crate::local::chat::launching_chat_session(),
         })?;
         if let Err(err) = crate::client::update_external_run(
             creds,
@@ -1070,6 +1071,7 @@ impl ServerPlane {
             commit_sha: None,
             result_markdown: None,
             cancel_requested: false,
+            chat_session_id: crate::local::chat::launching_chat_session(),
         })?;
         if let Err(err) = crate::client::update_external_run(
             creds,

@@ -144,6 +144,11 @@ pub struct StoredRun {
     pub result_markdown: Option<String>,
     /// Local-mode cancel intent (the supervisor polls it; server runs ignore it).
     pub cancel_requested: bool,
+    /// The `orx up` chat session that launched this run, when it was started by
+    /// an agent harness child (which exports `ORX_CHAT_SESSION_ID`). `None` for
+    /// CLI-launched or server runs. The run watcher routes the completion
+    /// notification to exactly this session — never a project-wide guess.
+    pub chat_session_id: Option<String>,
 }
 
 pub struct Store {
@@ -245,6 +250,7 @@ impl Store {
             "ALTER TABLE runs ADD COLUMN commit_sha TEXT",
             "ALTER TABLE runs ADD COLUMN result_markdown TEXT",
             "ALTER TABLE runs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE runs ADD COLUMN chat_session_id TEXT",
             "ALTER TABLE chat_sessions ADD COLUMN permission_mode TEXT",
             "ALTER TABLE chat_sessions ADD COLUMN reasoning_level TEXT",
             "ALTER TABLE chat_sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0",
@@ -331,8 +337,9 @@ impl Store {
         self.conn.execute(
             "INSERT INTO runs (id, experiment_id, project_id, status, backend_json, command,
                                created_at, updated_at, ended_at, exit_code,
-                               commit_sha, result_markdown, cancel_requested)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                               commit_sha, result_markdown, cancel_requested,
+                               chat_session_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(id) DO UPDATE SET
                status = excluded.status,
                backend_json = excluded.backend_json,
@@ -341,6 +348,9 @@ impl Store {
                exit_code = excluded.exit_code,
                commit_sha = excluded.commit_sha,
                result_markdown = excluded.result_markdown",
+            // chat_session_id is deliberately absent from the DO UPDATE SET:
+            // run ownership is immutable, so a later status upsert never
+            // rewrites (or clears) the session that launched the run.
             params![
                 run.id,
                 run.experiment_id,
@@ -355,6 +365,7 @@ impl Store {
                 run.commit_sha,
                 run.result_markdown,
                 run.cancel_requested,
+                run.chat_session_id,
             ],
         )?;
         Ok(())
@@ -909,7 +920,8 @@ fn row_to_chat_session(
 
 const SELECT_RUN: &str = "SELECT id, experiment_id, project_id, status, backend_json, command,
                                  created_at, updated_at, ended_at, exit_code,
-                                 commit_sha, result_markdown, cancel_requested FROM runs";
+                                 commit_sha, result_markdown, cancel_requested,
+                                 chat_session_id FROM runs";
 
 const PROJECT_COLS: &str = "id, name, slug, github_owner, github_repo, baseline_branch, \
                             repo_path, run_command, paper_id, created_at, updated_at";
@@ -932,6 +944,7 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> std::result::Result<StoredRun, rusqlit
         commit_sha: row.get(10)?,
         result_markdown: row.get(11)?,
         cancel_requested: row.get(12)?,
+        chat_session_id: row.get(13)?,
     })
 }
 
@@ -992,6 +1005,80 @@ mod tests {
                 .context_usage_json
                 .as_deref(),
             Some(json)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn run_fixture(id: &str, status: &str, chat_session_id: Option<&str>) -> StoredRun {
+        StoredRun {
+            id: id.into(),
+            experiment_id: "exp_1".into(),
+            project_id: "proj_1".into(),
+            status: status.into(),
+            backend_json: "{}".into(),
+            command: "echo hi".into(),
+            created_at: 1,
+            updated_at: 1,
+            ended_at: None,
+            exit_code: None,
+            commit_sha: None,
+            result_markdown: None,
+            cancel_requested: false,
+            chat_session_id: chat_session_id.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn run_chat_session_id_roundtrips() {
+        let dir = std::env::temp_dir().join(format!("orx-store-runsess-{}", uuid::Uuid::new_v4()));
+        let store = Store::open_at(dir.clone()).unwrap();
+
+        store
+            .upsert_run(&run_fixture("run_owned", "starting", Some("chat_A")))
+            .unwrap();
+        store
+            .upsert_run(&run_fixture("run_orphan", "starting", None))
+            .unwrap();
+
+        assert_eq!(
+            store.get_run("run_owned").unwrap().unwrap().chat_session_id,
+            Some("chat_A".to_string())
+        );
+        assert_eq!(
+            store
+                .get_run("run_orphan")
+                .unwrap()
+                .unwrap()
+                .chat_session_id,
+            None
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_ownership_is_immutable_across_upserts() {
+        let dir = std::env::temp_dir().join(format!("orx-store-runimmut-{}", uuid::Uuid::new_v4()));
+        let store = Store::open_at(dir.clone()).unwrap();
+
+        // Created by chat_A.
+        store
+            .upsert_run(&run_fixture("run_1", "starting", Some("chat_A")))
+            .unwrap();
+        // A later status upsert that carries a *different* (or absent) session
+        // must NOT rewrite the owner — ownership is immutable.
+        store
+            .upsert_run(&run_fixture("run_1", "failed", Some("chat_B")))
+            .unwrap();
+        store
+            .upsert_run(&run_fixture("run_1", "done", None))
+            .unwrap();
+
+        let run = store.get_run("run_1").unwrap().unwrap();
+        assert_eq!(run.status, "done", "status still updates on conflict");
+        assert_eq!(
+            run.chat_session_id,
+            Some("chat_A".to_string()),
+            "the launching session is never overwritten by a later upsert"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
