@@ -66,7 +66,7 @@ export function SubagentTab({
       <div className="pane-content subagent-tab-content">
         {spawn ? (
           <SubagentTranscript
-            parts={spawn.children ?? []}
+            spawn={spawn}
             onOpenFile={onOpenFile}
             onOpenSubagent={onOpenSubagent}
           />

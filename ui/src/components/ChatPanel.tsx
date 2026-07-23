@@ -742,18 +742,25 @@ export function findPartById(parts: ChatPart[], id: string): ChatPart | null {
 /** The sub-agent's transcript, rendered standalone in the right-pane tab. Reuses
  * `renderParts`, so it streams and nests exactly like the inline block. */
 export function SubagentTranscript({
-  parts,
+  spawn,
   onOpenFile,
   onOpenSubagent,
 }: {
-  parts: ChatPart[];
+  spawn: ChatPart;
   onOpenFile?: (path: string) => void;
   onOpenSubagent?: (spawnPartId: string) => void;
 }) {
+  const parts = spawn.children ?? [];
+  const running = spawn.state?.status === "running";
   return (
     <div className="msg-assistant">
+      <div className="subagent-tab-header">
+        <span className={toolStatusClass(spawn.state?.status)} />
+        <span className="tool-line">{toolLine(spawn)}</span>
+        {running && <span className="subagent-live">live</span>}
+      </div>
       {parts.length === 0 ? (
-        <div className="subagent-empty">No activity yet…</div>
+        <div className="subagent-empty">{running ? "Working…" : "No activity"}</div>
       ) : (
         renderParts(parts, { onOpenFile, onOpenSubagent })
       )}
@@ -777,13 +784,15 @@ function SubagentBlock({
   const running = part.state?.status === "running";
   const errored = part.state?.status === "error";
   const children = part.children ?? [];
-  const [open, setOpen] = useState(false);
-  const expanded = open || running;
+  // Default open when the sub-agent is still working (you want to watch it), but
+  // the toggle is authoritative from then on — a sub-agent runs for a long time,
+  // so `open || running` would make the row impossible to collapse.
+  const [expanded, setExpanded] = useState(running);
   // Reuse the tool-group shell (identical styling) + a `subagent` modifier that
   // only swaps in the sub-agent icon color.
   return (
     <div className={`tool-group ${errored ? "has-error" : ""}`}>
-      <button className="tool-group-summary" onClick={() => setOpen((v) => !v)}>
+      <button className="tool-group-summary" onClick={() => setExpanded((v) => !v)}>
         <Users size={12} className="subagent-icon" />
         <span className={toolStatusClass(part.state?.status)} />
         <span className="tool-line">{toolLine(part)}</span>
