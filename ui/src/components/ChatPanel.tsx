@@ -79,7 +79,7 @@ interface ChatState {
 
 type Action =
   | { type: "reset" }
-  | { type: "seed"; sessionId: string; messages: ChatMessage[] }
+  | { type: "seed"; sessionId: string; messages: ChatMessage[]; onlyIfAbsent?: boolean }
   | { type: "upsertMessage"; sessionId: string; message: ChatMessage }
   | { type: "optimisticUser"; sessionId: string; text: string; imageUrls: string[] }
   | { type: "busy"; sessionId: string; busy: boolean }
@@ -106,6 +106,9 @@ function reducer(state: ChatState, action: Action): ChatState {
     case "reset":
       return { messagesBySession: {}, busySessions: new Set() };
     case "seed":
+      // onlyIfAbsent: recover a failed fetch without clobbering messages that
+      // streamed in via SSE during it (a `message` event already created the key).
+      if (action.onlyIfAbsent && action.sessionId in state.messagesBySession) return state;
       return {
         ...state,
         messagesBySession: { ...state.messagesBySession, [action.sessionId]: action.messages },
@@ -1128,9 +1131,10 @@ export function ChatPanel({
       .catch(() => {
         // Recover from a failed fetch to a usable state rather than a stuck
         // "Loading conversation…" spinner: seed an empty transcript (clears
-        // historyLoading, falls through to the empty state), and drop the
-        // loadedSessions guard so switching back to this session refetches.
-        dispatch({ type: "seed", sessionId: activeId, messages: [] });
+        // historyLoading, falls through to the empty state) unless messages
+        // already streamed in, and drop the loadedSessions guard so switching
+        // back to this session refetches.
+        dispatch({ type: "seed", sessionId: activeId, messages: [], onlyIfAbsent: true });
         loadedSessions.current.delete(activeId);
       });
   }, [activeId]);
