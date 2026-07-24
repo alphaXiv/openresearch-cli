@@ -1024,10 +1024,16 @@ textarea::placeholder {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: var(--fs-md);
+  gap: 12px;
+  color: var(--subtext);
+  font-size: var(--fs-xl);
   padding: 20px;
+}
+/* Larger, more visible wheel than the inline .spinner used in the thread. */
+.chat-loading .spinner {
+  width: 22px;
+  height: 22px;
+  border-width: 3px;
 }
 
 /* user message: a right-aligned rounded bubble, no border, no label */
