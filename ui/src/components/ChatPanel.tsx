@@ -1125,7 +1125,14 @@ export function ChatPanel({
     loadedSessions.current.add(activeId);
     getChatMessages(activeId)
       .then((messages) => dispatch({ type: "seed", sessionId: activeId, messages }))
-      .catch(() => loadedSessions.current.delete(activeId));
+      .catch(() => {
+        // Recover from a failed fetch to a usable state rather than a stuck
+        // "Loading conversation…" spinner: seed an empty transcript (clears
+        // historyLoading, falls through to the empty state), and drop the
+        // loadedSessions guard so switching back to this session refetches.
+        dispatch({ type: "seed", sessionId: activeId, messages: [] });
+        loadedSessions.current.delete(activeId);
+      });
   }, [activeId]);
 
   // Chat events from the shared /api/events stream.
@@ -1167,6 +1174,13 @@ export function ChatPanel({
 
   const messages = activeId ? (state.messagesBySession[activeId] ?? []) : [];
   const busy = activeId ? state.busySessions.has(activeId) : false;
+  // A session whose transcript hasn't been seeded yet: its key is absent from
+  // messagesBySession (vs. present-but-empty for a genuinely empty session).
+  // Switching to an existing session leaves this true for the getChatMessages
+  // fetch, so we show a spinner instead of flashing the empty state. A brand-new
+  // session created via the composer never lands here — its optimisticUser seed
+  // populates the key synchronously in the same handler.
+  const historyLoading = !!activeId && !(activeId in state.messagesBySession);
   // A busy turn blocked on an unanswered HELD card (nativeId — a bridge or
   // inline mid-turn request) is waiting on the user, not the model. Drives
   // the status line and the rail dot (the composer button is keyed on
@@ -1650,7 +1664,12 @@ export function ChatPanel({
         </button>
       </div>
 
-      {!threadMounted ? (
+      {historyLoading ? (
+        <div className="chat-loading" aria-live="polite" aria-busy="true">
+          <span className="spinner" />
+          <span>Loading conversation…</span>
+        </div>
+      ) : !threadMounted ? (
         <div className="chat-empty">
           <h2>
             <Wordmark />

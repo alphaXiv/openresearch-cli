@@ -1017,6 +1017,19 @@ textarea::placeholder {
   border-color: var(--text);
 }
 
+/* Shown while an existing session's transcript is fetched, so switching
+   sessions never flashes the empty state before its messages seed in. */
+.chat-loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: var(--fs-md);
+  padding: 20px;
+}
+
 /* user message: a right-aligned rounded bubble, no border, no label */
 .msg-user {
   align-self: flex-end;
