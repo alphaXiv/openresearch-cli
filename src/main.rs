@@ -759,6 +759,8 @@ pub enum LitSource {
     Openalex,
     /// bioRxiv biology preprints (searched via OpenAlex, fetched via bioRxiv).
     Biorxiv,
+    /// You.com web search for current research and broader context.
+    Youcom,
 }
 
 impl LitSource {
@@ -770,6 +772,7 @@ impl LitSource {
             LitSource::Alphaxiv => "alphaxiv",
             LitSource::Openalex => "openalex",
             LitSource::Biorxiv => "biorxiv",
+            LitSource::Youcom => "youcom",
         }
     }
 
@@ -779,12 +782,13 @@ impl LitSource {
             LitSource::Alphaxiv => "alphaXiv",
             LitSource::Openalex => "OpenAlex",
             LitSource::Biorxiv => "bioRxiv",
+            LitSource::Youcom => "You.com",
         }
     }
 
     /// All sources, in preference order (used to pick a default when `--source`
     /// is omitted).
-    pub const ALL: [LitSource; 3] = [LitSource::Alphaxiv, LitSource::Openalex, LitSource::Biorxiv];
+    pub const ALL: [LitSource; 4] = [LitSource::Alphaxiv, LitSource::Openalex, LitSource::Biorxiv, LitSource::Youcom];
 }
 
 #[derive(Args, Debug)]

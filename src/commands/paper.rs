@@ -27,6 +27,7 @@ pub async fn run(args: crate::PaperArgs) -> Result<()> {
         LitSource::Alphaxiv => run_alphaxiv(&args).await,
         LitSource::Openalex => run_openalex(&args.id, args.full).await,
         LitSource::Biorxiv => run_biorxiv(&args.id, args.full).await,
+        LitSource::Youcom => run_youcom(&args.id),
     }
 }
 
@@ -91,6 +92,18 @@ async fn run_biorxiv(raw: &str, full: bool) -> Result<()> {
             "No bioRxiv preprint found for {doi}. If it's a medRxiv or non-bioRxiv DOI, try `orx paper {doi} --source openalex`; or search with `orx lit --source biorxiv`."
         )),
     }
+}
+
+fn run_youcom(url: &str) -> Result<()> {
+    // For You.com web search results, the "id" is actually a URL
+    // Since these are web pages, not academic papers, we just provide the URL
+    println!("# Web Search Result");
+    println!("**URL:** {url}");
+    println!();
+    println!("This is a web search result from You.com. To view the content, please visit the URL above.");
+    println!();
+    println!("To search for more related content, use: `orx lit --source youcom \"<your query>\"`");
+    Ok(())
 }
 
 fn print_openalex(w: &OpenAlexWork, full: bool) {

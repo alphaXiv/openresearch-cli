@@ -1901,6 +1901,101 @@ pub async fn fetch_biorxiv(doi: &str) -> Result<Option<BiorxivDetail>> {
     Ok(body.collection.into_iter().last())
 }
 
+/// Search You.com web search API for current research and broader context.
+/// Returns results mapped to [`LitHit`] format for consistency with other sources.
+pub async fn search_youcom(query: &str, limit: u32) -> Result<Vec<LitHit>> {
+    let api_key = std::env::var("YDC_API_KEY").ok();
+    
+    // Use keyless API if no API key is available
+    let url = if api_key.is_some() {
+        "https://api.you.com/v1/search"
+    } else {
+        "https://api.you.com/v1/agents/search"
+    };
+    
+    let payload = if api_key.is_some() {
+        serde_json::json!({
+            "query": query,
+            "count": limit
+        })
+    } else {
+        serde_json::json!({
+            "query": query,
+            "count": limit
+        })
+    };
+    
+    let client = http();
+    let mut req = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("User-Agent", ALPHAXIV_UA)
+        .json(&payload);
+    
+    if let Some(key) = api_key {
+        req = req.header("Authorization", format!("Bearer {}", key));
+    }
+    
+    let res = req
+        .send()
+        .await
+        .map_err(|e| anyhow!("Could not reach You.com API: {}", e))?;
+    
+    let status = res.status();
+    if !status.is_success() {
+        let error_text = res.text().await.unwrap_or_default();
+        return Err(anyhow!(
+            "You.com API error ({} {}): {}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or(""),
+            error_text
+        ));
+    }
+    
+    #[derive(serde::Deserialize)]
+    struct YouComResult {
+        title: String,
+        url: String,
+        #[serde(alias = "snippet")]
+        description: String,
+    }
+    
+    #[derive(serde::Deserialize, Default)]
+    struct YouComWebResults {
+        #[serde(default)]
+        web: Vec<YouComResult>,
+    }
+    
+    #[derive(serde::Deserialize)]
+    struct YouComResponse {
+        #[serde(default)]
+        results: YouComWebResults,
+        #[serde(default)]
+        web: Vec<YouComResult>, // fallback for direct web results
+    }
+    
+    let body = res.json::<YouComResponse>().await?;
+    let results = if !body.results.web.is_empty() {
+        body.results.web
+    } else {
+        body.web
+    };
+    
+    Ok(results
+        .into_iter()
+        .map(|result| LitHit {
+            source: "youcom".to_string(),
+            id: result.url.clone(), // Use URL as id for web results
+            title: result.title,
+            abstract_: result.description,
+            publication_date: None, // Web results don't have publication dates
+            votes: None,
+            citations: None,
+            snippets: vec![], // No text snippets for web results
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

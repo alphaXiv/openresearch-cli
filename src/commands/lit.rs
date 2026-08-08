@@ -6,7 +6,7 @@
 //! with `--json`. Pull a hit next with `orx paper <id>`. bioRxiv has no search
 //! API, so `--source biorxiv` searches OpenAlex filtered to bioRxiv's corpus.
 
-use crate::client::{search_openalex, search_papers, LitHit, BIORXIV_SOURCE_ID};
+use crate::client::{search_openalex, search_papers, search_youcom, LitHit, BIORXIV_SOURCE_ID};
 use crate::error::{anyhow, Result};
 use crate::LitSource;
 
@@ -29,6 +29,7 @@ pub async fn run(args: crate::LitArgs) -> Result<()> {
             .collect(),
         LitSource::Openalex => search_openalex(&args.query, limit, None).await?,
         LitSource::Biorxiv => search_openalex(&args.query, limit, Some(BIORXIV_SOURCE_ID)).await?,
+        LitSource::Youcom => search_youcom(&args.query, limit).await?,
     };
 
     if args.json {
