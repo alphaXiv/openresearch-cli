@@ -55,16 +55,15 @@ JSON/SSE API over a local SQLite store. From there you get:
 - **The experiment tree** — every experiment is a git branch: a runnable
   snapshot of your code. The root is your baseline; children are variants
   measured against it, so lineage stays explicit.
-- **Runs** — projects and experiments stay local by default and run on this
-  machine from their recorded Git commit. Enable GitHub syncing for a project
-  when you want Modal, Hugging Face Jobs, Kubernetes, Slurm, SSH, Ray, or
-  OpenResearch compute; remote launches push the exact branch first.
+- **Runs** — every backend receives the same immutable archive of the recorded
+  Git commit. Modal, Hugging Face Jobs, Kubernetes, Slurm, SSH, Ray,
+  OpenResearch, and local runs do not require a hosted repository or push.
 - **Autoresearch** — describe a goal and let the agent run autonomously toward
   it: proposing, launching, and analyzing experiments.
 
-Everything binds to loopback only. Creating a local project does not call
-GitHub; public paper repositories and paper search use the network only when
-you choose those flows.
+Everything binds to loopback only. Creating a local project and launching
+compute do not publish code; upstream repositories and paper search use the
+network only when you choose those import flows.
 
 ### On a remote machine
 

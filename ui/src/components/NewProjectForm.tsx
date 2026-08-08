@@ -40,7 +40,7 @@ export function NewProjectForm({
   onCreated,
   onCancel,
 }: {
-  onCreated: (project: Project, githubPublicationError: string | null) => void;
+  onCreated: (project: Project) => void;
   onCancel?: () => void;
 }) {
   const [mode, setMode] = useState<Mode>("folder");
@@ -220,7 +220,7 @@ export function NewProjectForm({
           ? { paperId: paper.paperId, cloneUrl: paper.repoUrl ?? undefined }
           : {}),
       });
-      onCreated(result.project, result.githubPublicationError);
+      onCreated(result.project);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

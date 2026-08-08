@@ -5,13 +5,14 @@
 //!
 //! There are no flavors: the run's shape is a **manifest committed on the
 //! experiment branch** (default `.orx/k8s.yaml`, or `--manifest <path>`),
-//! read at the branch tip — the same commit the job clones — so unpushed
-//! manifest edits never run. See `jobs/kubernetes.rs` for the contract orx
+//! read at the recorded revision — the same commit the job receives — so
+//! uncommitted manifest edits never run. See `jobs/kubernetes.rs` for the contract orx
 //! enforces on it.
 
 use std::collections::HashMap;
 
-use crate::commands::exp::{hf_clone_script, spawn_detached_supervise};
+use crate::commands::exp::spawn_detached_supervise;
+use crate::compute::SourceSnapshot;
 use crate::error::{anyhow, Result};
 use crate::jobs::{huggingface as hf, kubernetes as k8s, BackendDescriptor};
 use crate::local::git;
@@ -49,6 +50,14 @@ pub async fn launch_local_k8s(args: &crate::ExpRunArgs) -> Result<()> {
 /// Submit the local experiment's run from its committed manifest and detach a
 /// supervisor.
 pub async fn submit_local_k8s(args: &crate::ExpRunArgs) -> Result<StoredRun> {
+    crate::compute::submit(args).await
+}
+
+pub async fn submit_local_k8s_with_source(
+    args: &crate::ExpRunArgs,
+    source: SourceSnapshot,
+    run_id: String,
+) -> Result<StoredRun> {
     if args.sandbox.is_some() || args.gpu.is_some() || args.cpu.is_some() {
         return Err(anyhow!(
             "--backend k8s runs from a manifest committed on the experiment branch; \
@@ -101,61 +110,30 @@ pub async fn submit_local_k8s(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         })?;
 
     // One run in flight per experiment unless deliberately forced.
-    if !args.force {
-        if let Some(r) = store
-            .list_runs_by_experiment(&exp.id)?
-            .into_iter()
-            .find(|r| !crate::local::is_terminal(&r.status))
-        {
-            return Err(anyhow!(
-                "Run {} is already in flight for this experiment ({}). \
-                 Cancel it with `orx exp cancel {}` or pass --force to launch anyway.",
-                r.id,
-                r.status,
-                exp.id
-            ));
-        }
-    }
-
-    // The job clones from GitHub, so the branch tip must exist there — and the
-    // manifest is read from that same tip, not the working tree.
-    let (commit_sha, manifest) = {
-        let project = project.clone();
-        let branch = exp.branch_name.clone();
+    let manifest = {
+        let repo_path = project.repo_path.clone();
+        let revision = source.revision.clone();
         let path = manifest_path.clone();
-        tokio::task::spawn_blocking(move || -> Result<(String, String)> {
-            let sha = git::publish_branch_commit(&project, &branch)?;
-            let manifest = git::file_at(std::path::Path::new(&project.repo_path), &sha, &path)
-                .map_err(|_| {
+        tokio::task::spawn_blocking(move || -> Result<String> {
+            git::file_at(std::path::Path::new(&repo_path), &revision, &path).map_err(|_| {
                     anyhow!(
-                        "No manifest at '{path}' on branch '{branch}' — write one, commit, \
-                     and push (jobs run the branch tip, so an uncommitted manifest \
-                     doesn't exist yet). Pass --manifest <path> if it lives elsewhere."
+                        "No manifest at '{path}' in committed revision {revision} — write one \
+                         and commit it before running. Pass --manifest <path> if it lives elsewhere."
                     )
-                })?;
-            Ok((sha, manifest))
+                })
         })
         .await
         .map_err(|e| anyhow!("git task failed: {e}"))??
     };
 
-    let run_id = uuid::Uuid::new_v4().to_string();
-    let script = hf_clone_script(
-        &commit_sha,
-        &project.github_owner,
-        &project.github_repo,
-        &run_command,
-    );
+    let script = crate::compute::gated_script("/tmp/orx-source/source.tar", &run_command);
 
     // The pod's env: everything the user synced (API keys), plus the tokens
-    // the clone script and common tooling expect. Travels via a k8s Secret,
+    // the run script and common tooling expect. Travels via a k8s Secret,
     // never on a command line.
     let mut env: HashMap<String, String> = crate::config::list_synced_env().into_iter().collect();
     if let Ok(hf_token) = hf::resolve_token() {
         env.entry("HF_TOKEN".to_string()).or_insert(hf_token);
-    }
-    if let Some(gh) = git::resolve_github_token() {
-        env.insert("GITHUB_TOKEN".to_string(), gh);
     }
     let mut labels = HashMap::new();
     labels.insert("or_run".to_string(), run_id.clone());
@@ -181,25 +159,34 @@ pub async fn submit_local_k8s(args: &crate::ExpRunArgs) -> Result<StoredRun> {
             env,
             timeout_seconds,
             labels,
+            source_archive: source.path.clone(),
         },
     )
     .await?;
 
-    let descriptor = BackendDescriptor {
+    let mut descriptor = BackendDescriptor {
         kind: "k8s_job".to_string(),
-        namespace: Some(namespace),
-        job_id: Some(submitted.job_name),
+        namespace: Some(namespace.clone()),
+        job_id: Some(submitted.job_name.clone()),
         flavor: None,
         image: None,
         url: None,
-        context,
+        context: context.clone(),
         manifest: Some(manifest_path),
-        resources: Some(submitted.resources),
+        resources: Some(submitted.resources.clone()),
         ssh_host: None,
         ssh_port: None,
         ssh_user: None,
         timeout_secs: None,
+        source_digest: None,
+        source_path: None,
+        source_size: None,
     };
+    source.apply_to_descriptor(&mut descriptor);
+    if let Err(error) = crate::compute::record_submission_handle(&run_id, &descriptor) {
+        let _ = k8s::delete_resources(context.as_deref(), &namespace, &submitted.resources).await;
+        return Err(error);
+    }
     let run = StoredRun {
         id: run_id.clone(),
         experiment_id: exp.id.clone(),
@@ -211,9 +198,11 @@ pub async fn submit_local_k8s(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         updated_at: now_ms(),
         ended_at: None,
         exit_code: None,
-        commit_sha: Some(commit_sha),
+        commit_sha: Some(source.revision),
         result_markdown: None,
-        cancel_requested: false,
+        cancel_requested: store
+            .get_run(&run_id)?
+            .is_some_and(|run| run.cancel_requested),
         chat_session_id: crate::local::chat::launching_chat_session(),
     };
     store.upsert_run(&run)?;

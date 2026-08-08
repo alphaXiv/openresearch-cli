@@ -55,16 +55,13 @@ pub enum SkillSet {
 // public skill name) ----------------------------------------------------------
 
 const COMPUTE_LOCAL: &str = include_str!("../../agent-skills/orx-compute/SKILL.local.md");
-const COMPUTE_LOCAL_ONLY: &str = include_str!("../../agent-skills/orx-compute/SKILL.local-only.md");
 const COMPUTE_CLOUD: &str = include_str!("../../agent-skills/orx-compute/SKILL.md");
 const COMPUTE_K8S: &str = include_str!("../../agent-skills/orx-compute-k8s/SKILL.md");
 const EXPERIMENT_TREE_LOCAL: &str =
     include_str!("../../agent-skills/orx-experiment-tree/SKILL.local.md");
 const EXPERIMENT_TREE_CLOUD: &str = include_str!("../../agent-skills/orx-experiment-tree/SKILL.md");
-const GIT_EDITING: &str = include_str!("../../agent-skills/orx-git/SKILL.md");
-const EXPERIMENT_TREE_LOCAL_ONLY: &str =
-    include_str!("../../agent-skills/orx-experiment-tree/SKILL.local-only.md");
-const GIT_LOCAL_ONLY: &str = include_str!("../../agent-skills/orx-git/SKILL.local-only.md");
+const GIT_LOCAL: &str = include_str!("../../agent-skills/orx-git/SKILL.local-only.md");
+const GIT_CLOUD: &str = include_str!("../../agent-skills/orx-git/SKILL.md");
 const LIT: &str = include_str!("../../agent-skills/orx-lit/SKILL.md");
 const CREATE: &str = include_str!("../../agent-skills/orx-create/SKILL.md");
 const REPORTS_LOCAL: &str = include_str!("../../agent-skills/orx-reports/SKILL.local.md");
@@ -96,7 +93,7 @@ const S_COMPUTE_CLOUD: AgentSkill = AgentSkill {
 };
 const S_COMPUTE_K8S: AgentSkill = AgentSkill {
     name: "orx-compute-k8s",
-    description: "Run an experiment on your own Kubernetes cluster (`orx exp run --backend k8s`): the committed-manifest contract orx enforces at submit. Use when the user names k8s, kubernetes, or a cluster, before writing or editing `.orx/k8s.yaml`, for multi-node or Indexed Jobs, or when a k8s submit is rejected.",
+    description: "Run an experiment on your own Kubernetes cluster (`orx exp run --backend k8s`): the single-pod committed-manifest contract orx enforces at submit. Use when the user names k8s, kubernetes, or a cluster, before writing or editing `.orx/k8s.yaml`, or when a k8s submit is rejected.",
     content: COMPUTE_K8S,
 };
 const S_EXPERIMENT_TREE_LOCAL: AgentSkill = AgentSkill {
@@ -109,10 +106,15 @@ const S_EXPERIMENT_TREE_CLOUD: AgentSkill = AgentSkill {
     description: D_EXPERIMENT_TREE,
     content: EXPERIMENT_TREE_CLOUD,
 };
-const S_GIT: AgentSkill = AgentSkill {
+const S_GIT_LOCAL: AgentSkill = AgentSkill {
+    name: "orx-git",
+    description: "Read, edit, commit, and diff experiment code with local Git only. Use whenever you touch an experiment branch, compare nodes, prepare a local run, or diagnose stale code in a local-only project.",
+    content: GIT_LOCAL,
+};
+const S_GIT_CLOUD: AgentSkill = AgentSkill {
     name: "orx-git",
     description: "Read, edit, and diff a node's code with plain git: sync, commit, and push before running. Use whenever you touch experiment code — before editing any branch, when a checkout or push fails, when comparing two nodes' code, or when a run seems to have picked up stale code.",
-    content: GIT_EDITING,
+    content: GIT_CLOUD,
 };
 const S_LIT: AgentSkill = AgentSkill {
     name: "orx-lit",
@@ -152,7 +154,7 @@ pub fn skills(set: SkillSet) -> Vec<&'static AgentSkill> {
     match set {
         SkillSet::Local => vec![
             &S_EXPERIMENT_TREE_LOCAL,
-            &S_GIT,
+            &S_GIT_LOCAL,
             &S_COMPUTE_LOCAL,
             &S_COMPUTE_K8S,
             &S_EVIDENCE_LOCAL,
@@ -162,7 +164,7 @@ pub fn skills(set: SkillSet) -> Vec<&'static AgentSkill> {
         SkillSet::Full => vec![
             &S_CREATE,
             &S_EXPERIMENT_TREE_CLOUD,
-            &S_GIT,
+            &S_GIT_CLOUD,
             &S_COMPUTE_CLOUD,
             &S_COMPUTE_K8S,
             &S_EVIDENCE_CLOUD,
@@ -183,57 +185,18 @@ pub fn find(name: &str, set: SkillSet) -> Option<&'static AgentSkill> {
         .find(|s| s.name == want || s.name.strip_prefix("orx-") == Some(want))
 }
 
-pub fn available_in_session(skill: &AgentSkill, github_enabled: bool) -> bool {
-    github_enabled || skill.name != "orx-compute-k8s"
-}
-
-pub fn session_content(skill: &AgentSkill, github_enabled: bool) -> &'static str {
-    if github_enabled {
-        return skill.content;
-    }
-    match skill.name {
-        "orx-git" => GIT_LOCAL_ONLY,
-        "orx-compute" => COMPUTE_LOCAL_ONLY,
-        "orx-experiment-tree" => EXPERIMENT_TREE_LOCAL_ONLY,
-        _ => skill.content,
-    }
-}
-
-pub fn session_description(skill: &AgentSkill, github_enabled: bool) -> &'static str {
-    if github_enabled {
-        return skill.description;
-    }
-    match skill.name {
-        "orx-git" => "Read, edit, commit, and diff experiment code with local Git only.",
-        "orx-compute" => "Launch committed experiments on this machine and inspect their logs.",
-        _ => skill.description,
-    }
-}
-
 /// Write the [`SkillSet::Local`] modules as `<worktree>/<skills_dir_rel>/<name>/SKILL.md`,
 /// overwriting every file on every call (same freshness semantics as the
 /// playbook — zero drift). Returns `Err` on the first write failure; the caller
 /// treats it like a playbook-write error.
-pub fn ensure_session_skills(
-    worktree: &Path,
-    skills_dir_rel: &str,
-    github_enabled: bool,
-) -> Result<()> {
+pub fn ensure_session_skills(worktree: &Path, skills_dir_rel: &str) -> Result<()> {
     let base = worktree.join(skills_dir_rel);
     for skill in skills(SkillSet::Local) {
         let dir = base.join(skill.name);
-        if !available_in_session(skill, github_enabled) {
-            if dir.exists() {
-                std::fs::remove_dir_all(&dir)
-                    .map_err(|e| anyhow!("Could not remove {}: {}", dir.display(), e))?;
-            }
-            continue;
-        }
         std::fs::create_dir_all(&dir)
             .map_err(|e| anyhow!("Could not create {}: {}", dir.display(), e))?;
         let path = dir.join("SKILL.md");
-        let content = session_content(skill, github_enabled);
-        std::fs::write(&path, content)
+        std::fs::write(&path, skill.content)
             .map_err(|e| anyhow!("Could not write {}: {}", path.display(), e))?;
     }
     Ok(())
@@ -409,7 +372,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let rel = ".claude/skills";
-        ensure_session_skills(&tmp, rel, true).unwrap();
+        ensure_session_skills(&tmp, rel).unwrap();
 
         let base = tmp.join(rel);
         let expected: HashSet<&str> = skills(SkillSet::Local).iter().map(|s| s.name).collect();
@@ -427,7 +390,7 @@ mod tests {
         }
 
         // Idempotent: a second call overwrites in place and changes nothing.
-        ensure_session_skills(&tmp, rel, true).unwrap();
+        ensure_session_skills(&tmp, rel).unwrap();
         let got2: HashSet<String> = std::fs::read_dir(&base)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -438,23 +401,22 @@ mod tests {
     }
 
     #[test]
-    fn local_only_session_skills_override_push_instructions() {
+    fn session_skills_use_snapshot_instructions() {
         let tmp = std::env::temp_dir().join(format!(
             "orx-local-only-skills-test-{}",
             uuid::Uuid::new_v4()
         ));
         let rel = ".agents/skills";
-        ensure_session_skills(&tmp, rel, true).unwrap();
+        ensure_session_skills(&tmp, rel).unwrap();
         assert!(tmp.join(rel).join("orx-compute-k8s").exists());
-        ensure_session_skills(&tmp, rel, false).unwrap();
+        ensure_session_skills(&tmp, rel).unwrap();
         let git = std::fs::read_to_string(tmp.join(rel).join("orx-git/SKILL.md")).unwrap();
-        assert!(git.contains("This project is local-only"));
+        assert!(git.contains("immutable source archive"));
         assert!(!git.contains("git push"));
-        assert!(!git.contains("origin/"));
         let compute = std::fs::read_to_string(tmp.join(rel).join("orx-compute/SKILL.md")).unwrap();
-        assert!(!compute.contains("branch tip"));
+        assert!(compute.contains("content-addressed"));
         assert!(!compute.contains("git push"));
-        assert!(!tmp.join(rel).join("orx-compute-k8s").exists());
+        assert!(tmp.join(rel).join("orx-compute-k8s").exists());
         let _ = std::fs::remove_dir_all(tmp);
     }
 
@@ -462,20 +424,8 @@ mod tests {
     fn bundled_skills_avoid_openresearch_ui_navigation() {
         for set in [SkillSet::Local, SkillSet::Full] {
             for skill in skills(set) {
-                for content in [
-                    skill.content,
-                    session_content(skill, true),
-                    session_content(skill, false),
-                ] {
-                    crate::local::assert_agent_guidance_is_ui_agnostic(skill.name, content);
-                }
-                for description in [
-                    skill.description,
-                    session_description(skill, true),
-                    session_description(skill, false),
-                ] {
-                    crate::local::assert_agent_guidance_is_ui_agnostic(skill.name, description);
-                }
+                crate::local::assert_agent_guidance_is_ui_agnostic(skill.name, skill.content);
+                crate::local::assert_agent_guidance_is_ui_agnostic(skill.name, skill.description);
             }
         }
     }

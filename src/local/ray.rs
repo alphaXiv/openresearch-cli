@@ -3,11 +3,11 @@
 
 use std::collections::HashMap;
 
-use crate::commands::exp::{hf_clone_script, spawn_detached_supervise};
+use crate::commands::exp::spawn_detached_supervise;
+use crate::compute::SourceSnapshot;
 use crate::error::{anyhow, Result};
 use crate::jobs::ssh::sh_quote;
 use crate::jobs::{huggingface, ray, BackendDescriptor};
-use crate::local::git;
 use crate::store::{now_ms, Store, StoredRun};
 
 /// CLI wrapper: submit, then print the summary.
@@ -31,6 +31,14 @@ pub async fn launch_local_ray(args: &crate::ExpRunArgs) -> Result<()> {
 
 /// Submit the local experiment's run as a Ray Job and detach a supervisor.
 pub async fn submit_local_ray(args: &crate::ExpRunArgs) -> Result<StoredRun> {
+    crate::compute::submit(args).await
+}
+
+pub async fn submit_local_ray_with_source(
+    args: &crate::ExpRunArgs,
+    source: SourceSnapshot,
+    run_id: String,
+) -> Result<StoredRun> {
     if args.sandbox.is_some() || args.gpu.is_some() || args.cpu.is_some() {
         return Err(anyhow!(
             "--backend ray submits to your Ray cluster; drop --gpu/--cpu/--sandbox and \
@@ -84,22 +92,6 @@ pub async fn submit_local_ray(args: &crate::ExpRunArgs) -> Result<StoredRun> {
             )
         })?;
 
-    if !args.force {
-        if let Some(r) = store
-            .list_runs_by_experiment(&exp.id)?
-            .into_iter()
-            .find(|r| !crate::local::is_terminal(&r.status))
-        {
-            return Err(anyhow!(
-                "Run {} is already in flight for this experiment ({}). \
-                 Cancel it with `orx exp cancel {}` or pass --force to launch anyway.",
-                r.id,
-                r.status,
-                exp.id
-            ));
-        }
-    }
-
     // Reachability check before we touch git / allocate a run id.
     ray::preflight(&address).await.map_err(|e| {
         anyhow!(
@@ -109,58 +101,44 @@ pub async fn submit_local_ray(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         )
     })?;
 
-    let commit_sha = {
-        let project = project.clone();
-        let branch = exp.branch_name.clone();
-        tokio::task::spawn_blocking(move || git::publish_branch_commit(&project, &branch))
-            .await
-            .map_err(|e| anyhow!("git task failed: {e}"))??
-    };
-
-    let run_id = uuid::Uuid::new_v4().to_string();
     // Ray submission ids: letters, digits, dashes, underscores.
     let submission_id = format!("orx-{}", run_id.replace('-', ""));
-    let script = hf_clone_script(
-        &commit_sha,
-        &project.github_owner,
-        &project.github_repo,
-        &run_command,
-    );
     // The job env: everything the user synced (API keys), plus the tokens the
-    // clone step expects. Ray renders runtime_env in its dashboard, but anyone
+    // run step expects. Ray renders runtime_env in its dashboard, but anyone
     // with dashboard access can submit jobs anyway — same trust boundary.
     let mut env: HashMap<String, String> = crate::config::list_synced_env().into_iter().collect();
     if let Ok(hf_token) = huggingface::resolve_token() {
         env.entry("HF_TOKEN".to_string()).or_insert(hf_token);
-    }
-    if let Some(gh) = git::resolve_github_token() {
-        // Overrides any synced GITHUB_TOKEN: the clone URL embeds exactly this
-        // variable, and it must be the token the branch was pushed with.
-        env.insert("GITHUB_TOKEN".to_string(), gh);
     }
     let mut metadata = HashMap::new();
     metadata.insert("or_run".to_string(), run_id.clone());
     metadata.insert("or_experiment".to_string(), exp.id.clone());
     metadata.insert("or_project".to_string(), project.id.clone());
 
+    let (package_digest, package_path) = source
+        .ray_package
+        .as_ref()
+        .ok_or_else(|| anyhow!("Ray source package was not created."))?;
+    let working_dir = ray::stage_working_dir(&address, package_digest, package_path).await?;
     ray::run_job(
         &address,
         &ray::JobSubmission {
-            entrypoint: format!("bash -c {}", sh_quote(&script)),
+            entrypoint: format!("bash -c {}", sh_quote(&run_command)),
             submission_id: submission_id.clone(),
             resources,
             env,
             metadata,
+            working_dir: Some(working_dir),
         },
     )
     .await?;
 
     let watch = ray::job_url(&address, &submission_id);
 
-    let descriptor = BackendDescriptor {
+    let mut descriptor = BackendDescriptor {
         kind: "ray_job".to_string(),
         namespace: Some(address.clone()),
-        job_id: Some(submission_id),
+        job_id: Some(submission_id.clone()),
         flavor: args.flavor.clone(),
         image: None,
         url: Some(watch),
@@ -171,7 +149,15 @@ pub async fn submit_local_ray(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         ssh_port: None,
         ssh_user: None,
         timeout_secs: None,
+        source_digest: None,
+        source_path: None,
+        source_size: None,
     };
+    source.apply_to_descriptor(&mut descriptor);
+    if let Err(error) = crate::compute::record_submission_handle(&run_id, &descriptor) {
+        let _ = ray::stop_job(&address, &submission_id).await;
+        return Err(error);
+    }
     let run = StoredRun {
         id: run_id.clone(),
         experiment_id: exp.id.clone(),
@@ -183,9 +169,11 @@ pub async fn submit_local_ray(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         updated_at: now_ms(),
         ended_at: None,
         exit_code: None,
-        commit_sha: Some(commit_sha),
+        commit_sha: Some(source.revision),
         result_markdown: None,
-        cancel_requested: false,
+        cancel_requested: store
+            .get_run(&run_id)?
+            .is_some_and(|run| run.cancel_requested),
         chat_session_id: crate::local::chat::launching_chat_session(),
     };
     store.upsert_run(&run)?;

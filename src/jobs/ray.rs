@@ -246,6 +246,7 @@ pub struct JobSubmission {
     pub resources: RayResources,
     pub env: HashMap<String, String>,
     pub metadata: HashMap<String, String>,
+    pub working_dir: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -278,10 +279,14 @@ fn map_ray_status(raw: &str) -> String {
 /// so a success needs nothing from the response body.
 pub async fn run_job(address: &str, spec: &JobSubmission) -> Result<()> {
     let env = super::default_unbuffered(&spec.env);
+    let mut runtime_env = json!({ "env_vars": env });
+    if let Some(working_dir) = &spec.working_dir {
+        runtime_env["working_dir"] = json!(working_dir);
+    }
     let mut body = json!({
         "entrypoint": spec.entrypoint,
         "submission_id": spec.submission_id,
-        "runtime_env": { "env_vars": env },
+        "runtime_env": runtime_env,
         "metadata": spec.metadata,
         "entrypoint_num_cpus": spec.resources.cpus,
         "entrypoint_num_gpus": spec.resources.gpus,
@@ -297,6 +302,38 @@ pub async fn run_job(address: &str, spec: &JobSubmission) -> Result<()> {
         .map_err(|e| anyhow!("Could not reach Ray Jobs at {address}: {e}"))?;
     check(res, "job submit").await?;
     Ok(())
+}
+
+/// Upload a Ray `working_dir` package through the Jobs server. Ray's own SDK
+/// uses this exact content-addressed package endpoint before submitting the
+/// job; using the snapshot digest makes the existence check restart-safe.
+pub async fn stage_working_dir(
+    address: &str,
+    digest: &str,
+    zip: &std::path::Path,
+) -> Result<String> {
+    let name = format!("_ray_pkg_{digest}.zip");
+    let url = format!("{address}/api/packages/gcs/{name}");
+    let existing = http()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| anyhow!("Could not query Ray source package at {address}: {e}"))?;
+    if existing.status() != reqwest::StatusCode::OK {
+        if existing.status() != reqwest::StatusCode::NOT_FOUND {
+            check(existing, "source package lookup").await?;
+        }
+        let file = tokio::fs::File::open(zip).await?;
+        let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
+        let uploaded = http()
+            .put(&url)
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| anyhow!("Could not upload Ray source package at {address}: {e}"))?;
+        check(uploaded, "source package upload").await?;
+    }
+    Ok(format!("gcs://{name}"))
 }
 
 pub async fn inspect_job(address: &str, submission_id: &str) -> Result<JobInfo> {

@@ -4,10 +4,10 @@
 
 use std::collections::HashMap;
 
-use crate::commands::exp::{default_hf_image, hf_clone_script, spawn_detached_supervise};
+use crate::commands::exp::{default_hf_image, spawn_detached_supervise};
+use crate::compute::SourceSnapshot;
 use crate::error::{anyhow, Result};
 use crate::jobs::{huggingface as hf, BackendDescriptor};
-use crate::local::git;
 use crate::store::{now_ms, Store, StoredRun};
 
 /// CLI wrapper around `submit_local_hf`: submit, then print the summary.
@@ -34,6 +34,14 @@ pub async fn launch_local_hf(args: &crate::ExpRunArgs) -> Result<()> {
 /// supervisor. `args.exp_id` must exist in `local_experiments`; requires
 /// `--backend hf` and `--flavor`. Shared by the CLI and the `orx up` API.
 pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
+    crate::compute::submit(args).await
+}
+
+pub async fn submit_local_hf_with_source(
+    args: &crate::ExpRunArgs,
+    source: SourceSnapshot,
+    run_id: String,
+) -> Result<StoredRun> {
     if args.sandbox.is_some() || args.gpu.is_some() || args.cpu.is_some() {
         return Err(anyhow!(
             "Local experiments run on Hugging Face Jobs; drop --gpu/--cpu/--sandbox \
@@ -78,60 +86,24 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
 
     // One run in flight per experiment unless the caller deliberately forces
     // a concurrent launch — the double-click / double-submit guard.
-    if !args.force {
-        if let Some(r) = store
-            .list_runs_by_experiment(&exp.id)?
-            .into_iter()
-            .find(|r| !crate::local::is_terminal(&r.status))
-        {
-            return Err(anyhow!(
-                "Run {} is already in flight for this experiment ({}). \
-                 Cancel it with `orx exp cancel {}` or pass --force to launch anyway.",
-                r.id,
-                r.status,
-                exp.id
-            ));
-        }
-    }
-
     let token = hf::resolve_token()?;
     let namespace = hf::whoami(&token).await?;
 
-    // The job clones from GitHub, so the branch tip must exist there. Fetch
-    // via ensure_clone so branch_head_sha matches what the job will check out.
-    // Git shells out (network, can stall) — keep it off the async workers.
-    let commit_sha = {
-        let project = project.clone();
-        let branch = exp.branch_name.clone();
-        tokio::task::spawn_blocking(move || git::publish_branch_commit(&project, &branch))
-            .await
-            .map_err(|e| anyhow!("git task failed: {e}"))??
-    };
-
-    let run_id = uuid::Uuid::new_v4().to_string();
     let image = args
         .image
         .clone()
         .unwrap_or_else(|| default_hf_image(&flavor));
-    let script = hf_clone_script(
-        &commit_sha,
-        &project.github_owner,
-        &project.github_repo,
-        &run_command,
-    );
+    let script = crate::compute::snapshot_script("/orx-source/source.tar", &run_command);
 
     // Tokens travel as job secrets only — the command line stays tokenless.
     let mut secrets = HashMap::new();
     secrets.insert("HF_TOKEN".to_string(), token.clone());
-    if let Some(gh) = git::resolve_github_token() {
-        secrets.insert("GITHUB_TOKEN".to_string(), gh);
-    }
     let mut labels = HashMap::new();
     labels.insert("or_run".to_string(), run_id.clone());
     labels.insert("or_experiment".to_string(), exp.id.clone());
     labels.insert("or_project".to_string(), project.id.clone());
 
-    let job = hf::run_job(
+    let job = hf::run_job_with_source(
         &token,
         &namespace,
         &hf::JobSubmission {
@@ -143,10 +115,12 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
             timeout_seconds,
             labels,
         },
+        &source.path,
+        &source.digest,
     )
     .await?;
 
-    let descriptor = BackendDescriptor {
+    let mut descriptor = BackendDescriptor {
         kind: "hf_job".to_string(),
         namespace: Some(namespace.clone()),
         job_id: Some(job.id.clone()),
@@ -160,7 +134,15 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         ssh_port: None,
         ssh_user: None,
         timeout_secs: None,
+        source_digest: None,
+        source_path: None,
+        source_size: None,
     };
+    source.apply_to_descriptor(&mut descriptor);
+    if let Err(error) = crate::compute::record_submission_handle(&run_id, &descriptor) {
+        let _ = hf::cancel_job(&token, &namespace, &job.id).await;
+        return Err(error);
+    }
     let run = StoredRun {
         id: run_id.clone(),
         experiment_id: exp.id.clone(),
@@ -172,9 +154,11 @@ pub async fn submit_local_hf(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         updated_at: now_ms(),
         ended_at: None,
         exit_code: None,
-        commit_sha: Some(commit_sha),
+        commit_sha: Some(source.revision),
         result_markdown: None,
-        cancel_requested: false,
+        cancel_requested: store
+            .get_run(&run_id)?
+            .is_some_and(|run| run.cancel_requested),
         chat_session_id: crate::local::chat::launching_chat_session(),
     };
     store.upsert_run(&run)?;

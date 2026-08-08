@@ -496,12 +496,6 @@ async fn spawn_client(session_id: &str) -> Result<Arc<CodexClient>> {
     if let Some(dir) = ensure_orx_data_dir() {
         cmd.env("ORX_DATA_DIR", &dir);
     }
-    // The sandbox blocks the keyring `gh` keeps its token in; resolve it out
-    // here and pass it down. Resolved once per child, not per turn.
-    if let Some(token) = crate::local::git::resolve_github_token() {
-        cmd.env("GH_TOKEN", &token);
-        cmd.env("GITHUB_TOKEN", token);
-    }
     // Own process group: a terminal SIGINT reaches orx up alone, which then
     // tears the child down deliberately (kill_on_drop / shutdown()).
     #[cfg(unix)]

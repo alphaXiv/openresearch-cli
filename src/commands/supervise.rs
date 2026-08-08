@@ -70,7 +70,25 @@ pub async fn run(args: crate::SuperviseArgs) -> Result<()> {
     } else {
         Some(require_credentials().await)
     };
-    let descriptor = BackendDescriptor::parse(&stored.backend_json)?;
+    let mut descriptor = BackendDescriptor::parse(&stored.backend_json)?;
+    if descriptor.job_id.is_none() {
+        if let Some(recovered) = crate::compute::recover_submission_handle(&run_id)? {
+            store.set_backend_json(&run_id, &recovered.to_json())?;
+            descriptor = recovered;
+        }
+    }
+    if descriptor.job_id.is_none() {
+        store.update_status(&run_id, "failed", Some(now_ms()), None)?;
+        store.set_result_markdown(
+            &run_id,
+            &format!(
+                "Submission was interrupted before the {} provider handle was recorded. \
+                 Inspect the provider for resources labelled or_run={run_id} before retrying.",
+                descriptor.kind.trim_end_matches("_job")
+            ),
+        )?;
+        return Ok(());
+    }
     if descriptor.kind == "k8s_job" {
         return run_k8s(store, stored, descriptor, creds, run_id).await;
     }
@@ -980,35 +998,19 @@ async fn run_openresearch(
         .await
         .unwrap_or(false);
     if !already_launched {
-        // The payload is re-derivable from the store + config, so a restart
-        // that died before launching can rebuild it exactly.
-        let Some(exp) = store.get_local_experiment(&stored.experiment_id)? else {
-            store.update_status(&run_id, "failed", Some(now_ms()), None)?;
-            store.set_result_markdown(
-                &run_id,
-                "Local experiment vanished from the store before launch.",
-            )?;
-            teardown_box(&store, &lifecycle, &sandbox_id, &run_id).await;
-            return Ok(());
+        let source = match crate::compute::SourceSnapshot::from_run(&stored, &descriptor) {
+            Ok(source) => source,
+            Err(error) => {
+                store.update_status(&run_id, "failed", Some(now_ms()), None)?;
+                store.set_result_markdown(
+                    &run_id,
+                    &format!("The recorded source snapshot could not be loaded: {error}"),
+                )?;
+                teardown_box(&store, &lifecycle, &sandbox_id, &run_id).await;
+                return Ok(());
+            }
         };
-        let Some(project) = store.get_local_project(&exp.project_id)? else {
-            store.update_status(&run_id, "failed", Some(now_ms()), None)?;
-            store.set_result_markdown(
-                &run_id,
-                "Local project vanished from the store before launch.",
-            )?;
-            teardown_box(&store, &lifecycle, &sandbox_id, &run_id).await;
-            return Ok(());
-        };
-        let script = crate::commands::exp::hf_clone_script(
-            stored
-                .commit_sha
-                .as_deref()
-                .ok_or_else(|| anyhow!("Remote run is missing its recorded commit SHA."))?,
-            &project.github_owner,
-            &project.github_repo,
-            &stored.command,
-        );
+        let script = crate::compute::staged_script(&stored.command);
         let script =
             openresearch::wrap_with_timeout(&script, descriptor.timeout_secs.unwrap_or(4 * 3600));
         let mut env: std::collections::HashMap<String, String> =
@@ -1016,10 +1018,6 @@ async fn run_openresearch(
         if let Ok(hf_token) = hf::resolve_token() {
             env.entry("HF_TOKEN".to_string()).or_insert(hf_token);
         }
-        if let Some(gh) = crate::local::git::resolve_github_token() {
-            env.insert("GITHUB_TOKEN".to_string(), gh);
-        }
-
         // sshd and the org key sync can lag a freshly-online box, so the
         // launch retries for ~2 minutes before giving up.
         let mut launch_err = None;
@@ -1032,6 +1030,12 @@ async fn run_openresearch(
                 store.update_status(&run_id, "cancelled", Some(now_ms()), None)?;
                 teardown_box(&store, &lifecycle, &sandbox_id, &run_id).await;
                 return Ok(());
+            }
+            let staged = ssh::stage_source(&target, &run_id, &source.path, &source.digest).await;
+            if let Err(err) = staged {
+                eprintln!("supervise {run_id}: source staging failed (will retry): {err}");
+                launch_err = Some(err);
+                continue;
             }
             match ssh::run_job(&ssh::SshJobSpec {
                 target: target.clone(),

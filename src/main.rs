@@ -14,6 +14,7 @@ mod browser;
 #[allow(dead_code)]
 mod client;
 mod commands;
+mod compute;
 mod config;
 mod error;
 mod folder_picker;

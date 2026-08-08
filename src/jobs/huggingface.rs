@@ -10,6 +10,8 @@
 //! plain `Bearer` header on every call including the log stream.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -18,6 +20,115 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::error::{anyhow, Result};
+
+const SOURCE_LAUNCHER: &str = r#"
+import json, sys
+from huggingface_hub import HfApi
+
+spec = json.load(sys.stdin)
+api = HfApi(endpoint=spec["endpoint"], token=spec["token"])
+volume = api.sync_job_volume(
+    spec["sourceDir"],
+    "/orx-source",
+    namespace=spec["namespace"],
+    remote_name="orx-" + spec["digest"],
+    read_only=True,
+)
+job = api.run_job(
+    image=spec["image"],
+    command=spec["command"],
+    env=spec["environment"],
+    secrets=spec["secrets"],
+    flavor=spec["flavor"],
+    timeout=spec["timeoutSeconds"],
+    labels=spec["labels"],
+    volumes=[volume],
+    namespace=spec["namespace"],
+)
+print(json.dumps({"id": job.id}))
+"#;
+
+fn managed_python() -> PathBuf {
+    let env = crate::config::config_dir().join("envs").join("huggingface");
+    if cfg!(windows) {
+        env.join("Scripts").join("python.exe")
+    } else {
+        env.join("bin").join("python")
+    }
+}
+
+async fn ensure_client_env() -> Result<PathBuf> {
+    static INSTALL_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    let _install = INSTALL_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let python = managed_python();
+    if python.exists() {
+        let ready = tokio::process::Command::new(&python)
+            .args([
+                "-c",
+                "from huggingface_hub import HfApi; assert hasattr(HfApi, 'sync_job_volume')",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if ready {
+            return Ok(python);
+        }
+    }
+    let base = ["python3", "python"]
+        .into_iter()
+        .find(|candidate| {
+            std::process::Command::new(candidate)
+                .args(["-c", "import venv"])
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| anyhow!("Python 3 is required to stage source for Hugging Face Jobs."))?;
+    let env_dir = python
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| anyhow!("Invalid managed Hugging Face environment path."))?;
+    if !python.exists() {
+        if let Some(parent) = env_dir.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let status = tokio::process::Command::new(base)
+            .args(["-m", "venv"])
+            .arg(env_dir)
+            .status()
+            .await?;
+        if !status.success() {
+            return Err(anyhow!(
+                "Could not create the Hugging Face client environment."
+            ));
+        }
+    }
+    eprintln!("orx: installing the Hugging Face source-transfer client (one time)…");
+    let status = tokio::process::Command::new(&python)
+        .args([
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "--disable-pip-version-check",
+            "huggingface_hub>=1.8.0",
+        ])
+        .status()
+        .await?;
+    if !status.success() {
+        return Err(anyhow!(
+            "Could not install the Hugging Face source-transfer client."
+        ));
+    }
+    Ok(python)
+}
 
 pub fn endpoint() -> String {
     std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string())
@@ -188,31 +299,72 @@ pub struct JobSubmission {
     pub labels: HashMap<String, String>,
 }
 
-pub async fn run_job(token: &str, namespace: &str, spec: &JobSubmission) -> Result<JobInfo> {
-    // Mirror the python client: arguments/environment always present.
-    let mut body = json!({
+/// Sync the immutable archive into the private `jobs-artifacts` bucket and
+/// mount it into the Job. The digest-derived remote name makes retries upload
+/// nothing when the exact source was already staged.
+pub async fn run_job_with_source(
+    token: &str,
+    namespace: &str,
+    spec: &JobSubmission,
+    archive: &Path,
+    digest: &str,
+) -> Result<JobInfo> {
+    let python = ensure_client_env().await?;
+    let source_dir = archive
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("{digest}.hf"));
+    std::fs::create_dir_all(&source_dir)?;
+    let staged = source_dir.join("source.tar");
+    if !staged.exists() && std::fs::hard_link(archive, &staged).is_err() {
+        std::fs::copy(archive, &staged)?;
+    }
+    let body = json!({
+        "endpoint": endpoint(),
+        "token": token,
+        "namespace": namespace,
+        "sourceDir": source_dir,
+        "digest": digest,
+        "image": spec.docker_image,
         "command": spec.command,
-        "arguments": [],
-        "environment": spec.environment,
+        "environment": super::default_unbuffered(&spec.environment),
+        "secrets": spec.secrets,
         "flavor": spec.flavor,
-        "dockerImage": spec.docker_image,
         "timeoutSeconds": spec.timeout_seconds,
+        "labels": spec.labels,
     });
-    if !spec.secrets.is_empty() {
-        body["secrets"] = json!(spec.secrets);
+    let mut child = tokio::process::Command::new(python)
+        .args(["-c", SOURCE_LAUNCHER])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    use tokio::io::AsyncWriteExt as _;
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(body.to_string().as_bytes())
+        .await?;
+    let output = child.wait_with_output().await?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "Hugging Face source staging failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
-    if !spec.labels.is_empty() {
-        body["labels"] = json!(spec.labels);
-    }
-    let res = http()
-        .post(format!("{}/api/jobs/{}", endpoint(), namespace))
-        .bearer_auth(token)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| anyhow!("Could not reach Hugging Face: {}", e))?;
-    let job: JobInfo = check(res, "job submit").await?.json().await?;
-    Ok(job)
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let id = value["id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| anyhow!("Hugging Face source launch returned no job id."))?;
+    Ok(JobInfo {
+        id: id.to_string(),
+        status: JobStatus {
+            stage: "SCHEDULING".to_string(),
+            message: None,
+        },
+    })
 }
 
 pub async fn inspect_job(token: &str, namespace: &str, job_id: &str) -> Result<JobInfo> {

@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "time", "fs", "process", "sync", "signal"] }
+tokio-util = { version = "0.7", features = ["io"] }
 # rustls instead of the default native-tls: avoids an OpenSSL dependency so the
 # static musl Linux builds link cleanly (native-tls/openssl won't build for musl).
 reqwest = { version = "0.12", default-features = false, features = ["json", "charset", "http2", "rustls-tls", "stream"] }
@@ -36,6 +37,7 @@ rust-embed = "8"
 futures = "0.3"
 # async fns in the Harness trait (object-safe `dyn Harness` in the registry).
 async-trait = "0.1"
+sha2 = "0.10"
 
 [target.'cfg(unix)'.dependencies]
 # Free-space pre-check for the data-dir move (statvfs). Already in the tree

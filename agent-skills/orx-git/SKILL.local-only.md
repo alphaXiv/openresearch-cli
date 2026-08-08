@@ -17,8 +17,8 @@ git add <changed files>
 git commit -m "describe the experiment change"
 ```
 
-The local runner clones the recorded commit directly from the project folder,
-so committed work is sufficient. Uncommitted files are never included in a
+The runner builds an immutable source archive from the recorded commit, so
+committed work is sufficient on every backend. Uncommitted files are never included in a
 run. Before launching, confirm `git status --short` is empty and inspect the
 recorded commit with `git show --stat --oneline HEAD`.
 

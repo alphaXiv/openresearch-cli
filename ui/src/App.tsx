@@ -350,10 +350,6 @@ export default function App() {
   // What the middle pane shows: the agent chat, project artifacts, or
   // one settings section (picked from the rail nav — no separate pages).
   const [mainView, setMainView] = useState<"chat" | "artifacts" | SettingsTab>("chat");
-  const [githubPublicationError, setGithubPublicationError] = useState<{
-    projectId: string;
-    message: string;
-  } | null>(null);
   const rightPaneStatesRef = useRef(new Map<string, RightPaneSessionState>());
   const currentRightPaneStateRef = useRef<RightPaneSessionState>(initialRightPaneSessionState());
   const activeSessionIdRef = useRef<string | null>(null);
@@ -911,14 +907,10 @@ export default function App() {
     window.addEventListener("pointercancel", stop);
   };
 
-  const onProjectCreated = (project: Project, publicationError: string | null) => {
+  const onProjectCreated = (project: Project) => {
     setProjects((cur) => (cur ? upsert(cur, project) : [project]));
     setProjectId(project.id);
     setHomeOpen(false);
-    if (publicationError) {
-      setGithubPublicationError({ projectId: project.id, message: publicationError });
-      setMainView("git");
-    }
   };
 
   const onProjectDeleted = (id: string) => {
@@ -1073,15 +1065,6 @@ export default function App() {
               <SettingsView
                 tab={mainView}
                 project={activeProject}
-                githubPublicationError={
-                  githubPublicationError && githubPublicationError.projectId === activeProject?.id
-                    ? githubPublicationError.message
-                    : null
-                }
-                onProjectUpdate={(project) => {
-                  setProjects((current) => (current ? upsert(current, project) : [project]));
-                  if (project.githubEnabled) setGithubPublicationError(null);
-                }}
                 onSelectTab={setMainView}
               />
             ) : null}
@@ -1278,7 +1261,6 @@ export default function App() {
                     <TreeView
                       experiments={experiments}
                       runs={scopedRuns}
-                      project={activeProject}
                       onOpenView={openExperimentTab}
                       onOpenCode={openCodeTabForExperiment}
                       agentSessionId={effectiveScope === "agent" ? activeSessionId : null}
@@ -1384,7 +1366,6 @@ export default function App() {
                 <CodeTab
                   key={`code:${codeTab.branch}`}
                   projectId={projectId}
-                  project={activeProject}
                   experiment={codeExperiment}
                   view={codeTab.view}
                   toggled={codeTab.toggled}
@@ -1400,7 +1381,6 @@ export default function App() {
                 <DetailDrawer
                   key={`${expTab.id}:${expTab.view}`}
                   experiment={tabExperiment}
-                  project={activeProject}
                   view={expTab.view}
                   runs={runs}
                   selectedRunId={selectedRunId}
@@ -1432,9 +1412,9 @@ export default function App() {
       {newProjectOpen && (
         <NewProjectDialog
           onClose={() => setNewProjectOpen(false)}
-          onCreated={(project, publicationError) => {
+          onCreated={(project) => {
             setNewProjectOpen(false);
-            onProjectCreated(project, publicationError);
+            onProjectCreated(project);
           }}
         />
       )}

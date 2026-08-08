@@ -98,10 +98,7 @@ pub fn create_experiment(
         .map(|p| p.branch_name.as_str())
         .unwrap_or(&project.baseline_branch);
     let branch_name = format!("orx/{slug}");
-    let publication = project
-        .github_enabled()
-        .then_some((project.github_owner.as_str(), project.github_repo.as_str()));
-    git::create_experiment_branch(repo, fork_point, &branch_name, publication)?;
+    git::create_experiment_branch(repo, fork_point, &branch_name)?;
 
     // Inherit: explicit > parent's command > project default > "".
     let run_command = run_command

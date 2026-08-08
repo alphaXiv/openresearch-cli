@@ -10,8 +10,8 @@
 //!
 //! This module is now thin: it parses args and resolves the id to a
 //! `ControlPlane`, then calls one verb. The per-plane bodies live in
-//! `crate::plane::{server_plane, local_plane}`. Only the three job-launch helpers
-//! (`hf_clone_script` / `default_hf_image` / `spawn_detached_supervise`) stay
+//! `crate::plane::{server_plane, local_plane}`. Only the two job-launch helpers
+//! (`default_hf_image` / `spawn_detached_supervise`) stay
 //! here — every `src/local/*` backend imports them as `crate::commands::exp::*`.
 
 use std::time::{Duration, Instant};
@@ -97,34 +97,6 @@ async fn wait(
 }
 
 // --- job-launch helpers shared with the src/local/* backends -----------------
-
-/// Fetch one recorded commit and run the fixed command. GITHUB_TOKEN
-/// (passed as a job secret when present locally) authenticates private repos
-/// through an ephemeral credential helper; the URL and git config stay tokenless.
-pub(crate) fn hf_clone_script(git_ref: &str, owner: &str, repo: &str, cmd: &str) -> String {
-    let url = shell_quote(&format!("https://github.com/{owner}/{repo}.git"));
-    format!(
-        "set -eo pipefail; command -v git >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq git); \
-         git init -q repo; cd repo; \
-         git remote add origin {url}; \
-         git -c credential.helper= -c credential.helper='!f() {{ echo username=x-access-token; echo \"password=$GITHUB_TOKEN\"; }}; f' \
-         fetch --depth 1 origin {git_ref}; git checkout --detach FETCH_HEAD; {cmd}",
-        git_ref = shell_quote(git_ref),
-    )
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
-pub(crate) fn local_clone_script(repo_path: &str, commit_sha: &str, cmd: &str) -> String {
-    format!(
-        "set -eo pipefail; git clone --no-checkout --local {} repo; cd repo; git checkout --detach {}; {}",
-        shell_quote(repo_path),
-        shell_quote(commit_sha),
-        cmd
-    )
-}
 
 /// Default docker image per flavor family: plain python for CPU flavors, a
 /// CUDA-ready pytorch image for GPU flavors. Override with --image.
@@ -307,19 +279,5 @@ mod tests {
         assert!(store.get_run("run-1").unwrap().unwrap().cancel_requested);
         drop(store);
         std::fs::remove_dir_all(dir).unwrap();
-    }
-}
-
-#[cfg(test)]
-mod clone_script_tests {
-    use super::*;
-
-    #[test]
-    fn remote_clone_fetches_recorded_commit_detached() {
-        let script = hf_clone_script("abc123", "owner", "repo", "python run.py");
-        assert!(script.contains("fetch --depth 1 origin 'abc123'"));
-        assert!(script.contains("checkout --detach FETCH_HEAD"));
-        assert!(!script.contains("--branch"));
-        assert!(!script.contains("x-access-token:${GITHUB_TOKEN}@"));
     }
 }

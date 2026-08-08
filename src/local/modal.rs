@@ -6,10 +6,10 @@
 
 use std::collections::HashMap;
 
-use crate::commands::exp::{hf_clone_script, spawn_detached_supervise};
+use crate::commands::exp::spawn_detached_supervise;
+use crate::compute::SourceSnapshot;
 use crate::error::{anyhow, Result};
 use crate::jobs::{huggingface as hf, modal, BackendDescriptor};
-use crate::local::git;
 use crate::store::{now_ms, Store, StoredRun};
 
 /// Modal app all orx sandboxes are grouped under (visible in the Modal dashboard).
@@ -38,6 +38,14 @@ pub async fn launch_local_modal(args: &crate::ExpRunArgs) -> Result<()> {
 /// is a Modal GPU (t4, l4, a10g, a100, a100-80gb, l40s, h100, h200, …) or
 /// `cpu` / `cpu-large` for CPU-only.
 pub async fn submit_local_modal(args: &crate::ExpRunArgs) -> Result<StoredRun> {
+    crate::compute::submit(args).await
+}
+
+pub async fn submit_local_modal_with_source(
+    args: &crate::ExpRunArgs,
+    source: SourceSnapshot,
+    run_id: String,
+) -> Result<StoredRun> {
     if args.sandbox.is_some() || args.gpu.is_some() || args.cpu.is_some() {
         return Err(anyhow!(
             "--backend modal runs on Modal serverless GPUs; drop --gpu/--cpu/--sandbox \
@@ -52,7 +60,7 @@ pub async fn submit_local_modal(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         )
     })?;
     let resources = modal::resolve_flavor(&flavor_name);
-    // Fail before the git push if Modal plainly isn't set up on this box.
+    // Fail before source staging if Modal plainly isn't set up on this box.
     modal::preflight().await?;
     // Same default as the HF/k8s paths — no-timeout jobs are a footgun.
     let timeout_seconds = match &args.timeout {
@@ -83,52 +91,18 @@ pub async fn submit_local_modal(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         })?;
 
     // One run in flight per experiment unless deliberately forced.
-    if !args.force {
-        if let Some(r) = store
-            .list_runs_by_experiment(&exp.id)?
-            .into_iter()
-            .find(|r| !crate::local::is_terminal(&r.status))
-        {
-            return Err(anyhow!(
-                "Run {} is already in flight for this experiment ({}). \
-                 Cancel it with `orx exp cancel {}` or pass --force to launch anyway.",
-                r.id,
-                r.status,
-                exp.id
-            ));
-        }
-    }
-
-    // The sandbox clones from GitHub, so the branch tip must exist there.
-    let commit_sha = {
-        let project = project.clone();
-        let branch = exp.branch_name.clone();
-        tokio::task::spawn_blocking(move || git::publish_branch_commit(&project, &branch))
-            .await
-            .map_err(|e| anyhow!("git task failed: {e}"))??
-    };
-
-    let run_id = uuid::Uuid::new_v4().to_string();
     let image = args
         .image
         .clone()
         .unwrap_or_else(|| modal::default_image(resources.gpu.is_some()));
-    let script = hf_clone_script(
-        &commit_sha,
-        &project.github_owner,
-        &project.github_repo,
-        &run_command,
-    );
+    let script = crate::compute::gated_script("/tmp/orx-source.tar", &run_command);
 
     // The sandbox's env: everything the user synced (API keys), plus the tokens
-    // the clone script and common tooling expect. Rides an ephemeral Modal
+    // the run script and common tooling expect. Rides an ephemeral Modal
     // Secret, never the plain env arg.
     let mut env: HashMap<String, String> = crate::config::list_synced_env().into_iter().collect();
     if let Ok(hf_token) = hf::resolve_token() {
         env.entry("HF_TOKEN".to_string()).or_insert(hf_token);
-    }
-    if let Some(gh) = git::resolve_github_token() {
-        env.insert("GITHUB_TOKEN".to_string(), gh);
     }
     let mut tags = HashMap::new();
     tags.insert("or_run".to_string(), run_id.clone());
@@ -145,13 +119,14 @@ pub async fn submit_local_modal(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         timeout_seconds,
         app: MODAL_APP.to_string(),
         tags,
+        source_archive: Some(source.path.clone()),
     })
     .await?;
 
-    let descriptor = BackendDescriptor {
+    let mut descriptor = BackendDescriptor {
         kind: "modal_job".to_string(),
         namespace: Some(MODAL_APP.to_string()),
-        job_id: Some(sandbox_id),
+        job_id: Some(sandbox_id.clone()),
         flavor: Some(flavor_name),
         image: Some(image),
         url: None,
@@ -162,7 +137,15 @@ pub async fn submit_local_modal(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         ssh_port: None,
         ssh_user: None,
         timeout_secs: None,
+        source_digest: None,
+        source_path: None,
+        source_size: None,
     };
+    source.apply_to_descriptor(&mut descriptor);
+    if let Err(error) = crate::compute::record_submission_handle(&run_id, &descriptor) {
+        let _ = modal::cancel_job(&sandbox_id).await;
+        return Err(error);
+    }
     let run = StoredRun {
         id: run_id.clone(),
         experiment_id: exp.id.clone(),
@@ -174,9 +157,11 @@ pub async fn submit_local_modal(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         updated_at: now_ms(),
         ended_at: None,
         exit_code: None,
-        commit_sha: Some(commit_sha),
+        commit_sha: Some(source.revision),
         result_markdown: None,
-        cancel_requested: false,
+        cancel_requested: store
+            .get_run(&run_id)?
+            .is_some_and(|run| run.cancel_requested),
         chat_session_id: crate::local::chat::launching_chat_session(),
     };
     store.upsert_run(&run)?;

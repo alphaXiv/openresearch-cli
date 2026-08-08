@@ -80,6 +80,14 @@ pub struct BackendDescriptor {
     /// the supervisor, long after the `--timeout` flag is gone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    /// Immutable local source archive used for this run. These fields make a
+    /// delayed or restarted supervisor independent of the working tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_size: Option<u64>,
 }
 
 impl BackendDescriptor {
@@ -249,6 +257,9 @@ mod tests {
             ssh_port: None,
             ssh_user: None,
             timeout_secs: Some(14_400),
+            source_digest: None,
+            source_path: None,
+            source_size: None,
         }
     }
 

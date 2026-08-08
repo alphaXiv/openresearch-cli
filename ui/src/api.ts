@@ -9,13 +9,9 @@ export interface Project {
   id: string;
   name: string;
   slug: string;
-  githubOwner: string;
-  githubRepo: string;
   baselineBranch: string;
   repoPath: string;
   path: string;
-  githubEnabled: boolean;
-  githubUrl?: string | null;
   /** Absolute path of the project's artifacts directory, non-canonical to
    *  match paths agents inline into chat. */
   artifactsDir: string;
@@ -62,6 +58,51 @@ export interface Run {
   exitCode?: number | null;
   cancelRequested: boolean;
 }
+
+export interface ComputeBackendCapabilities {
+  id: string;
+  label: string;
+  remote: boolean;
+  flavors: boolean;
+  requiresFlavor: boolean;
+  sourceTransport: string;
+}
+
+export const listComputeBackends = () =>
+  get<{ backends: ComputeBackendCapabilities[] }>("/api/compute/backends").then(
+    (result) => result.backends,
+  );
+
+export interface CreateRunRequest {
+  experimentId: string;
+  backend?: string;
+  flavor?: string;
+  host?: string;
+  manifest?: string;
+  image?: string;
+  timeout?: string;
+  org?: string;
+  provider?: string;
+  disk?: number;
+  force?: boolean;
+}
+
+export const createRun = (body: CreateRunRequest) =>
+  post<{ run: Run }>("/api/runs", body).then((result) => result.run);
+
+export const getRun = (runId: string) =>
+  get<{ run: Run }>(`/api/runs/${encodeURIComponent(runId)}`).then((result) => result.run);
+
+export interface RunLogBatch {
+  dataBase64: string;
+  nextCursor: number;
+  eof: boolean;
+}
+
+export const getRunLogs = (runId: string, cursor = 0) =>
+  get<RunLogBatch>(
+    `/api/runs/${encodeURIComponent(runId)}/logs?cursor=${encodeURIComponent(cursor)}`,
+  );
 
 export function runDisplayStatus(run: Pick<Run, "status" | "cancelRequested">): RunDisplayStatus {
   const live = run.status === "running" || run.status === "starting";
@@ -157,7 +198,6 @@ export interface NewProject {
 
 export interface CreateProjectResult {
   project: Project;
-  githubPublicationError: string | null;
 }
 
 export const createProject = (body: NewProject) =>
@@ -179,18 +219,6 @@ export interface ResolvedPaper {
 export const searchPapers = (q: string) =>
   get<{ papers: PaperHit[] }>(`/api/papers/search?q=${encodeURIComponent(q)}`).then(
     (r) => r.papers,
-  );
-
-/** The signed-in GitHub login, for naming the account a new repo lands on.
- * `login` is null when there's no usable token. */
-export const githubAccount = () => get<{ login: string | null }>("/api/github/account");
-
-/** Whether the stored credentials can push to a repo. An unanswerable check
- * (no token / API hiccup) reports `true`, matching the server's own fallback,
- * so an outage never shows a fork choice the server wouldn't honour. */
-export const repoAccess = (owner: string, repo: string) =>
-  get<{ canPush: boolean }>(
-    `/api/github/repo-access?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`,
   );
 
 /** Resolve an arXiv id / URL to title + linked GitHub repo. May take a few
@@ -342,15 +370,6 @@ export interface SessionWorktree {
 export const getSessionWorktree = (sessionId: string) =>
   get<SessionWorktree>(`/api/chat/sessions/${sessionId}/worktree`);
 
-/** A GitHub `tree` URL for a branch. Branch names contain `/` (`orx/<slug>`),
- * so encode each path segment — never the whole string, which would escape the
- * slashes. Unpushed branches 404 on GitHub, which is acceptable. */
-export const githubBranchUrl = (owner: string, repo: string, branch: string) =>
-  `https://github.com/${owner}/${repo}/tree/${branch
-    .split("/")
-    .map(encodeURIComponent)
-    .join("/")}`;
-
 export type HfTokenSource = "env" | "openresearchEnv" | "hfCache";
 
 export interface HfSettings {
@@ -478,13 +497,13 @@ export const getSshHosts = () =>
 
 export interface SshPreflight {
   reachable: boolean;
-  gitFound: boolean;
+  toolsFound: boolean;
   error: string | null;
   /** Unix millis. */
   testedAt: number;
 }
 
-/** Live-test a host: reachable over ssh (BatchMode) and has `git`. */
+/** Live-test a host: reachable over ssh (BatchMode) and has bash/tar. */
 export const sshPreflight = (host: string) =>
   post<SshPreflight>("/api/settings/ssh/preflight", { host });
 
@@ -514,12 +533,12 @@ export const saveSlurmSettings = (body: {
 export interface SlurmPreflight {
   reachable: boolean;
   slurmFound: boolean;
-  gitFound: boolean;
+  toolsFound: boolean;
   partitions: string[];
   error: string | null;
 }
 
-/** Live-test a login node: reachable, Slurm CLI + git present, partitions. */
+/** Live-test a login node: reachable, Slurm CLI + bash/tar, partitions. */
 export const slurmPreflight = (host: string) =>
   post<SlurmPreflight>("/api/settings/slurm/preflight", { host });
 
@@ -685,21 +704,12 @@ export interface GitSettings {
   gitVersion: string | null;
   userName: string | null;
   userEmail: string | null;
-  ghInstalled: boolean;
-  githubTokenSource: "env" | "stored" | "gh" | null;
 }
 
 export const getGitSettings = () => get<GitSettings>("/api/settings/git");
 
 export const saveGitSettings = (body: { userName?: string; userEmail?: string }) =>
   post<GitSettings>("/api/settings/git", body);
-
-/** Validate + persist a pasted GitHub token (stored in the synced env file). */
-export const saveGitToken = (token: string) =>
-  post<GitSettings>("/api/settings/git/token", { token });
-
-export const removeGitToken = () =>
-  fetch("/api/settings/git/token", { method: "DELETE" }).then((r) => json<GitSettings>(r));
 
 /** A paper linked to the researcher profile during onboarding. */
 export interface LinkedPaper {
@@ -732,25 +742,6 @@ export const getLitSources = () =>
 export const setLitSources = (body: LitSourcesSettings) =>
   post<LitSourcesSettings>("/api/settings/lit-sources", body);
 
-export interface ProjectDefaultsSettings {
-  githubForNewProjects: boolean;
-  githubDefaultPromptSeen: boolean;
-  githubAuthenticated: boolean;
-  githubTokenSource: "env" | "stored" | "gh" | null;
-}
-
-export const getProjectDefaults = () =>
-  get<ProjectDefaultsSettings>("/api/settings/projects");
-
-export const setProjectDefaults = (
-  githubForNewProjects: boolean,
-  githubDefaultPromptSeen?: boolean,
-) =>
-  post<ProjectDefaultsSettings>("/api/settings/projects", {
-    githubForNewProjects,
-    ...(githubDefaultPromptSeen === undefined ? {} : { githubDefaultPromptSeen }),
-  });
-
 export interface ProjectGitStatus {
   path: string;
   gitVersion: string | null;
@@ -765,15 +756,6 @@ export interface ProjectGitStatus {
     nameSource: "local" | "global" | null;
     emailSource: "local" | "global" | null;
   };
-  github: {
-    authenticated: boolean;
-    tokenSource: "env" | "stored" | "gh" | null;
-    enabled: boolean;
-    owner: string;
-    repo: string;
-    url: string | null;
-    syncStatus: string | null;
-  };
 }
 
 export const getProjectGitStatus = (projectId: string) =>
@@ -781,15 +763,6 @@ export const getProjectGitStatus = (projectId: string) =>
 
 export const initializeProjectGit = (projectId: string) =>
   post<ProjectGitStatus>(`/api/projects/${projectId}/git/init`);
-
-export const enableProjectGithub = (projectId: string) =>
-  post<{ project: Project; git: ProjectGitStatus }>(`/api/projects/${projectId}/github`);
-
-export const disableProjectGithub = (projectId: string) =>
-  post<{ project: Project; git: ProjectGitStatus }>(`/api/projects/${projectId}/github/disable`);
-
-export const pushProjectGithub = (projectId: string) =>
-  post<{ project: Project; git: ProjectGitStatus }>(`/api/projects/${projectId}/github/push`);
 
 export interface TelemetrySettings {
   /** Whether usage analytics linked to the random installation ID is on. */

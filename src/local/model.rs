@@ -10,14 +10,18 @@ pub struct LocalProject {
     pub id: String,
     pub name: String,
     pub slug: String,
+    /// Legacy database column retained only to migrate old worktree locations.
+    #[serde(skip)]
     pub github_owner: String,
+    #[serde(skip)]
     pub github_repo: String,
+    #[serde(skip)]
     pub github_sync_enabled: bool,
     /// Fork point for baseline roots and the clone's default checkout — not
     /// where any experiment lives (legacy roots predating per-baseline
     /// branches may still ride it).
     pub baseline_branch: String,
-    /// Local clone path (`~/.cache/openresearch/repos/<owner>/<repo>`).
+    /// Local repository path.
     pub repo_path: String,
     pub run_command: Option<String>,
     /// arXiv id the project starts from (versionless, e.g. `2401.12345`).
@@ -27,21 +31,8 @@ pub struct LocalProject {
 }
 
 impl LocalProject {
-    pub fn github_enabled(&self) -> bool {
-        self.github_sync_enabled && self.has_github_repository()
-    }
-
     pub fn has_github_repository(&self) -> bool {
         !self.github_owner.trim().is_empty() && !self.github_repo.trim().is_empty()
-    }
-
-    pub fn github_url(&self) -> Option<String> {
-        self.has_github_repository().then(|| {
-            format!(
-                "https://github.com/{}/{}",
-                self.github_owner, self.github_repo
-            )
-        })
     }
 
     /// Column order must match `store::PROJECT_COLS`.

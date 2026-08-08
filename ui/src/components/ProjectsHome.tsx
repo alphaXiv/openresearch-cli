@@ -1,6 +1,5 @@
 import { Plus, Trash2 } from "lucide-react";
 import { Wordmark } from "./Wordmark";
-import { GitHubMark } from "./BackendLogos";
 import { useEffect, useRef, useState } from "react";
 import { deleteProject, timeAgo, type Project } from "../api";
 import { NewProjectForm } from "./NewProjectForm";
@@ -10,7 +9,7 @@ export function NewProjectDialog({
   onCreated,
 }: {
   onClose: () => void;
-  onCreated: (project: Project, githubPublicationError: string | null) => void;
+  onCreated: (project: Project) => void;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
@@ -98,17 +97,16 @@ export function ProjectsHome({
 }: {
   projects: Project[];
   onOpen: (id: string) => void;
-  onCreated: (project: Project, githubPublicationError: string | null) => void;
+  onCreated: (project: Project) => void;
   onDeleted: (id: string) => void;
 }) {
   const [modalOpen, setModalOpen] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
 
   async function onDelete(p: Project) {
-    const hasGithubRepository = Boolean(p.githubUrl || (p.githubOwner && p.githubRepo));
     const ok = window.confirm(
       `Delete project "${p.name}"?\n\nIts experiments, runs and chats are removed from orx. ` +
-        `The local folder (${p.path})${hasGithubRepository ? " and its GitHub repository" : ""} are kept.`,
+        `The local folder (${p.path}) is kept.`,
     );
     if (!ok) return;
     setDeleting(p.id);
@@ -138,19 +136,7 @@ export function ProjectsHome({
           {projects.length === 0 ? (
             <div className="changes-note">No projects yet — create one to get started.</div>
           ) : (
-            [...projects].sort((a, b) => b.updatedAt - a.updatedAt).map((p) => {
-              const hasGithubRepository = Boolean(p.githubUrl || (p.githubOwner && p.githubRepo));
-              const githubUrl =
-                p.githubUrl ??
-                (p.githubOwner && p.githubRepo
-                  ? `https://github.com/${p.githubOwner}/${p.githubRepo}`
-                  : null);
-              const githubState = p.githubEnabled
-                ? "GitHub syncing on"
-                : hasGithubRepository
-                  ? "GitHub syncing off"
-                  : "local only";
-              return (
+            [...projects].sort((a, b) => b.updatedAt - a.updatedAt).map((p) => (
               <div
                 key={p.id}
                 className="project-card"
@@ -161,21 +147,7 @@ export function ProjectsHome({
                   onClick={() => onOpen(p.id)}
                 />
                 <span className="name">{p.name}</span>
-                <span className="project-card-sync mono">
-                  {githubState}
-                  {p.githubEnabled && githubUrl && (
-                    <a
-                      href={githubUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      data-tip="Open repository on GitHub"
-                      aria-label={`Open ${p.name} on GitHub`}
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <GitHubMark size={14} />
-                    </a>
-                  )}
-                </span>
+                <span className="project-card-sync mono">local Git</span>
                 {p.paperId && <span className="paper mono">arXiv {p.paperId}</span>}
                 <span className="time">created {timeAgo(p.createdAt)}</span>
                 <button
@@ -192,8 +164,7 @@ export function ProjectsHome({
                   <Trash2 size={14} />
                 </button>
               </div>
-              );
-            })
+              ))
           )}
         </div>
       </div>
@@ -201,9 +172,9 @@ export function ProjectsHome({
       {modalOpen && (
         <NewProjectDialog
           onClose={() => setModalOpen(false)}
-          onCreated={(project, githubPublicationError) => {
+          onCreated={(project) => {
             setModalOpen(false);
-            onCreated(project, githubPublicationError);
+            onCreated(project);
           }}
         />
       )}

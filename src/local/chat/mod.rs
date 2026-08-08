@@ -1217,8 +1217,7 @@ impl ChatHost {
 
         // Slash-skills: the transcript keeps the `/name` the user typed; the
         // harness gets the expanded prompt.
-        let turn_text =
-            crate::local::skills::expand(&text, project.github_enabled()).unwrap_or(text);
+        let turn_text = crate::local::skills::expand(&text, true).unwrap_or(text);
         let mut turn_text = with_bootstrap_context(
             session.native_session_id.as_deref(),
             session.bootstrap_context.as_deref(),

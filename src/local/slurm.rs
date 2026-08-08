@@ -7,9 +7,9 @@
 use std::collections::HashMap;
 
 use crate::commands::exp::spawn_detached_supervise;
+use crate::compute::SourceSnapshot;
 use crate::error::{anyhow, Result};
 use crate::jobs::{huggingface, slurm, BackendDescriptor};
-use crate::local::git;
 use crate::store::{now_ms, Store, StoredRun};
 
 /// CLI wrapper around `submit_local_slurm`: submit, then print the summary.
@@ -34,6 +34,14 @@ pub async fn launch_local_slurm(args: &crate::ExpRunArgs) -> Result<()> {
 /// supervisor. Requires `--backend slurm`; the login node comes from
 /// `--host <alias>` or the slurm settings default.
 pub async fn submit_local_slurm(args: &crate::ExpRunArgs) -> Result<StoredRun> {
+    crate::compute::submit(args).await
+}
+
+pub async fn submit_local_slurm_with_source(
+    args: &crate::ExpRunArgs,
+    source: SourceSnapshot,
+    run_id: String,
+) -> Result<StoredRun> {
     if args.sandbox.is_some() || args.gpu.is_some() || args.cpu.is_some() {
         return Err(anyhow!(
             "--backend slurm runs on your own cluster; drop --gpu/--cpu/--sandbox and \
@@ -101,68 +109,23 @@ pub async fn submit_local_slurm(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         })?;
 
     // One run in flight per experiment unless deliberately forced.
-    if !args.force {
-        if let Some(r) = store
-            .list_runs_by_experiment(&exp.id)?
-            .into_iter()
-            .find(|r| !crate::local::is_terminal(&r.status))
-        {
-            return Err(anyhow!(
-                "Run {} is already in flight for this experiment ({}). \
-                 Cancel it with `orx exp cancel {}` or pass --force to launch anyway.",
-                r.id,
-                r.status,
-                exp.id
-            ));
-        }
-    }
-
-    // The login node clones from GitHub, so the branch tip must exist there.
-    let commit_sha = {
-        let project = project.clone();
-        let branch = exp.branch_name.clone();
-        tokio::task::spawn_blocking(move || git::publish_branch_commit(&project, &branch))
-            .await
-            .map_err(|e| anyhow!("git task failed: {e}"))??
-    };
-
-    // Clone on the login node at submit time (compute nodes often lack
-    // internet); no apt-get fallback — nobody has root there, and preflight
-    // reports missing git. Unlike hf_clone_script the token must NOT ride in
-    // the URL: login nodes are multi-tenant (`/proc/<pid>/cmdline` is world-
-    // readable during the clone) and git would persist the credentialed URL
-    // in repo/.git/config on the shared filesystem. The inline credential
-    // helper reads the env at auth time instead.
-    let setup_script = format!(
-        "set -eo pipefail; \
-         git init -q repo; cd repo; git remote add origin {url}; \
-         git -c credential.helper= -c credential.helper='!f() {{ echo username=x-access-token; echo \"password=$GITHUB_TOKEN\"; }}; f' \
-         fetch --depth 1 origin {commit}; git checkout --detach FETCH_HEAD",
-        commit = crate::jobs::ssh::sh_quote(&commit_sha),
-        url = crate::jobs::ssh::sh_quote(&format!(
-            "https://github.com/{}/{}.git",
-            project.github_owner, project.github_repo
-        )),
-    );
-
     // The job env: everything the user synced (API keys), plus the tokens the
-    // clone step expects. Exported in the setup script and job.sbatch.
+    // run step expects. Exported in the setup script and job.sbatch.
     let mut env: HashMap<String, String> = crate::config::list_synced_env().into_iter().collect();
     if let Ok(hf_token) = huggingface::resolve_token() {
         env.entry("HF_TOKEN".to_string()).or_insert(hf_token);
     }
-    if let Some(gh) = git::resolve_github_token() {
-        // Overrides any synced GITHUB_TOKEN (unlike HF_TOKEN's or_insert):
-        // the credential helper reads exactly this variable, and it must be
-        // the token the branch was pushed with.
-        env.insert("GITHUB_TOKEN".to_string(), gh);
-    }
-
-    let run_id = uuid::Uuid::new_v4().to_string();
+    crate::jobs::ssh::stage_source(
+        &crate::jobs::ssh::SshTarget::alias(&host),
+        &run_id,
+        &source.path,
+        &source.digest,
+    )
+    .await?;
     let job_id = slurm::run_job(&slurm::SlurmJobSpec {
         host: host.clone(),
         run_id: run_id.clone(),
-        setup_script,
+        setup_script: "test -d repo".to_string(),
         command: run_command.clone(),
         env,
         gres: args.flavor.as_deref().and_then(slurm::resolve_gres),
@@ -172,10 +135,10 @@ pub async fn submit_local_slurm(args: &crate::ExpRunArgs) -> Result<StoredRun> {
     })
     .await?;
 
-    let descriptor = BackendDescriptor {
+    let mut descriptor = BackendDescriptor {
         kind: "slurm_job".to_string(),
-        namespace: Some(host),
-        job_id: Some(job_id),
+        namespace: Some(host.clone()),
+        job_id: Some(job_id.clone()),
         flavor: args.flavor.clone(),
         image: None,
         url: None,
@@ -186,7 +149,15 @@ pub async fn submit_local_slurm(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         ssh_port: None,
         ssh_user: None,
         timeout_secs: None,
+        source_digest: None,
+        source_path: None,
+        source_size: None,
     };
+    source.apply_to_descriptor(&mut descriptor);
+    if let Err(error) = crate::compute::record_submission_handle(&run_id, &descriptor) {
+        let _ = slurm::cancel_job(&host, &job_id).await;
+        return Err(error);
+    }
     let run = StoredRun {
         id: run_id.clone(),
         experiment_id: exp.id.clone(),
@@ -198,9 +169,11 @@ pub async fn submit_local_slurm(args: &crate::ExpRunArgs) -> Result<StoredRun> {
         updated_at: now_ms(),
         ended_at: None,
         exit_code: None,
-        commit_sha: Some(commit_sha),
+        commit_sha: Some(source.revision),
         result_markdown: None,
-        cancel_requested: false,
+        cancel_requested: store
+            .get_run(&run_id)?
+            .is_some_and(|run| run.cancel_requested),
         chat_session_id: crate::local::chat::launching_chat_session(),
     };
     store.upsert_run(&run)?;

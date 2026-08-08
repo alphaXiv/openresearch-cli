@@ -114,17 +114,13 @@ the run command:
    The child inherits its parent's run command automatically — you don't set it,
    and you never give siblings different commands or env vars (cardinal rule 2).
 4. **Implement each child's change on its git branch** — `orx create-experiment`
-   prints the child's branch (`orx/<slug>`); sync the project's clone (in the
-   openresearch cache dir — see the `orx-git` skill), check the branch out,
-   edit only the files that idea touches, commit, and push. **Leave the run
+   prints the child's branch (`orx/<slug>`); check the branch out in the
+   project worktree, edit only the files that idea touches, and commit. **Leave the run
    command alone:**
    ```sh
-   DIR=~/.cache/openresearch/repos/<owner>/<repo>   # owner/repo from `orx projects`
-   [ -d "$DIR" ] || git clone https://github.com/<owner>/<repo> "$DIR"
-   git -C "$DIR" fetch origin && git -C "$DIR" checkout orx/<child-slug>
-   git -C "$DIR" merge --ff-only origin/orx/<child-slug>
-   #   …edit config.yaml under "$DIR": schedule: constant → cosine …
-   git -C "$DIR" commit -am "cosine LR + warmup" && git -C "$DIR" push
+   git checkout orx/<child-slug>
+   #   …edit config.yaml: schedule: constant → cosine …
+   git commit -am "cosine LR + warmup"
    ```
    While you're in the code, **make the run emit the evidence you'll need to judge
    it.** Have it write rollout transcripts, per-sample eval breakdowns, generated

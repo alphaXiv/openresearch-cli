@@ -6,9 +6,9 @@
 
 use crate::client::{create_sandbox, list_orgs, CreateSandboxBody};
 use crate::commands::exp::spawn_detached_supervise;
+use crate::compute::SourceSnapshot;
 use crate::error::{anyhow, require_credentials, Result};
 use crate::jobs::{openresearch, BackendDescriptor};
-use crate::local::git;
 use crate::local::ssh_identity;
 use crate::store::{now_ms, Store, StoredRun};
 
@@ -41,6 +41,14 @@ pub async fn launch_local_openresearch(args: &crate::ExpRunArgs) -> Result<()> {
 /// supervisor. Requires `--backend openresearch` and `--flavor <shape>`
 /// (`h100_sxm[:count]` or `cpu5c|cpu5g|cpu5m[:vcpus]`), plus `orx login`.
 pub async fn submit_local_openresearch(args: &crate::ExpRunArgs) -> Result<StoredRun> {
+    crate::compute::submit(args).await
+}
+
+pub async fn submit_local_openresearch_with_source(
+    args: &crate::ExpRunArgs,
+    source: SourceSnapshot,
+    run_id: String,
+) -> Result<StoredRun> {
     if args.sandbox.is_some() || args.gpu.is_some() || args.cpu.is_some() {
         return Err(anyhow!(
             "--gpu/--cpu/--sandbox are the managed server-experiment flags; with \
@@ -157,32 +165,6 @@ pub async fn submit_local_openresearch(args: &crate::ExpRunArgs) -> Result<Store
         })?;
 
     // One run in flight per experiment unless deliberately forced.
-    if !args.force {
-        if let Some(r) = store
-            .list_runs_by_experiment(&exp.id)?
-            .into_iter()
-            .find(|r| !crate::local::is_terminal(&r.status))
-        {
-            return Err(anyhow!(
-                "Run {} is already in flight for this experiment ({}). \
-                 Cancel it with `orx exp cancel {}` or pass --force to launch anyway.",
-                r.id,
-                r.status,
-                exp.id
-            ));
-        }
-    }
-
-    // The box clones from GitHub, so the branch tip must exist there — push
-    // BEFORE provisioning so a git failure never bills a box.
-    let commit_sha = {
-        let project = project.clone();
-        let branch = exp.branch_name.clone();
-        tokio::task::spawn_blocking(move || git::publish_branch_commit(&project, &branch))
-            .await
-            .map_err(|e| anyhow!("git task failed: {e}"))??
-    };
-
     let sandbox = create_sandbox(
         &creds,
         &CreateSandboxBody {
@@ -194,8 +176,7 @@ pub async fn submit_local_openresearch(args: &crate::ExpRunArgs) -> Result<Store
     .map_err(billing_friendly)?
     .sandbox;
 
-    let run_id = uuid::Uuid::new_v4().to_string();
-    let descriptor = BackendDescriptor {
+    let mut descriptor = BackendDescriptor {
         kind: "openresearch_job".to_string(),
         namespace: Some(org_id),
         job_id: Some(sandbox.id.clone()),
@@ -209,7 +190,15 @@ pub async fn submit_local_openresearch(args: &crate::ExpRunArgs) -> Result<Store
         ssh_port: None,
         ssh_user: None,
         timeout_secs: Some(timeout_secs),
+        source_digest: None,
+        source_path: None,
+        source_size: None,
     };
+    source.apply_to_descriptor(&mut descriptor);
+    if let Err(error) = crate::compute::record_submission_handle(&run_id, &descriptor) {
+        let _ = openresearch::teardown(&creds, &sandbox.id).await;
+        return Err(error);
+    }
     let run = StoredRun {
         id: run_id.clone(),
         experiment_id: exp.id.clone(),
@@ -221,9 +210,11 @@ pub async fn submit_local_openresearch(args: &crate::ExpRunArgs) -> Result<Store
         updated_at: now_ms(),
         ended_at: None,
         exit_code: None,
-        commit_sha: Some(commit_sha),
+        commit_sha: Some(source.revision),
         result_markdown: None,
-        cancel_requested: false,
+        cancel_requested: store
+            .get_run(&run_id)?
+            .is_some_and(|run| run.cancel_requested),
         chat_session_id: crate::local::chat::launching_chat_session(),
     };
 

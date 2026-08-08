@@ -110,33 +110,13 @@ fn opencode_config_json(model: Option<&str>, instructions: &str) -> String {
 const SYSTEM_PROMPT: &str = include_str!("../../SYSTEM_PROMPT.md");
 
 fn playbook_md(project: &LocalProject) -> String {
+    let all_backends_enabled = true;
     let id = &project.id;
     let name = &project.name;
-    let publication_line = if project.github_enabled() {
-        format!(
-            "- GitHub repository: {}",
-            project
-                .github_url()
-                .expect("enabled project has publication metadata")
-        )
-    } else {
-        "- GitHub: not enabled — this project is local-only".to_string()
-    };
-    let experiment_publish_clause = if project.github_enabled() {
-        "created locally and pushed to GitHub"
-    } else {
-        "created locally and never pushed"
-    };
-    let edit_step = if project.github_enabled() {
-        "2. **Edit** in this worktree: check out `<branch>`, change the code, commit, and `git push`. Remote runs use the pushed commit."
-    } else {
-        "2. **Edit** in this worktree: check out `<branch>`, change the code, and commit. Never push; local runs clone the recorded local commit."
-    };
-    let compute_contract = if project.github_enabled() {
-        "Remote backends clone the pushed GitHub commit; the local backend clones the recorded commit directly from the project folder."
-    } else {
-        "This project is local-only: only the `local` backend is available, and it clones the recorded commit directly from the project folder."
-    };
+    let publication_line = "- Source: immutable snapshots from committed local Git revisions";
+    let experiment_publish_clause = "created locally";
+    let edit_step = "2. **Edit** in this worktree: check out `<branch>`, change the code, and commit. Do not push just to launch compute; `orx` snapshots the committed revision directly.";
+    let compute_contract = "Every backend receives the same immutable archive of the recorded local Git revision; no backend clones a repository or needs GitHub credentials.";
     let baseline = &project.baseline_branch;
     let artifacts = super::files::files_dir(project)
         .to_string_lossy()
@@ -157,7 +137,7 @@ fn playbook_md(project: &LocalProject) -> String {
     // told to OMIT `--backend`, never to echo the default back, so even a
     // stale prompt launches on the current default.
     let configured_compute_default = crate::config::compute_default();
-    let compute_default = if project.github_enabled() {
+    let compute_default = if all_backends_enabled {
         Some(
             configured_compute_default
                 .clone()
@@ -171,9 +151,8 @@ fn playbook_md(project: &LocalProject) -> String {
     } else {
         "the local fallback"
     };
-    let compute_bullet = if !project.github_enabled() {
-        "- Compute: **local only** — run recorded commits on this machine. External backends remain unavailable until the user enables GitHub syncing for this project."
-            .to_string()
+    let compute_bullet = if !all_backends_enabled {
+        "- Compute: run immutable snapshots of recorded commits on configured backends.".to_string()
     } else {
         match &compute_default {
         Some((b, f)) => {
@@ -194,9 +173,8 @@ fn playbook_md(project: &LocalProject) -> String {
         }
         }
     };
-    let backends_intro = if !project.github_enabled() {
-        "`orx exp run` uses only the `local` backend for this project. Do not select, configure, or contact an external backend."
-            .to_string()
+    let backends_intro = if !all_backends_enabled {
+        "`orx exp run` transfers the recorded source snapshot to the selected backend.".to_string()
     } else {
         match &compute_default {
             Some((b, f)) => {
@@ -235,7 +213,7 @@ fn playbook_md(project: &LocalProject) -> String {
                 .to_string(),
         }
     };
-    let (run_invocation, run_guidance, compute_guidance) = if project.github_enabled() {
+    let (run_invocation, run_guidance, compute_guidance) = if all_backends_enabled {
         (
             "`orx exp run <expId> [--backend <hf|modal|k8s|ssh|slurm|openresearch|local>] [flags]`",
             "Launch the node's run. Backend flags, flavors, and sizing: **`orx-compute` skill** (k8s manifest: **`orx-compute-k8s`**).",
@@ -243,18 +221,18 @@ fn playbook_md(project: &LocalProject) -> String {
         )
     } else {
         (
-            "`orx exp run <expId> --backend local`",
-            "Launch the recorded commit on this machine. External backends are unavailable until the user enables GitHub.",
-            "Load `orx-compute` for the local launch/wait contract. Do not configure or contact external providers.",
+            "`orx exp run <expId> [--backend <name>] [flags]`",
+            "Launch the recorded commit on a configured backend.",
+            "Load `orx-compute` for the launch and wait contract.",
         )
     };
-    let skills_scope = if project.github_enabled() {
+    let skills_scope = if all_backends_enabled {
         "backend flags and sizing, the k8s manifest, tree shaping, git recipes, log analysis, and artifact naming"
     } else {
         "local runs, tree shaping, local git recipes, log analysis, and artifact naming"
     };
-    let launch_step = if !project.github_enabled() {
-        "3. **Launch locally**: `orx exp run <expId> --backend local`. External backends are unavailable until the user enables GitHub syncing for this project."
+    let launch_step = if !all_backends_enabled {
+        "3. **Launch**: `orx exp run <expId>` using the configured backend."
     } else if compute_default.is_some() {
         "3. **Launch**: `orx exp run <expId>` — omitting `--backend` uses the default\n   \
          target (flags the default still needs are listed under \"Compute backends\") —\n   \
@@ -270,11 +248,7 @@ fn playbook_md(project: &LocalProject) -> String {
     // the playbook index and the files on disk can never drift.
     let skills_list = super::agent_skills::skills(super::agent_skills::SkillSet::Local)
         .iter()
-        .filter(|skill| super::agent_skills::available_in_session(skill, project.github_enabled()))
-        .map(|s| {
-            let description = super::agent_skills::session_description(s, project.github_enabled());
-            format!("- **{}** — {description}", s.name)
-        })
+        .map(|s| format!("- **{}** — {}", s.name, s.description))
         .collect::<Vec<_>>()
         .join("\n");
     let template = SYSTEM_PROMPT
@@ -284,7 +258,7 @@ fn playbook_md(project: &LocalProject) -> String {
     template
         .replace("{name}", name)
         .replace("{id}", id)
-        .replace("{publication_line}", &publication_line)
+        .replace("{publication_line}", publication_line)
         .replace("{experiment_publish_clause}", experiment_publish_clause)
         .replace("{edit_step}", edit_step)
         .replace("{compute_contract}", compute_contract)
@@ -368,7 +342,7 @@ pub fn ensure_playbook(
     // Modular skills, written fresh beside the playbook (same freshness
     // semantics) so this session's agent discovers them natively.
     if let Some(dir) = session_skills_dir {
-        super::agent_skills::ensure_session_skills(&workdir, dir, project.github_enabled())?;
+        super::agent_skills::ensure_session_skills(&workdir, dir)?;
     }
     // One shared exclude covers every worktree.
     exclude_agent_files(Path::new(&project.repo_path));
@@ -768,17 +742,15 @@ mod tests {
     }
 
     #[test]
-    fn local_only_playbook_requires_commits_without_pushes() {
+    fn playbook_requires_commits_without_pushes() {
         let mut project = sample_project();
         project.github_owner.clear();
         project.github_repo.clear();
         let md = playbook_md(&project);
-        assert!(md.contains("GitHub: not enabled"));
-        assert!(md.contains("Never push; local runs clone the recorded local commit"));
-        assert!(md.contains("Compute: **local only**"));
-        assert!(md.contains("`orx exp run <expId> --backend local`"));
-        assert!(!md.contains("orx-compute-k8s"));
-        assert!(!md.contains("--backend <hf|modal"));
+        assert!(md.contains("immutable archive"));
+        assert!(md.contains("Do not push just to launch compute"));
+        assert!(md.contains("orx-compute-k8s"));
+        assert!(md.contains("--backend <hf|modal"));
     }
 
     #[test]

@@ -118,9 +118,8 @@ intended flow — do **not** edit a frozen node or rewrite the run command:
    prints the child's branch (`orx/<slug>`); in your worktree:
    ```sh
    git fetch origin && git checkout orx/<child-slug>
-   git merge --ff-only origin/orx/<child-slug>
    #   …edit only the files that idea touches…
-   git commit -am "cosine LR + warmup" && git push
+   git commit -am "cosine LR + warmup"
    ```
    **Leave the run command alone.** While you're in the code, **make the run
    print the evidence you'll need to judge it** — final metrics, a compact

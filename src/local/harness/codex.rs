@@ -2491,14 +2491,6 @@ async fn run_turn_exec(ctx: &mut TurnCtx) -> Result<()> {
     if let Some(dir) = &data_dir_pin {
         cmd.env("ORX_DATA_DIR", dir);
     }
-    // The sandbox blocks the keyring `gh` keeps its token in ("stored token is
-    // invalid" from inside the workspace), so resolve it out here and pass it
-    // down; both `gh` and its git credential helper prefer these env vars.
-    if let Some(token) = crate::local::git::resolve_github_token() {
-        cmd.env("GH_TOKEN", &token);
-        cmd.env("GITHUB_TOKEN", token);
-    }
-
     let mut child = cmd
         .spawn()
         .map_err(|e| anyhow!("Could not spawn {}: {}", bin.display(), e))?;

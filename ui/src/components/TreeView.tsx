@@ -9,14 +9,11 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import { Ellipsis, FolderTree, GitBranch, Terminal } from "lucide-react";
-import { GitHubMark } from "./BackendLogos";
 import { memo, useMemo, useRef } from "react";
 import {
-  githubBranchUrl,
   runDisplayStatus,
   timeAgo,
   type Experiment,
-  type Project,
   type Run,
 } from "../api";
 import type { ExperimentView } from "./DetailDrawer";
@@ -39,8 +36,6 @@ type ExpNodeData = {
   runs: Run[]; // oldest → newest
   isBaseline: boolean;
   parentSlug: string | null;
-  githubOwner: string;
-  githubRepo: string;
   onOpenView: (id: string, view: ExperimentView) => void;
   onOpenCode: (experimentId: string, branch: string, view: CodeView) => void;
 };
@@ -163,7 +158,7 @@ function runSquareClass(status: string): string {
 }
 
 const ExpNode = memo(function ExpNode({ data }: NodeProps<ExpFlowNode>) {
-  const { exp, latestRun, runs, isBaseline, parentSlug, githubOwner, githubRepo, onOpenView, onOpenCode } = data;
+  const { exp, latestRun, runs, isBaseline, parentSlug, onOpenView, onOpenCode } = data;
   const status = latestRun ? runDisplayStatus(latestRun) : undefined;
   const live = status === "running" || status === "starting" || status === "cancelling";
   const kind = isBaseline ? "Baseline" : live ? "Running" : "Experiment";
@@ -252,18 +247,6 @@ const ExpNode = memo(function ExpNode({ data }: NodeProps<ExpFlowNode>) {
           <FolderTree size={13} />
           Code
         </button>
-        {/* Icon-only: labeled actions + the link overflow the card's fixed width. */}
-        {githubOwner && githubRepo && <a
-          className="node-action node-action-ext"
-          title={`Open ${exp.branchName} on GitHub`}
-          aria-label={`Open ${exp.branchName} on GitHub`}
-          href={githubBranchUrl(githubOwner, githubRepo, exp.branchName)}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <GitHubMark size={13} />
-        </a>}
       </div>
       <Handle type="source" position={Position.Bottom} />
       {/* Node and card share one leave handler — React's enter/leave pairing
@@ -330,7 +313,6 @@ const elidedEdgeStyle = { ...defaultEdgeOptions.style, strokeDasharray: "4 4" };
 export function TreeView({
   experiments,
   runs,
-  project,
   onOpenView,
   onOpenCode,
   agentSessionId,
@@ -338,8 +320,6 @@ export function TreeView({
 }: {
   experiments: Experiment[];
   runs: Run[];
-  /** Owning project — supplies owner/repo for the GitHub branch links. */
-  project: Project;
   /** Open an experiment view as a right-pane tab (card shortcut buttons). */
   onOpenView: (id: string, view: ExperimentView) => void;
   /** Browse an experiment branch's code in the project-level Code tab. */
@@ -384,8 +364,6 @@ export function TreeView({
             parentSlug: node.exp.parentExperimentId
               ? (slugById.get(node.exp.parentExperimentId) ?? null)
               : null,
-            githubOwner: project.githubEnabled ? project.githubOwner : "",
-            githubRepo: project.githubEnabled ? project.githubRepo : "",
             onOpenView,
             onOpenCode,
           },
@@ -430,9 +408,6 @@ export function TreeView({
     runs,
     onOpenView,
     onOpenCode,
-    project.githubOwner,
-    project.githubRepo,
-    project.githubEnabled,
     agentSessionId,
     onShowProjectScope,
   ]);

@@ -359,12 +359,12 @@ pub async fn cancel_job(host: &str, job_id: &str) -> Result<()> {
 
 // --- preflight ----------------------------------------------------------------
 
-/// Per-host readiness for the Settings UI: reachable, Slurm CLI + git
+/// Per-host readiness for the Settings UI: reachable, Slurm CLI + snapshot tools
 /// present, and which partitions exist.
 pub struct SlurmPreflight {
     pub reachable: bool,
     pub slurm_found: bool,
-    pub git_found: bool,
+    pub tools_found: bool,
     /// From `sinfo` (default partition's trailing `*` stripped).
     pub partitions: Vec<String>,
     pub error: Option<String>,
@@ -373,17 +373,18 @@ pub struct SlurmPreflight {
 pub async fn preflight(host: &str) -> SlurmPreflight {
     let cmd = "if command -v sbatch >/dev/null 2>&1 && command -v squeue >/dev/null 2>&1 \
                && command -v scancel >/dev/null 2>&1; then echo SLURM_OK; fi; \
-               if command -v git >/dev/null 2>&1; then echo GIT_OK; fi; \
+               if command -v bash >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; \
+               then echo TOOLS_OK; fi; \
                sinfo -h -o %P 2>/dev/null || true";
     match ssh_run(&SshTarget::alias(host), cmd, None).await {
         Ok(out) => {
             let mut slurm_found = false;
-            let mut git_found = false;
+            let mut tools_found = false;
             let mut partitions = Vec::new();
             for line in out.lines().map(str::trim).filter(|l| !l.is_empty()) {
                 match line {
                     "SLURM_OK" => slurm_found = true,
-                    "GIT_OK" => git_found = true,
+                    "TOOLS_OK" => tools_found = true,
                     p => {
                         let p = p.trim_end_matches('*').to_string();
                         if !p.is_empty() && !partitions.contains(&p) {
@@ -395,7 +396,7 @@ pub async fn preflight(host: &str) -> SlurmPreflight {
             SlurmPreflight {
                 reachable: true,
                 slurm_found,
-                git_found,
+                tools_found,
                 partitions,
                 error: None,
             }
@@ -403,7 +404,7 @@ pub async fn preflight(host: &str) -> SlurmPreflight {
         Err(e) => SlurmPreflight {
             reachable: false,
             slurm_found: false,
-            git_found: false,
+            tools_found: false,
             partitions: Vec::new(),
             error: Some(e.to_string()),
         },

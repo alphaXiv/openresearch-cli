@@ -169,24 +169,6 @@ pub fn disabled_lit_sources() -> Vec<String> {
     crate::telemetry::disabled_lit_sources()
 }
 
-pub fn github_for_new_projects() -> bool {
-    crate::telemetry::github_for_new_projects()
-}
-
-pub fn set_github_for_new_projects(enabled: bool) -> Result<()> {
-    crate::telemetry::set_github_for_new_projects(enabled)?;
-    Ok(())
-}
-
-pub fn github_default_prompt_seen() -> bool {
-    crate::telemetry::github_default_prompt_seen()
-}
-
-pub fn set_github_default_prompt_seen(seen: bool) -> Result<()> {
-    crate::telemetry::set_github_default_prompt_seen(seen)?;
-    Ok(())
-}
-
 /// Look up a var from the box's synced env file (`~/.openresearch/env`, written
 /// by the api's env sync). Needed because non-interactive shells never source
 /// it via .bashrc (Ubuntu's interactive guard returns first), so an agent's

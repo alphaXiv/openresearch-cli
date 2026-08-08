@@ -133,13 +133,6 @@ pub(crate) struct Settings {
     /// alphaXiv/arXiv papers the user linked to their profile in onboarding.
     #[serde(default)]
     pub linked_papers: Vec<ProfilePaper>,
-    /// Automatically create and push a private GitHub repository after a new
-    /// local project is registered. Existing projects are never changed.
-    #[serde(default)]
-    pub github_for_new_projects: Option<bool>,
-    /// Whether the one-time post-publication default prompt has been answered.
-    #[serde(default)]
-    pub github_default_prompt_seen: Option<bool>,
     /// Literature sources the user turned off (Settings → Literature sources).
     /// Values are `LitSource::as_str()` names; empty = all sources enabled, so a
     /// source added later defaults to enabled. Enforced by `orx lit`/`orx paper`.
@@ -250,26 +243,6 @@ pub(crate) fn disabled_lit_sources() -> Vec<String> {
 /// `mutate_settings` guarantees as the data dir).
 pub(crate) fn set_disabled_lit_sources(disabled: Vec<String>) -> std::io::Result<()> {
     mutate_settings(|s| s.disabled_lit_sources = disabled)
-}
-
-pub(crate) fn github_for_new_projects() -> bool {
-    load_settings()
-        .and_then(|settings| settings.github_for_new_projects)
-        .unwrap_or(false)
-}
-
-pub(crate) fn set_github_for_new_projects(enabled: bool) -> std::io::Result<()> {
-    mutate_settings(|settings| settings.github_for_new_projects = Some(enabled))
-}
-
-pub(crate) fn github_default_prompt_seen() -> bool {
-    load_settings()
-        .and_then(|settings| settings.github_default_prompt_seen)
-        .unwrap_or(false)
-}
-
-pub(crate) fn set_github_default_prompt_seen(seen: bool) -> std::io::Result<()> {
-    mutate_settings(|settings| settings.github_default_prompt_seen = Some(seen))
 }
 
 fn settings_path() -> PathBuf {
@@ -1216,27 +1189,6 @@ mod tests {
             Some("abc")
         );
 
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn github_project_default_roundtrip_preserves_siblings() {
-        let _g = EnvGuard::new(OPT_VARS);
-        let dir = std::env::temp_dir().join(format!("orx-tel-github-{}", uuid::Uuid::new_v4()));
-        std::env::set_var("XDG_CONFIG_HOME", &dir);
-
-        set_persisted_disabled(true).unwrap();
-        set_compute_default(Some("modal".into()), Some("a10g".into())).unwrap();
-        assert!(!github_for_new_projects());
-
-        set_github_for_new_projects(true).unwrap();
-        assert!(github_for_new_projects());
-        let settings = load_settings().expect("settings present");
-        assert_eq!(settings.telemetry_disabled, Some(true));
-        assert_eq!(settings.default_backend.as_deref(), Some("modal"));
-
-        set_github_for_new_projects(false).unwrap();
-        assert!(!github_for_new_projects());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

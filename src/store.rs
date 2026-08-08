@@ -263,6 +263,7 @@ impl Store {
                 host      TEXT PRIMARY KEY,
                 reachable INTEGER NOT NULL,
                 git_found INTEGER NOT NULL,
+                tools_found INTEGER NOT NULL DEFAULT 0,
                 error     TEXT,
                 tested_at INTEGER NOT NULL
             );
@@ -292,6 +293,7 @@ impl Store {
             "ALTER TABLE local_projects ADD COLUMN paper_id TEXT",
             "ALTER TABLE local_projects ADD COLUMN github_sync_enabled INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE local_experiments ADD COLUMN chat_session_id TEXT",
+            "ALTER TABLE ssh_host_tests ADD COLUMN tools_found INTEGER NOT NULL DEFAULT 0",
         ] {
             let _ = conn.execute(ddl, []);
         }
@@ -1085,14 +1087,14 @@ impl Store {
 
     pub fn upsert_ssh_host_test(&self, t: &SshHostTest) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO ssh_host_tests (host, reachable, git_found, error, tested_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO ssh_host_tests (host, reachable, git_found, tools_found, error, tested_at)
+             VALUES (?1, ?2, 0, ?3, ?4, ?5)
              ON CONFLICT(host) DO UPDATE SET
                reachable = excluded.reachable,
-               git_found = excluded.git_found,
+               tools_found = excluded.tools_found,
                error = excluded.error,
                tested_at = excluded.tested_at",
-            params![t.host, t.reachable, t.git_found, t.error, t.tested_at],
+            params![t.host, t.reachable, t.tools_found, t.error, t.tested_at],
         )?;
         Ok(())
     }
@@ -1100,12 +1102,12 @@ impl Store {
     pub fn list_ssh_host_tests(&self) -> Result<Vec<SshHostTest>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT host, reachable, git_found, error, tested_at FROM ssh_host_tests")?;
+            .prepare("SELECT host, reachable, tools_found, error, tested_at FROM ssh_host_tests")?;
         let rows = stmt.query_map([], |row| {
             Ok(SshHostTest {
                 host: row.get(0)?,
                 reachable: row.get(1)?,
-                git_found: row.get(2)?,
+                tools_found: row.get(2)?,
                 error: row.get(3)?,
                 tested_at: row.get(4)?,
             })
@@ -1123,7 +1125,7 @@ pub struct SshHostTest {
     #[serde(skip_serializing)]
     pub host: String,
     pub reachable: bool,
-    pub git_found: bool,
+    pub tools_found: bool,
     pub error: Option<String>,
     /// Unix millis.
     pub tested_at: i64,

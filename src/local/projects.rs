@@ -132,15 +132,13 @@ pub fn create_project(
     }
     let baseline_branch = git::require_current_branch(&repo_path)?;
 
-    let publication = git::github_publication(&repo_path);
-    let (github_owner, github_repo) = publication.unwrap_or_default();
     let now = now_ms();
     let project = LocalProject {
         id: uuid::Uuid::new_v4().to_string(),
         name: name.to_string(),
         slug,
-        github_owner,
-        github_repo,
+        github_owner: String::new(),
+        github_repo: String::new(),
         github_sync_enabled: false,
         baseline_branch,
         repo_path: repo_path.to_string_lossy().to_string(),
@@ -282,12 +280,12 @@ mod tests {
         let remotes = git::remotes(Path::new(&project.repo_path)).unwrap();
         assert_eq!(remotes[0].0, "upstream");
         assert!(!remotes.iter().any(|(name, _)| name == "origin"));
-        assert!(!project.github_enabled());
+        assert!(project.github_owner.is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn ordinary_github_origin_remains_local_only() {
+    fn ordinary_remote_is_not_project_metadata() {
         let root = root();
         let project_path = root.join("project");
         initialized(&project_path);
@@ -308,14 +306,13 @@ mod tests {
             CreateProjectOptions::default(),
         )
         .unwrap();
-        assert!(!project.github_enabled());
-        assert_eq!(project.github_owner, "example");
-        assert_eq!(project.github_repo, "research");
+        assert!(project.github_owner.is_empty());
+        assert!(project.github_repo.is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn dedicated_github_remote_is_recognized() {
+    fn legacy_publication_remote_is_not_project_metadata() {
         let root = root();
         let project_path = root.join("project");
         initialized(&project_path);
@@ -324,7 +321,7 @@ mod tests {
             &[
                 "remote",
                 "add",
-                git::GITHUB_REMOTE,
+                "github",
                 "git@github.com:example/research.git",
             ],
         );
@@ -336,8 +333,8 @@ mod tests {
             CreateProjectOptions::default(),
         )
         .unwrap();
-        assert_eq!(project.github_owner, "example");
-        assert_eq!(project.github_repo, "research");
+        assert!(project.github_owner.is_empty());
+        assert!(project.github_repo.is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 

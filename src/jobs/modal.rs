@@ -66,6 +66,13 @@ def submit():
     if tags:
         kwargs["tags"] = tags
     sb = modal.Sandbox.create("bash", "-c", spec["script"], **kwargs)
+    if spec.get("sourceArchive"):
+        try:
+            sb.filesystem.copy_from_local(spec["sourceArchive"], "/tmp/orx-source.tar")
+            sb.exec("touch", "/tmp/orx-source.tar.ready").wait()
+        except Exception:
+            sb.terminate()
+            raise
     print(json.dumps({"sandboxId": sb.object_id}))
 
 def status(sid):
@@ -389,7 +396,7 @@ pub fn default_image(gpu: bool) -> String {
 }
 
 pub struct ModalJobSpec {
-    /// `bash -c` payload (the shared clone-and-run script).
+    /// `bash -c` payload (the shared snapshot-and-run script).
     pub script: String,
     pub image: String,
     pub gpu: Option<String>,
@@ -402,6 +409,7 @@ pub struct ModalJobSpec {
     pub app: String,
     /// Sandbox tags (or_run / or_experiment / or_project) for observability.
     pub tags: HashMap<String, String>,
+    pub source_archive: Option<PathBuf>,
 }
 
 /// Submit the sandbox; returns its object id (the reattach handle).
@@ -422,6 +430,7 @@ pub async fn run_job(spec: &ModalJobSpec) -> Result<String> {
         "env": env,
         "timeoutSeconds": spec.timeout_seconds,
         "tags": spec.tags,
+        "sourceArchive": spec.source_archive,
     });
     let out = launcher_capture(&["submit"], Some(&body.to_string())).await?;
     let v: Value = serde_json::from_slice(&out).map_err(|e| {
@@ -523,7 +532,7 @@ pub struct ModalStatus {
     pub error: Option<String>,
 }
 
-/// Fail fast before doing any launch work (git push, api registration) if
+/// Fail fast before doing any source staging or provider submission if
 /// Modal isn't usable — provisioning the orx-managed env on first use. Returns
 /// a friendly, actionable error otherwise.
 pub async fn preflight() -> Result<()> {

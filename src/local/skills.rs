@@ -55,16 +55,13 @@ Workflow:
 4. Publish: `trackio logbook publish <hf-username>/<openreview-id>` (the OpenReview ID from the paper reference above; after later edits, `trackio logbook sync`).
 "#;
 
-const ICML_REPRO_LOCAL_TEMPLATE: &str = r#"Prepare an ICML 2026 reproduction in this local-only project.
+const ICML_REPRO_LOCAL_TEMPLATE: &str = r#"Prepare an ICML 2026 reproduction in this project.
 
 Paper: {args}
 
-The challenge workflow requires Hugging Face Jobs and publication, which are
-not available while this project is local-only. Do not launch `hf jobs` or
-bypass the OpenResearch compute gate. Explain that the user must explicitly
-enable GitHub syncing for this project before the challenge workflow can
-run. Until then, you may read the paper and outline a local experiment plan,
-but do not provision external compute or publish a logbook.
+Use `orx exp run --backend hf` for formal runs; source snapshots are uploaded
+directly and do not require repository publication. Publishing the Trackio
+logbook is a separate explicit workflow.
 "#;
 
 const REPRODUCE_PAPER_TEMPLATE: &str = r#"Reproduce a research paper claim by claim on the user's compute.
@@ -133,7 +130,7 @@ orx never binds a new experiment root to `main` — every node gets its own `orx
 Reproduce the claim:
 1. Create a child experiment for the selected claim.
 2. Encode all parameters in committed code or configuration and keep the inherited run command unchanged.
-3. Commit and push before launching; remote jobs clone the pushed branch.
+3. Commit before launching; `orx` transfers an immutable source snapshot directly.
 4. Launch with `orx exp run <experiment-id> --backend <backend> ...` (omit `--backend` to use the configured default target).
 5. Hold the turn open with `orx exp wait` until the run is terminal, then read the evidence with `orx logs <run-id>`.
 6. Record findings immediately with `orx exp desc`.
@@ -244,8 +241,7 @@ Produce a self-contained local report under the project's Artifacts directory,
 with figures in an adjacent `images/` folder. Open with the strongest result,
 separate paper evidence from observed evidence, and link experiment branches by
 name without assuming hosted URLs. Do not publish, change repository visibility,
-or contact a Git hosting service. If the user later wants hosted artifacts or
-external compute, ask them to enable GitHub syncing for this project first.
+or contact a Git hosting service unless they explicitly request publication.
 "#;
 
 const PAPER_TO_MARIMO_LOCAL_TEMPLATE: &str = r#"Reproduce a paper's main illustrative claim and create a self-contained local marimo tutorial.
@@ -433,8 +429,8 @@ mod tests {
         assert!(marimo.contains("Artifacts directory"));
         assert!(!marimo.contains("git push"));
         let icml = super::expand("/icml-repro example", false).unwrap();
-        assert!(icml.contains("local-only"));
-        assert!(icml.contains("Do not launch `hf jobs`"));
+        assert!(icml.contains("source snapshots"));
+        assert!(!icml.contains("GitHub syncing"));
     }
 
     #[test]

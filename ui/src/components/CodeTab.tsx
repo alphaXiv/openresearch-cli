@@ -3,14 +3,7 @@
 
 import { GitBranch, RotateCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  getCodeTree,
-  githubBranchUrl,
-  type CodeTree,
-  type Experiment,
-  type Project,
-} from "../api";
-import { GitHubMark } from "./BackendLogos";
+import { getCodeTree, type CodeTree, type Experiment } from "../api";
 import { BranchChanges } from "./BranchChanges";
 import { buildTree, TreeLevel } from "./codeTree";
 
@@ -18,7 +11,6 @@ export type CodeView = "files" | "changes";
 
 export function CodeTab({
   projectId,
-  project,
   experiment,
   view,
   toggled,
@@ -27,8 +19,6 @@ export function CodeTab({
   onOpenFile,
 }: {
   projectId: string;
-  /** Owning project — supplies owner/repo for the GitHub branch link. */
-  project: Project;
   /** Experiment whose committed Git branch this tab displays. */
   experiment: Experiment;
   view: CodeView;
@@ -116,15 +106,6 @@ export function CodeTab({
           <GitBranch size={12} />
           <span className="wt-branch-name">{branch}</span>
         </span>
-        {project.githubEnabled && <a
-          className="icon-btn"
-          href={githubBranchUrl(project.githubOwner, project.githubRepo, branch)}
-          target="_blank"
-          rel="noopener noreferrer"
-          title={`Open ${branch} on GitHub`}
-        >
-          <GitHubMark size={13} />
-        </a>}
         <span style={{ flex: 1 }} />
         <button
           className="icon-btn"

@@ -47,9 +47,6 @@ pub async fn run(args: crate::ProjectsArgs) -> Result<()> {
                 "paperId": p.paper_id,
                 "path": p.repo_path,
                 "baselineBranch": p.baseline_branch,
-                "repo": p.has_github_repository().then(|| format!("{}/{}", p.github_owner, p.github_repo)),
-                "githubEnabled": p.github_enabled(),
-                "githubUrl": p.github_url(),
                 "archived": false,
                 "orgId": serde_json::Value::Null,
                 "orgName": "Local (orx up)",
@@ -92,19 +89,13 @@ pub async fn run(args: crate::ProjectsArgs) -> Result<()> {
             .unwrap_or(0);
         for p in &local {
             let pad = id_width.saturating_sub(p.id.chars().count());
-            let publication = if p.github_enabled() {
-                format!(" · GitHub {}/{}", p.github_owner, p.github_repo)
-            } else {
-                String::new()
-            };
             println!(
-                "  {}{}  {} (local)  {} · baseline {}{}",
+                "  {}{}  {} (local)  {} · baseline {}",
                 p.id,
                 " ".repeat(pad),
                 p.name,
                 p.repo_path,
                 p.baseline_branch,
-                publication,
             );
         }
     }

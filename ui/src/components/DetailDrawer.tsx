@@ -5,7 +5,6 @@ import {
   runDisplayStatus,
   timeAgo,
   type Experiment,
-  type Project,
   type Run,
 } from "../api";
 import { ExperimentOverview } from "./ExperimentOverview";
@@ -19,7 +18,6 @@ export type ExperimentView = "overview" | "terminal";
  *  keyed by `${experiment.id}:${view}` so per-view state resets on switch. */
 export function DetailDrawer({
   experiment,
-  project,
   view,
   runs,
   selectedRunId,
@@ -29,8 +27,6 @@ export function DetailDrawer({
   onOpenCode,
 }: {
   experiment: Experiment;
-  /** Owning project — supplies owner/repo for the GitHub branch link. */
-  project: Project;
   view: ExperimentView;
   runs: Run[];
   selectedRunId: string | null;
@@ -48,7 +44,6 @@ export function DetailDrawer({
       <ExperimentOverview
         experiment={experiment}
         parentExperiment={parentExperiment}
-        project={project}
         runs={expRuns}
         onOpenLogs={(runId) => onOpenView("terminal", runId)}
         onOpenChanges={() => onOpenCode("changes")}

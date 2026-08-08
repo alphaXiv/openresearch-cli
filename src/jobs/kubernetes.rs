@@ -13,7 +13,7 @@
 //! - the manifest must contain exactly one Job (or mark one of several with
 //!   the `orx-primary: "true"` label) — its completion/failure is the run's;
 //! - the Job's container command must reference `$ORX_SCRIPT`, the injected
-//!   env var holding the clone-and-run script (the run command stays the
+//!   env var holding the snapshot-and-run script (the run command stays the
 //!   experiment's fixed contract);
 //! - orx injects run labels, the `orx-env` Secret ref, and defaults for
 //!   `activeDeadlineSeconds` / `ttlSecondsAfterFinished` / `backoffLimit`
@@ -28,6 +28,7 @@
 //! `is_terminal_stage` in `jobs/mod.rs` apply unchanged.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -231,7 +232,7 @@ pub struct ManifestSpec {
     /// Raw manifest text as committed on the experiment branch (YAML or JSON,
     /// multi-document fine).
     pub manifest: String,
-    /// Clone-and-run script; injected as the `ORX_SCRIPT` env var on the
+    /// Snapshot-and-run script; injected as the `ORX_SCRIPT` env var on the
     /// primary Job's containers.
     pub script: String,
     /// Run-unique DNS-safe token substituted for `{{ORX_RUN}}`.
@@ -241,6 +242,7 @@ pub struct ManifestSpec {
     /// Injected as `activeDeadlineSeconds` when the manifest doesn't set one.
     pub timeout_seconds: u64,
     pub labels: HashMap<String, String>,
+    pub source_archive: PathBuf,
 }
 
 pub struct Submitted {
@@ -318,10 +320,76 @@ pub async fn run_manifest(
         }
         created.push(handle);
     }
+    let staged = stage_source(context, namespace, &job_name, &spec.source_archive).await;
+    if let Err(error) = staged {
+        for resource in created.iter().rev() {
+            let _ = delete_resources(context, namespace, std::slice::from_ref(resource)).await;
+        }
+        return Err(error);
+    }
     Ok(Submitted {
         job_name,
         resources: created,
     })
+}
+
+async fn stage_source(
+    context: Option<&str>,
+    namespace: &str,
+    job_name: &str,
+    archive: &std::path::Path,
+) -> Result<()> {
+    let selector = format!("job-name={job_name}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    let mut last_error = String::new();
+    while std::time::Instant::now() < deadline {
+        let pod = kubectl(
+            context,
+            &[
+                "get",
+                "pods",
+                "-n",
+                namespace,
+                "-l",
+                &selector,
+                "-o",
+                "jsonpath={.items[0].metadata.name}",
+            ],
+            None,
+        )
+        .await
+        .unwrap_or_default();
+        let pod = pod.trim();
+        if !pod.is_empty() {
+            let local = archive.to_string_lossy().into_owned();
+            let remote = format!("{namespace}/{pod}:/tmp/orx-source/source.tar");
+            match kubectl(context, &["cp", &local, &remote], None).await {
+                Ok(_) => match kubectl(
+                    context,
+                    &[
+                        "exec",
+                        "-n",
+                        namespace,
+                        pod,
+                        "--",
+                        "touch",
+                        "/tmp/orx-source/source.tar.ready",
+                    ],
+                    None,
+                )
+                .await
+                {
+                    Ok(_) => return Ok(()),
+                    Err(error) => last_error = error.to_string(),
+                },
+                Err(error) => last_error = error.to_string(),
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    Err(anyhow!(
+        "Kubernetes source staging timed out for Job {namespace}/{job_name}: {last_error}"
+    ))
 }
 
 fn resource_handle(doc: &Value) -> String {
@@ -436,6 +504,15 @@ fn prepare_docs(
 
     let job = &mut docs[primary];
     let job_name = job["metadata"]["name"].as_str().unwrap_or("").to_string();
+    let completions = job["spec"]["completions"].as_u64().unwrap_or(1);
+    let parallelism = job["spec"]["parallelism"].as_u64().unwrap_or(1);
+    if completions > 1 || parallelism > 1 || job["spec"]["completionMode"] == "Indexed" {
+        return Err(anyhow!(
+            "Job '{}' must run a single pod; parallel and Indexed Jobs cannot receive a \
+             pod-local source snapshot safely",
+            job_name
+        ));
+    }
     label_map(&mut job["spec"]["template"]["metadata"]["labels"]);
     if job["spec"]["activeDeadlineSeconds"].is_null() {
         job["spec"]["activeDeadlineSeconds"] = json!(timeout_seconds);
@@ -443,15 +520,14 @@ fn prepare_docs(
     if job["spec"]["ttlSecondsAfterFinished"].is_null() {
         job["spec"]["ttlSecondsAfterFinished"] = json!(86400);
     }
-    if job["spec"]["backoffLimit"].is_null() {
-        // Silent retries would splice two attempts into one run log.
-        job["spec"]["backoffLimit"] = json!(0);
-    }
+    // A replacement pod would not share the pod-local snapshot staged by kubectl cp.
+    job["spec"]["backoffLimit"] = json!(0);
 
     let containers = job["spec"]["template"]["spec"]["containers"]
         .as_array_mut()
         .ok_or_else(|| anyhow!("the Job has no containers"))?;
-    let mut references_script = false;
+    let mut script_container = None;
+    let mut script_container_count = 0usize;
     for c in containers.iter_mut() {
         for field in ["command", "args"] {
             if let Some(items) = c[field].as_array() {
@@ -459,7 +535,10 @@ fn prepare_docs(
                     .iter()
                     .any(|a| a.as_str().is_some_and(|s| s.contains("ORX_SCRIPT")))
                 {
-                    references_script = true;
+                    script_container_count += 1;
+                    if script_container.is_none() {
+                        script_container = c["name"].as_str().map(str::to_string);
+                    }
                 }
             }
         }
@@ -492,14 +571,23 @@ fn prepare_docs(
         }
         c["envFrom"] = json!(env_from);
     }
-    if !references_script {
+    let Some(script_container) = script_container else {
         return Err(anyhow!(
             "no container in Job '{}' runs the experiment: reference the injected script, \
-             e.g. command: [\"bash\", \"-c\", \"$ORX_SCRIPT\"] — it clones the branch tip \
+             e.g. command: [\"bash\", \"-c\", \"$ORX_SCRIPT\"] — it extracts the source snapshot \
              and runs the experiment's fixed run command",
             job_name
         ));
+    };
+    if script_container_count != 1 {
+        return Err(anyhow!(
+            "Job '{}' must have exactly one container that references ORX_SCRIPT; found {}",
+            job_name,
+            script_container_count
+        ));
     }
+    job["spec"]["template"]["metadata"]["annotations"]["kubectl.kubernetes.io/default-container"] =
+        json!(script_container);
 
     Ok((docs, job_name))
 }
@@ -781,13 +869,13 @@ mod tests {
     }
 
     #[test]
-    fn author_settings_win_over_defaults() {
+    fn author_deadline_wins_but_retries_are_disabled() {
         let mut j = job("train");
         j["spec"]["activeDeadlineSeconds"] = json!(60);
         j["spec"]["backoffLimit"] = json!(2);
         let (docs, _) = prepare(j).unwrap();
         assert_eq!(docs[0]["spec"]["activeDeadlineSeconds"], 60);
-        assert_eq!(docs[0]["spec"]["backoffLimit"], 2);
+        assert_eq!(docs[0]["spec"]["backoffLimit"], 0);
     }
 
     #[test]

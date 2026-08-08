@@ -12,7 +12,6 @@ import {
   runDisplayStatus,
   timeAgo,
   type Experiment,
-  type Project,
   type Run,
 } from "../api";
 import { BackendBadge } from "./BackendLogos";
@@ -37,7 +36,6 @@ function runDuration(run: Run, now: number): string {
 export function ExperimentOverview({
   experiment,
   parentExperiment,
-  project,
   runs,
   onOpenLogs,
   onOpenChanges,
@@ -45,7 +43,6 @@ export function ExperimentOverview({
 }: {
   experiment: Experiment;
   parentExperiment: Experiment | null;
-  project: Project;
   runs: Run[];
   onOpenLogs: (runId: string) => void;
   onOpenChanges: () => void;
@@ -146,11 +143,7 @@ export function ExperimentOverview({
         <section className="experiment-overview-section">
           <h2>Git</h2>
           <div className="experiment-overview-meta experiment-overview-git-meta">
-            <BranchPill
-              owner={project.githubEnabled ? project.githubOwner : ""}
-              repo={project.githubEnabled ? project.githubRepo : ""}
-              branch={experiment.branchName}
-            />
+            <BranchPill branch={experiment.branchName} />
             {parentExperiment && (
               <span>
                 from <code>{parentExperiment.slug}</code>

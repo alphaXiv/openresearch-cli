@@ -3,11 +3,9 @@ name: orx-compute
 description: "Launch experiment runs with `orx exp run`: backends (hf, modal, k8s, ssh, slurm, ray, openresearch, local), flavors, timeouts, images, sizing, and `orx exp wait`. Use before launching or re-launching any run, when choosing or switching a backend or GPU flavor, when a job OOMs, stalls, or times out, or when deciding GPU vs CPU."
 ---
 
-Projects are local-only by default. In that state, commit the experiment and
-use the `local` backend; never push. Remote backends stay unavailable until the
-user explicitly enables GitHub syncing for the project. Once enabled,
-`orx exp run` pushes the selected branch before provisioning and aborts the
-launch if that push fails.
+Commit the experiment before launching. `orx` archives that exact revision and
+transfers the immutable snapshot directly to the selected backend. No push,
+repository clone, GitHub token, or public repository is required.
 
 In local mode (`orx up`) every run launches with `orx exp run <expId>` onto a
 **backend**: `hf`, `modal`, `k8s`, `ssh`, `slurm`, `ray`, `openresearch`, or `local`.
@@ -30,9 +28,9 @@ orx exp cancel <expId>                     # cancel the in-flight run
   code/config on the child's branch instead (see the `orx-experiment-tree`
   skill). A node with no command refuses to launch and points at
   `orx project edit`.
-- **Push before launching.** Every backend clones the experiment branch's tip
-  **as it is on GitHub** and runs the fixed command — uncommitted or unpushed
-  edits won't be in the run (see the `orx-git` skill).
+- **Commit before launching.** Every backend runs the same content-addressed
+  archive of the recorded local revision. Uncommitted edits are excluded; a
+  push is unrelated to launching (see the `orx-git` skill).
 - **`orx exp run` queues the run and returns immediately** — it does not wait.
   Follow progress with `orx runs <projectId>` and `orx logs <runId>`, or block
   with `orx exp wait` (below).
@@ -110,10 +108,10 @@ orx exp run <expId> --backend ssh --host my-gpu-box
 - **`--host <alias>` is required on every launch** — a machine, not a hardware
   shape, so there is no `--flavor`, `--image`, or `--timeout` (the process runs
   until it exits or is cancelled). Use one of the user's configured SSH host
-  aliases; OpenResearch validates reachability and git separately.
+  aliases; OpenResearch validates reachability before upload.
 - Auth is your own ssh keys/agent — orx never reads a key, it just shells out
-  to `ssh <alias>`. The host needs `git` and `bash`; private repos clone via
-  the `GITHUB_TOKEN` passed in the run's env. The run lives under
+  to `ssh <alias>`. The host needs `tar` and `bash`; orx uploads the snapshot
+  over SSH. The run lives under
   `~/.orx/runs/<runId>/` on the host; cancel kills the remote process group.
 
 ## Your Slurm cluster — `--backend slurm`
@@ -134,9 +132,9 @@ orx exp run <expId> --backend slurm                    # CPU-only, settings defa
 
 ## A Ray Jobs cluster — `--backend ray`
 
-Submits via the Ray Jobs / Dashboard API (same contract as Hugging Face Jobs:
-clone the experiment branch tip from GitHub and run the fixed command). Needs a
-reachable Ray head (Dashboard, usually port 8265).
+Submits via the Ray Jobs / Dashboard API. The snapshot is uploaded as Ray's
+`working_dir` package. Needs a reachable Ray head (Dashboard, usually port
+8265).
 
 ```sh
 orx exp run <expId> --backend ray
@@ -192,7 +190,7 @@ orx exp run <expId> --backend local
   machine has. It shares CPU/RAM/GPU with OpenResearch and your editing tools:
   prefer it for small or CPU-scale runs and a remote backend for anything
   heavy.
-- Still the full run contract: it clones the branch tip into its own run dir
+- Still the full run contract: it extracts the recorded snapshot into its own run dir
   (never your checkout), supervised and tracked by OpenResearch — never run
   training directly in your shell instead. The run lives under
   `<orx data dir>/local-runs/<runId>/`; cancel TERMs the process group.
