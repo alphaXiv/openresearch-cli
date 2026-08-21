@@ -22,9 +22,15 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 /// Deliberately short. These are the variables whose divergence makes the app
-/// and the CLI behave like different installs; credentials reach harness
-/// children through `chat::prepare_env` instead.
-pub const IMPORTED: [&str; 4] = ["PATH", "ORX_DATA_DIR", "XDG_DATA_HOME", "XDG_CONFIG_HOME"];
+/// and the CLI behave like different installs; values adopted here reach
+/// harness children through `chat::prepare_env`.
+pub const IMPORTED: [&str; 5] = [
+    "PATH",
+    "ORX_DATA_DIR",
+    "XDG_DATA_HOME",
+    "XDG_CONFIG_HOME",
+    "CLAUDE_CONFIG_DIR",
+];
 
 static OVERRIDE: OnceLock<HashMap<&'static str, OsString>> = OnceLock::new();
 
@@ -148,7 +154,7 @@ mod tests {
     #[test]
     fn reads_every_imported_variable() {
         let vars = parse_probe(
-            &fenced("/opt/homebrew/bin:/usr/bin\0/data\0/share\0/config\0"),
+            &fenced("/opt/homebrew/bin:/usr/bin\0/data\0/share\0/config\0/claude-config\0"),
             M,
         )
         .unwrap();
@@ -156,11 +162,12 @@ mod tests {
         assert_eq!(vars["ORX_DATA_DIR"], OsString::from("/data"));
         assert_eq!(vars["XDG_DATA_HOME"], OsString::from("/share"));
         assert_eq!(vars["XDG_CONFIG_HOME"], OsString::from("/config"));
+        assert_eq!(vars["CLAUDE_CONFIG_DIR"], OsString::from("/claude-config"));
     }
 
     #[test]
     fn unset_variables_are_dropped_so_lookups_fall_through() {
-        let vars = parse_probe(&fenced("/usr/bin\0\0\0\0"), M).unwrap();
+        let vars = parse_probe(&fenced("/usr/bin\0\0\0\0\0"), M).unwrap();
         assert_eq!(vars["PATH"], OsString::from("/usr/bin"));
         assert!(!vars.contains_key("ORX_DATA_DIR"));
         assert_eq!(vars.len(), 1);
@@ -170,7 +177,7 @@ mod tests {
     fn rejects_truncated_empty_or_pathless_output() {
         assert!(parse_probe("", M).is_none());
         assert!(parse_probe(&format!("{M}/usr/bin\0"), M).is_none());
-        assert!(parse_probe(&fenced("\0/data\0\0\0"), M).is_none());
+        assert!(parse_probe(&fenced("\0/data\0\0\0\0"), M).is_none());
     }
 
     #[test]

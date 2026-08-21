@@ -173,3 +173,6 @@ both must be safe to have at once:
   file that redirects the store moves the app with it. Otherwise the app would
   read the default database while the CLI read the user's, and the lock above
   would guard a file neither shares.
+- **Claude configuration** — `CLAUDE_CONFIG_DIR` is imported by that probe too,
+  so account metadata, installed skills, and spawned Claude processes all use
+  the same profile as the user's terminal.

@@ -45,7 +45,7 @@ use crate::local::chat::{
 };
 use crate::local::claude::{SpawnConfig, SpawnSpec, TurnEvent};
 use crate::local::opencode::ensure_playbook;
-use crate::local::shell_env::find_on_path;
+use crate::local::shell_env::{self, find_on_path};
 
 /// FALLBACK model list, used only when the `list_models` control request fails
 /// (a CLI too old to answer it, or a spawn/timeout failure). The primary source
@@ -423,6 +423,36 @@ pub(crate) fn find_claude() -> Option<PathBuf> {
     })
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ClaudeConfigPaths {
+    root: PathBuf,
+    metadata: PathBuf,
+}
+
+fn resolve_config_paths(
+    config_dir: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Option<ClaudeConfigPaths> {
+    if let Some(root) = config_dir.filter(|path| !path.as_os_str().is_empty()) {
+        return Some(ClaudeConfigPaths {
+            metadata: root.join(".claude.json"),
+            root,
+        });
+    }
+    let home = home?;
+    Some(ClaudeConfigPaths {
+        root: home.join(".claude"),
+        metadata: home.join(".claude.json"),
+    })
+}
+
+fn config_paths() -> Option<ClaudeConfigPaths> {
+    resolve_config_paths(
+        shell_env::var("CLAUDE_CONFIG_DIR").map(PathBuf::from),
+        dirs::home_dir(),
+    )
+}
+
 #[async_trait]
 impl Harness for ClaudeCode {
     fn id(&self) -> &'static str {
@@ -468,8 +498,8 @@ impl Harness for ClaudeCode {
             if info.auth_state == HarnessAuthState::Ready {
                 info.authenticated = true;
                 if probe.method == Some("oauth") {
-                    if let Some(acct) = dirs::home_dir()
-                        .and_then(|h| read_json(h.join(".claude.json")))
+                    if let Some(acct) = config_paths()
+                        .and_then(|paths| read_json(paths.metadata))
                         .and_then(|cfg| cfg.get("oauthAccount").cloned())
                     {
                         info.account = nonempty_str(&acct, "emailAddress");
@@ -708,7 +738,7 @@ impl Harness for ClaudeCode {
     }
 
     fn config_home(&self) -> Option<PathBuf> {
-        Some(dirs::home_dir()?.join(".claude"))
+        config_paths().map(|paths| paths.root)
     }
 
     fn skill_target(&self) -> Option<PathBuf> {
@@ -2017,6 +2047,25 @@ async fn run_turn(ctx: &mut TurnCtx) -> Result<()> {
 mod tests {
     use super::super::options::REASONING_DEFAULT_ID;
     use super::*;
+
+    #[test]
+    fn config_override_moves_the_root_and_metadata_together() {
+        let custom = PathBuf::from("/custom/claude");
+        assert_eq!(
+            resolve_config_paths(Some(custom.clone()), Some(PathBuf::from("/home/user"))),
+            Some(ClaudeConfigPaths {
+                root: custom.clone(),
+                metadata: custom.join(".claude.json"),
+            })
+        );
+        assert_eq!(
+            resolve_config_paths(None, Some(PathBuf::from("/home/user"))),
+            Some(ClaudeConfigPaths {
+                root: PathBuf::from("/home/user/.claude"),
+                metadata: PathBuf::from("/home/user/.claude.json"),
+            })
+        );
+    }
 
     /// A `list_models` response in the live 2.1.212 shape (fields we don't
     /// read trimmed). Covers the four things the parser decides: the `default`
