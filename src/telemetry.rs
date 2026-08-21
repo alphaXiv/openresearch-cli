@@ -591,6 +591,8 @@ fn build_payload_with_id(
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
             "ci": is_ci(),
+            // Hosted cloud agents were retired; released CLI installs are human-driven.
+            "installKind": "human",
         },
         "events": [{
             "eventId": event_id.to_string(),
@@ -778,8 +780,8 @@ pub(crate) fn capture_onboarding_research_profile(profile: &ResearchProfile) {
     );
 }
 
-pub(crate) fn capture_project_created() {
-    capture("project_created", json!({}));
+pub(crate) fn capture_project_created(local: bool) {
+    capture("project_created", json!({ "local": local }));
 }
 
 pub(crate) fn capture_chat_session_started(harness: &str) {
@@ -847,15 +849,22 @@ impl TelemetrySession {
 /// The motivating key event. Fire only on success.
 ///
 /// - `kind`: `"create"` (a node was created) or `"run"` (a run was launched).
+/// - `local`: `true` when dispatched via the local `orx up` store path.
+///   This is a dispatch axis, not a "runs on this machine" axis — for example,
+///   `target="openresearch"` provisions an ephemeral OpenResearch box. Every
+///   current dispatch uses the local store path, so callers pass `true` today.
 /// - `target`: for a run, a COARSE compute label — the backend/provider name
 ///   (`"hf"`, `"modal"`, `"k8s"`, `"ssh"`, `"slurm"`, `"ray"`, `"openresearch"`,
-///   `"local"`). `None` for `create` (no compute).
+///   `"local"`) for local-mode runs. `None` for `create` (no compute).
 ///   Always a fixed enum label, never an id, name, or path.
+///
+/// One vocabulary axis per property: `target` is always "what compute", `local`
+/// is always "which dispatch path". `kind`+`local` tell you how to read `target`.
 ///
 /// Non-blocking: the send is spawned and registered for the exit-time flush, so
 /// this returns immediately and never delays the command's own success output.
-pub(crate) fn capture_experiment_started(kind: &str, target: Option<&str>) {
-    let mut extra = json!({ "kind": kind });
+pub(crate) fn capture_experiment_started(kind: &str, local: bool, target: Option<&str>) {
+    let mut extra = json!({ "kind": kind, "local": local });
     if let (Some(obj), Some(t)) = (extra.as_object_mut(), target) {
         obj.insert("computeTarget".to_string(), json!(t));
     }
@@ -1220,7 +1229,7 @@ mod tests {
         let payload = build_payload(
             "experiment_started",
             "test-distinct-id",
-            json!({ "kind": "run", "computeTarget": "modal" }),
+            json!({ "kind": "run", "local": false, "computeTarget": "modal" }),
         );
 
         assert_eq!(payload["schemaVersion"], 1);
@@ -1234,9 +1243,11 @@ mod tests {
         assert!(context["os"].is_string());
         assert!(context["arch"].is_string());
         assert!(context["ci"].is_boolean());
+        assert_eq!(context["installKind"], "human");
         let props = &payload["events"][0]["properties"];
         // Event-specific coarse props.
         assert_eq!(props["kind"], "run");
+        assert_eq!(props["local"], false);
         assert_eq!(props["computeTarget"], "modal");
 
         assert!(payload["events"][0]["occurredAt"].is_string());
@@ -1338,14 +1349,17 @@ mod tests {
     }
 
     #[test]
-    fn retry_payloads_reuse_the_client_event_id() {
+    fn payloads_reuse_the_supplied_client_event_id() {
         let _g = EnvGuard::new(OPT_VARS);
-        let dir = std::env::temp_dir().join(format!("orx-tel-retry-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("orx-tel-event-id-{}", uuid::Uuid::new_v4()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         let event_id = uuid::Uuid::new_v4();
         let first = build_payload_with_id("command", "did", event_id, json!({ "command": "run" }));
-        let retry = build_payload_with_id("command", "did", event_id, json!({ "command": "run" }));
-        assert_eq!(first["events"][0]["eventId"], retry["events"][0]["eventId"]);
+        let second = build_payload_with_id("command", "did", event_id, json!({ "command": "run" }));
+        assert_eq!(
+            first["events"][0]["eventId"],
+            second["events"][0]["eventId"]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1465,9 +1479,10 @@ mod tests {
             assert!(!profile_text.contains(forbidden));
         }
 
-        let project = build_payload("project_created", "did", json!({}));
+        let project = build_payload("project_created", "did", json!({ "local": true }));
         assert_eq!(project["events"][0]["name"], "cli_project_created");
-        assert!(property_keys(&project).is_empty());
+        assert_eq!(project["events"][0]["properties"]["local"], true);
+        assert_eq!(property_keys(&project), vec!["local"]);
 
         let chat = build_payload("chat_session_started", "did", json!({ "harness": "codex" }));
         assert_eq!(chat["events"][0]["name"], "cli_chat_session_started");
@@ -1525,9 +1540,9 @@ mod tests {
         let session = TelemetrySession::start("up");
         capture_onboarding_completed();
         capture_onboarding_research_profile(&ResearchProfile::default());
-        capture_project_created();
+        capture_project_created(true);
         capture_chat_session_started("codex");
-        capture_experiment_started("run", Some("local"));
+        capture_experiment_started("run", true, Some("local"));
 
         assert!(pending().lock().unwrap().is_empty());
         session.finish(true).await;

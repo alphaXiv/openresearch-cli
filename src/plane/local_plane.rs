@@ -313,7 +313,7 @@ impl LocalPlane {
         // return `Err`. The `"unknown"` fallback is unreachable defense.
         if result.is_ok() {
             let target = backend_label.as_deref().unwrap_or("unknown");
-            crate::telemetry::capture_experiment_started("run", Some(target));
+            crate::telemetry::capture_experiment_started("run", true, Some(target));
         }
         result
     }

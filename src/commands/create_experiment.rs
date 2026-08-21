@@ -33,6 +33,6 @@ pub async fn run(mut args: crate::CreateExperimentArgs) -> Result<()> {
             run_command: args.run_command,
         })
         .await?;
-    crate::telemetry::capture_experiment_started("create", None);
+    crate::telemetry::capture_experiment_started("create", true, None);
     Ok(())
 }
